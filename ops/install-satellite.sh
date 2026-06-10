@@ -406,7 +406,7 @@ trap - EXIT
 echo "==> Creating mount point $MOUNT_POINT"
 mkdir -p "$MOUNT_POINT"
 
-# CLAUDE.md known gap: Finder writes .DS_Store + ._.DS_Store into
+# Known gap: Finder writes .DS_Store + ._.DS_Store into
 # every dir it browses, including sshfs-mounted station projects.
 # `noappledouble` mount flag suppresses AppleDouble metadata files
 # but not .DS_Store — Finder writes those via a separate code path.

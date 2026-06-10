@@ -222,10 +222,9 @@ func renderStationPreamble(ctx PreambleCtx) string {
 // browser and hardware are reachable, and the MCPs registered with this
 // laptop's Claude Code install ARE the right ones to call.
 //
-// Phrasing is the canonical text from the rev 3.1 hybrid-mode plan
-// (notes/2026-04-23-hybrid-mode-plan/README.md, Phase 6). Don't
-// paraphrase without updating the plan in lockstep — the wording was
-// agreed on in the plan review and the test asserts on it verbatim.
+// Phrasing is canonical: the wording was agreed on in review and the
+// test asserts on it verbatim. Don't paraphrase without updating the
+// test in lockstep.
 func renderLocalPreamble(ctx PreambleCtx) string {
 	projectLabel := ctx.ProjectName
 	if projectLabel == "" {

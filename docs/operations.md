@@ -27,7 +27,7 @@ Daemon stdout and stderr both land here (set by `StandardOutPath` / `StandardErr
 tail -f /var/log/reck-stationd.log
 ```
 
-**No automatic rotation is in place.** `newsyslog` cannot rotate this file cleanly because launchd opens the `StandardOutPath` fd at job start and passes it to the child — a rename+recreate cycle leaves the daemon writing to the rotated file until it restarts. Real rotation requires daemon-side `SIGHUP` handling to reopen the fd, plus a pidfile. Tracked in `notes/2026-04-23-leftovers-plan/`. In the meantime, truncate manually:
+**No automatic rotation is in place.** `newsyslog` cannot rotate this file cleanly because launchd opens the `StandardOutPath` fd at job start and passes it to the child — a rename+recreate cycle leaves the daemon writing to the rotated file until it restarts. Real rotation requires daemon-side `SIGHUP` handling to reopen the fd, plus a pidfile — a known gap. In the meantime, truncate manually:
 
 ```bash
 sudo truncate -s 0 /var/log/reck-stationd.log

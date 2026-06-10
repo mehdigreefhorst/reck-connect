@@ -207,9 +207,9 @@ func TestBasePreamble_modeSwitch_localBranch(t *testing.T) {
 		t.Fatal("expected non-empty local-mode preamble")
 	}
 
-	// The plan-canonical opening sentence, byte-for-byte. If you're
-	// updating this string, update notes/2026-04-23-hybrid-mode-plan/
-	// README.md (Phase 6 scope) in the same commit.
+	// The canonical opening sentence, byte-for-byte. If you're
+	// updating this string, update renderLocalPreamble's text in the
+	// same commit.
 	const localOpening = "You are running on the user's laptop; browser, MCPs, local apps, and hardware are reachable; no sshfs indirection — your cwd is the mounted project folder."
 	if !strings.Contains(out, localOpening) {
 		t.Errorf("local-mode preamble missing canonical opening sentence.\nwant substring:\n%s\ngot:\n%s", localOpening, out)

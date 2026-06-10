@@ -125,11 +125,11 @@ The watchdog wraps every sshfs call in a 15-second hard timeout using the `perl 
 
 The outer `2>/dev/null` suppresses bash's `"Alarm clock: 14"` diagnostic that would otherwise appear in the log when perl kills itself with SIGALRM.
 
-Source: `ops/reck-mount-watchdog.sh:79`, `CLAUDE.md` gotchas.
+Source: `ops/reck-mount-watchdog.sh:79`.
 
 ### macOS has no `timeout(1)`
 
-Use `perl -e 'alarm shift @ARGV; exec @ARGV' <secs> <cmd>` for hard timeouts in shell scripts. This is the pattern used in `reck-mount-watchdog.sh` and documented in `CLAUDE.md`.
+Use `perl -e 'alarm shift @ARGV; exec @ARGV' <secs> <cmd>` for hard timeouts in shell scripts. This is the pattern used in `reck-mount-watchdog.sh`.
 
 ### `/usr/bin/rsync` is openrsync on macOS 14+
 

@@ -126,7 +126,7 @@ killall Finder
 find /Users/reck-connect/projects -name '.DS_Store' -o -name '._*' -delete
 ```
 
-See [operations.md#ds_store-leakage-through-sshfs](./operations.md#ds_store-leakage-through-sshfs) and `CLAUDE.md` known gaps.
+See [operations.md#ds_store-leakage-through-sshfs](./operations.md#ds_store-leakage-through-sshfs).
 
 ---
 
@@ -176,7 +176,7 @@ brew install rsync
 
 `rsync-copy.ts` prefers `/opt/homebrew/bin/rsync`, then `/usr/local/bin/rsync`, and falls back to bare `rsync` on PATH only if neither Homebrew path exists. `install-satellite.sh` also installs Homebrew rsync as part of the normal setup flow. If the error persists, verify the Homebrew rsync is present: `ls -l /opt/homebrew/bin/rsync`.
 
-See [concepts/mount.md#usrbinrsync-is-openrsync-on-macos-14](./concepts/mount.md#usrbinrsync-is-openrsync-on-macos-14) and `CLAUDE.md` gotchas.
+See [concepts/mount.md#usrbinrsync-is-openrsync-on-macos-14](./concepts/mount.md#usrbinrsync-is-openrsync-on-macos-14).
 
 ---
 

@@ -37,13 +37,13 @@ When a shell pane is restored via `restore_slot_id`, the daemon re-executes the 
 
 ---
 
-### Local daemon survives Satellite app quit
+### Quitting the Satellite stops the local daemon (after confirmation)
 
-In local mode, the Satellite spawns `reck-stationd` as a child process. When the Satellite quits, it intentionally does NOT send a kill signal to the daemon. The daemon continues running and all panes remain alive.
+In local mode, the Satellite spawns `reck-stationd` as a child process. Quitting the Satellite (Cmd-Q or closing the last window) with the local daemon running prompts a confirmation dialog; confirming stops the daemon (SIGTERM, escalating to SIGKILL after 3 s) and terminates all running Claude/shell sessions on it. The station daemon is launchd-managed on a remote host and is unaffected.
 
-**Source:** `satellite/main/daemon-spawn.ts` (or equivalent in Electron main process)
+**Source:** `satellite/main/main.ts` (`confirmQuitWithLocalDaemon`), `satellite/main/daemon-spawn.ts` (`stopDaemon`, `will-quit` SIGTERM fallback, next-launch orphan sweep)
 
-**Why it matters:** closing the Satellite app does not interrupt running Claude sessions. Re-opening the Satellite reconnects to the existing daemon and resumes the same panes. This is the intended UX: the Satellite is a view, not the session host.
+**Why it matters:** the quit dialog is the only warning before live sessions die. Cancel keeps everything running. Paths that bypass the dialog (force-quit, system shutdown) are backstopped by the orphan sweep on next launch.
 
 ---
 

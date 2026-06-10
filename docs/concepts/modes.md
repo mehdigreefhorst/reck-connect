@@ -71,22 +71,21 @@ To force the satellite back to the first-launch mode-chooser (clears
 `settings` so the next start renders the welcome flow), delete the
 `settings.json` file.
 
-## Intentional: daemon survives satellite quit
+## Quit stops the local daemon (with confirmation)
 
-The `will-quit` handler in `satellite/main/daemon-spawn.ts` is
-explicitly empty:
+Quitting the satellite with the local daemon running prompts a
+confirmation dialog (`confirmQuitWithLocalDaemon` in
+`satellite/main/main.ts`). Confirming awaits a full
+`stopDaemon("local", …)` teardown — SIGTERM, escalate to SIGKILL after
+3 s, sweep orphan listeners — before the app exits, so live Claude and
+shell sessions get an explicit warning instead of dying silently.
 
-```typescript
-app.on("will-quit", () => {
-  /* daemon is intentionally left running */
-});
-```
-
-Quitting the satellite **does not kill the local daemon**. The daemon and
-all its panes keep running. To stop the local daemon explicitly:
-**File → Quit Local Daemon…** (calls `stopDaemon()`, which sends SIGTERM
-and waits up to 3 s before SIGKILL). The station daemon is launchd-managed
-on the station host and is unaffected by satellite lifecycle.
+The `will-quit` handler in `satellite/main/daemon-spawn.ts` is a
+SIGTERM fallback for paths that bypass the dialog (e.g. an updater
+calling `app.quit()` directly); force-quit and system shutdown are
+backstopped by the orphan sweep on next launch. The station daemon is
+launchd-managed on the station host and is unaffected by satellite
+lifecycle.
 
 This is a deliberate design choice: panes (especially long-running Claude
 sessions) should not be interrupted by an accidental app quit.

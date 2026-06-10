@@ -480,8 +480,8 @@ Two real incidents informed the order above:
    Satellite spawns for Local mode lives at `~/.local/bin/reck-stationd`
    and is independent of the app bundle. Skipping `install-satellite.sh`
    on update leaves the local daemon at whatever version was current
-   when the laptop was first set up — daemon-side features (e.g. issue
-   #228 orphan auto-restore) silently don't apply on the local host.
+   when the laptop was first set up — daemon-side features (e.g.
+   orphan auto-restore) silently don't apply on the local host.
    `install-satellite.sh` now invokes `install-local.sh` to keep that
    binary in lockstep with the checkout.
 

@@ -33,7 +33,7 @@ pnpm dist              # full electron-builder package → release/mac-arm64/Rec
 
 **`pnpm dev` is BROKEN — never use it.** The concurrent vite + electron dev-server flow does not work. For manual UI testing, build a real app bundle with `pnpm dist` and launch `release/mac-arm64/Reck Connect Satellite.app` directly. `pnpm typecheck`, `pnpm test`, and `pnpm build` are all fine for static verification.
 
-Source: `CLAUDE.md`, `satellite/package.json`.
+Source: `satellite/package.json`.
 
 ## Protocol sync
 
@@ -85,7 +85,7 @@ The satellite uses Electron's context-bridge IPC. The `Window.reckAPI` type decl
 
 ## Commit and branching policy
 
-See root `CLAUDE.md` for the review and branching policy (dual Claude + Codex review before commits, worktrees for non-trivial work).
+Review before committing (agent-assisted code review is the norm here), and use git worktrees for non-trivial work so the main checkout stays on a known state.
 
 ## Key file locations
 

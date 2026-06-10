@@ -99,8 +99,9 @@ function stationLaunchAgentLabel(): string {
  * Satellite starting on the same host would see it in `lsof` and —
  * without this guard — SIGTERM it. launchd respawns via KeepAlive,
  * hits ThrottleInterval=30 s, and the station goes dark for 30 s every
- * time the Satellite starts up. See the 2026-04-24 incident note in
- * CLAUDE.md for the live repro that prompted this code path.
+ * time the Satellite starts up. A 2026-04-24 incident (two overlapping
+ * kickstarts bouncing the station for 30 s) was the live repro that
+ * prompted this code path.
  *
  * Injectable so the unit tests don't need real `launchctl` on the
  * vitest host. The default is the real binary.

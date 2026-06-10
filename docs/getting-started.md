@@ -58,7 +58,7 @@ Local mode is the simplest way to start. The satellite spawns `reck-stationd` as
 
    The output is `satellite/release/mac-arm64/Reck Connect Satellite.app`.
 
-   > Note: `pnpm dev` is broken — always use `pnpm dist` and launch the built `.app`. See `CLAUDE.md`.
+   > Note: `pnpm dev` is broken — always use `pnpm dist` and launch the built `.app`. See [development.md](./development.md).
 
 3. Launch `Reck Connect Satellite.app`. On first launch you'll see the welcome flow — leave **Local** enabled (it's the default), and add a **Station** if you have one. You can run with just Local on a single Mac.
 

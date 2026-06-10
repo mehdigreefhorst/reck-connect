@@ -61,7 +61,7 @@ After login the LaunchAgent catches up automatically (`RunAtLoad` + `KeepAlive`)
 
 A reboot recovery command worth remembering for the SSH-once-it's-up phase: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/eu.verwey.reck-stationd.plist` will re-bootstrap an unloaded daemon without a full re-install.
 
-### macOS Accessibility / AppleEvents permissions for `mcp__computer-use__*` (issue #225)
+### macOS Accessibility / AppleEvents permissions for `mcp__computer-use__*`
 
 If a station pane uses `mcp__computer-use__*` (or any other tool that calls AX / AppleEvents APIs through Claude or an MCP server), macOS will gate the call on a TCC permission grant. **Grant Accessibility to `/usr/local/bin/reck-pane-launcher` — NOT to `/usr/local/bin/reck-stationd`.**
 
@@ -104,7 +104,7 @@ Run `v2/ops/install-satellite.sh` on your laptop. It:
 - Builds + installs `~/.local/bin/reck-stationd` (the daemon Satellite
   spawns for Local mode) by delegating to `install-local.sh`. Always
   runs on every install so a stale local binary can't outlive a
-  daemon-side feature change (e.g. issue #228 orphan auto-restore).
+  daemon-side feature change (e.g. orphan auto-restore).
 - Migrates legacy Electron userData (`layouts_v2`, `projectOrder`,
   `theme`, `claudeLaunchArgs`, `gaze.*`, `railWidth`) from older
   productName dirs (`~/Library/Application Support/reck-satellite/`)

@@ -3,9 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HoverFocusController } from "./hover-focus-controller";
 
 /**
- * Unit tests for `HoverFocusController`. Each test covers one gate from
- * the plan (see `notes/2026-04-23-hover-to-focus-plan/plan.md` §
- * "Suppression invariants").
+ * Unit tests for `HoverFocusController`. Each test covers one
+ * suppression-invariant gate of the hover-to-focus design.
  *
  * All tests run the controller with `dwellMs: 0` so `apply` fires
  * synchronously on a successful request. The dwell path itself is
