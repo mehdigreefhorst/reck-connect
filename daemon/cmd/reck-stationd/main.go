@@ -635,16 +635,28 @@ func parseDaemonMode(s string) (agent.DaemonMode, error) {
 	}
 }
 
-// daemonURLFromAddr converts a net.Listener Addr string (e.g. "[::]:7315"
-// or "127.0.0.1:7315") into an http:// URL the hook shims can reach on
-// loopback. We always use 127.0.0.1 because the daemon binds to loopback
-// in local mode and the shims run on the same host.
+// daemonURLFromAddr converts a net.Listener Addr string (e.g. "[::]:7315",
+// "0.0.0.0:7315", "127.0.0.1:7315", or a Tailscale/VPN IP like
+// "100.64.0.1:7315") into an http:// URL the hook shims can reach.
+//
+// Hosts are mapped per-case:
+//   - empty / "0.0.0.0" / "::" / "[::]" (wildcard listeners) → "127.0.0.1"
+//     (loopback always works when the daemon binds to all interfaces).
+//   - any other explicit host (e.g. a Tailscale IP a station is bound to)
+//     → preserved as-is, because loopback would NOT be listening in that
+//     case and the hook shim's curl would get connection-refused. A Linux
+//     station bound to its Tailscale interface would otherwise silently
+//     drop every agent-event POST, leaving the stoplight stuck on gray.
 func daemonURLFromAddr(a string) string {
-	_, port, err := net.SplitHostPort(a)
+	host, port, err := net.SplitHostPort(a)
 	if err != nil {
 		return "http://127.0.0.1" + a
 	}
-	return "http://127.0.0.1:" + port
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // resolveProcComm returns the `comm` (command name) for the given pid via
