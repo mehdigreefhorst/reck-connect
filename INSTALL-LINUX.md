@@ -172,8 +172,11 @@ That's it — the station is live on the Pi.
 ```bash
 cd ~/src/reck-connect
 git pull                       # (or: git checkout main && git pull, once merged)
-./ops/install-station-linux.sh # rebuilds + reloads; token/config preserved
+./ops/install-station-linux.sh # rebuilds + restarts the daemon; token/config preserved
 ```
+
+> Re-running **restarts** `reck-stationd` to load the new binary, which drops any
+> live panes on the station. Run it when you're at a safe point.
 
 ## Uninstalling
 

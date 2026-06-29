@@ -123,12 +123,18 @@ if [[ "${RECK_SKIP_CLIPBOARD:-0}" != "1" ]]; then
   install -m 0644 "${REPO_ROOT}/ops/reck-xvfb.service" "${UNIT_DIR}/reck-xvfb.service"
 fi
 
-echo "==> systemctl --user daemon-reload + enable --now"
+echo "==> systemctl --user daemon-reload + (re)start"
 systemctl --user daemon-reload
 if [[ "${RECK_SKIP_CLIPBOARD:-0}" != "1" ]]; then
   systemctl --user enable --now reck-xvfb.service
 fi
-systemctl --user enable --now "${UNIT_NAME}"
+systemctl --user enable "${UNIT_NAME}"
+# Use restart, not `enable --now`: on a re-run/upgrade the service is
+# already active, and `enable --now` would NOT load the freshly built
+# binary or a changed unit (start is a no-op when already running, so the
+# daemon keeps the old, now-deleted inode). restart loads the new build
+# and also starts the service cleanly on a first install.
+systemctl --user restart "${UNIT_NAME}"
 
 echo "==> ensuring linger so service runs at boot without login"
 if ! loginctl show-user "${USER}" 2>/dev/null | grep -q '^Linger=yes'; then
