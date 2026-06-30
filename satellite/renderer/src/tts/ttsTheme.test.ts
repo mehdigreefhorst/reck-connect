@@ -7,19 +7,17 @@ import {
 } from "./ttsTheme";
 
 describe("TTS theme tokens", () => {
-  // Per-mode highlight tuned for the typical terminal foreground:
-  //   light mode → dark text on a LIGHT amber  (#fde68a)
-  //   dark  mode → light text on a DARKER amber (#696241)
-  // Both are SOLID hex (no rgba) so the rendered colour is exactly
-  // what's specified — no alpha-blending against the cell background.
+  // Per-mode highlight DEFAULTS (solid hex):
+  //   light mode → warm amber  rgb(255, 201, 107) = #ffc96b
+  //   dark  mode → pale yellow rgb(255, 241, 168) = #fff1a8
 
-  it("light-mode palette uses the light amber highlight", () => {
-    expect(TTS_THEME_LIGHT.backgroundColor).toBe("#fde68a");
+  it("light-mode palette uses the warm-amber highlight default", () => {
+    expect(TTS_THEME_LIGHT.backgroundColor).toBe("#ffc96b");
     expect(TTS_THEME_LIGHT.controlAccent).toBeDefined();
   });
 
-  it("dark-mode palette uses the dark amber highlight", () => {
-    expect(TTS_THEME_DARK.backgroundColor).toBe("#696241");
+  it("dark-mode palette uses the pale-yellow highlight default", () => {
+    expect(TTS_THEME_DARK.backgroundColor).toBe("#fff1a8");
     expect(TTS_THEME_DARK.controlAccent).toBeDefined();
   });
 

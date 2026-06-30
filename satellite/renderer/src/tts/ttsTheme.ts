@@ -7,17 +7,15 @@ export interface TtsTheme {
   controlText: string;
 }
 
-// Per-mode highlight tuned for the typical terminal foreground colour:
-//   light mode → dark text under a LIGHT amber  (#fde68a)
-//   dark  mode → light text under a DARKER amber (#696241,
-//                  the pre-blended result of
-//                  rgba(253, 230, 138, 0.45) over black)
-// Solid hex; the surfaces paint them as a translucent overlay so the word
-// reads through the tint in both themes. These are the DEFAULTS — the user
-// can override each via the settings colour pickers (see ttsSettings.ts),
-// which thread chosen colours into resolveTtsTheme() below.
-export const TTS_HIGHLIGHT_BG_LIGHT = "#fde68a";
-export const TTS_HIGHLIGHT_BG_DARK = "#696241";
+// Per-mode highlight DEFAULTS (solid hex):
+//   light mode → warm amber  rgb(255, 201, 107)
+//   dark  mode → pale yellow rgb(255, 241, 168)
+// The surfaces paint them as a translucent overlay so the word reads
+// through the tint in both themes. The user can override each via the
+// settings colour pickers (see ttsSettings.ts), which thread the chosen
+// colours into resolveTtsTheme() below.
+export const TTS_HIGHLIGHT_BG_LIGHT = "#ffc96b"; // rgb(255, 201, 107)
+export const TTS_HIGHLIGHT_BG_DARK = "#fff1a8"; // rgb(255, 241, 168)
 
 /** User-chosen highlight colours per mode; either may be absent (→ default). */
 export interface HighlightColorOverrides {
