@@ -7,6 +7,7 @@
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "concurrently -k -n vite,electron \"vite --port 5173\" \"wait-on http://localhost:5173 && tsc -p tsconfig.main.json && NODE_ENV=development electron dist/main/main.js\"",
+    "dev:bg": "concurrently -k -n vite,main \"vite --port 5173\" \"tsc -w -p tsconfig.main.json --preserveWatchOutput\"",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
     "build": "pnpm build:main && pnpm build:renderer",
