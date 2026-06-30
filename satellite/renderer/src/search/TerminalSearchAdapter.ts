@@ -310,7 +310,10 @@ export class TerminalSearchAdapter implements SearchSurfaceAdapter {
     el.style.height = "100%";
     el.style.pointerEvents = "none";
     el.style.overflow = "hidden";
-    el.style.zIndex = "4";
+    // Match the TTS highlight overlay's layer (proven to paint above the
+    // WebGL text canvas in `.xterm-screen`). Translucent rects let the cell
+    // text read through.
+    el.style.zIndex = "5";
     this.overlayParent.appendChild(el);
     this.overlay = el;
     return el;
