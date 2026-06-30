@@ -357,7 +357,26 @@ export class TerminalPane {
         /* fallback to canvas */
       }
     }
-    installOscFilter(this.term.parser);
+    installOscFilter(this.term.parser, {
+      // Route OSC 52 copy-on-select through Electron's main-process clipboard
+      // (via the preload bridge) when available — it isn't focus-gated like
+      // the renderer's navigator.clipboard. Falls back to navigator.clipboard
+      // outside Electron (web/PWA client).
+      writeClipboard: (text) => {
+        const bridge = (
+          globalThis as {
+            reckAPI?: { clipboard?: { write?: (t: string) => unknown } };
+          }
+        ).reckAPI?.clipboard?.write;
+        if (bridge) {
+          void bridge(text);
+          return;
+        }
+        if (typeof navigator !== "undefined" && navigator.clipboard) {
+          void navigator.clipboard.writeText(text).catch(() => {});
+        }
+      },
+    });
 
     // Shift+Enter → ESC + CR (0x1B 0x0D). Same byte sequence Claude
     // Code's `/terminal-setup` programs into VS Code/iTerm2 (verified
