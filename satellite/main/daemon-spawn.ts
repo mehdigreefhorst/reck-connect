@@ -29,17 +29,41 @@ let cachedLoginPath: string | null = null;
 function resolveLoginPath(): string {
   if (cachedLoginPath !== null) return cachedLoginPath;
   const shell = process.env.SHELL || "/bin/zsh";
+  let loginPath: string;
   try {
     const out = execSync(`${shell} -l -c 'echo "$PATH"'`, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
     }).trim();
-    cachedLoginPath = out || process.env.PATH || "";
+    loginPath = out || process.env.PATH || "";
   } catch {
-    cachedLoginPath = process.env.PATH || "";
+    loginPath = process.env.PATH || "";
   }
+  cachedLoginPath = ensureSpawnPath(loginPath, homedir());
   return cachedLoginPath;
+}
+
+/**
+ * Append well-known per-user binary dirs that a NON-INTERACTIVE login
+ * shell misses. `zsh -l -c` reads ~/.zprofile but NOT ~/.zshrc, and the
+ * native claude installer drops its binary in ~/.local/bin with the
+ * PATH export in ~/.zshrc — so a Finder-launched Satellite spawned the
+ * daemon without ~/.local/bin and the daemon os.Exit(1)'d on `resolve
+ * claude binary failed` (daemon/cmd/reck-stationd/main.go:220).
+ * Append-only: existing entries keep their order and win lookup.
+ */
+export function ensureSpawnPath(loginPath: string, home: string): string {
+  const wellKnown = [`${home}/.local/bin`, "/opt/homebrew/bin"];
+  const entries = loginPath.split(":").filter((e) => e.length > 0);
+  const present = new Set(entries);
+  for (const dir of wellKnown) {
+    if (!present.has(dir)) {
+      entries.push(dir);
+      present.add(dir);
+    }
+  }
+  return entries.join(":");
 }
 
 /**

@@ -25,6 +25,7 @@ const {
   stopDaemon,
   daemonStatus,
   localDaemonToken,
+  ensureSpawnPath,
   _resetDaemonSpawnForTests,
   _setHermeticKillDefaultsForTests,
 } = await import("./daemon-spawn");
@@ -436,6 +437,50 @@ describe("startDaemon('local') — port-bind failure surfacing", () => {
     expect(result.code).toBe("EUNKNOWN");
     expect(result.reason).toMatch(/resolve claude binary failed/);
     expect(result.reason).not.toMatch(/daemon token loaded/);
+  });
+});
+
+describe("ensureSpawnPath", () => {
+  // The daemon os.Exit(1)s when `claude` isn't resolvable
+  // (daemon/cmd/reck-stationd/main.go:220). The native claude installer
+  // puts the binary in ~/.local/bin and exports PATH in ~/.zshrc —
+  // which a NON-INTERACTIVE login shell (`zsh -l -c`, what
+  // resolveLoginPath runs) never reads. A Finder-launched Satellite
+  // therefore spawned the daemon without ~/.local/bin and the daemon
+  // died on startup.
+  it("appends ~/.local/bin when the login PATH lacks it", () => {
+    const out = ensureSpawnPath("/usr/bin:/bin", "/Users/u");
+    expect(out.split(":")).toContain("/Users/u/.local/bin");
+    // Existing entries stay first — we only append, never reorder.
+    expect(out.startsWith("/usr/bin:/bin")).toBe(true);
+  });
+
+  it("appends /opt/homebrew/bin when missing", () => {
+    const out = ensureSpawnPath("/usr/bin", "/Users/u");
+    expect(out.split(":")).toContain("/opt/homebrew/bin");
+  });
+
+  it("does not duplicate entries that are already present", () => {
+    const input = "/Users/u/.local/bin:/opt/homebrew/bin:/usr/bin";
+    const out = ensureSpawnPath(input, "/Users/u");
+    const entries = out.split(":");
+    expect(entries.filter((e) => e === "/Users/u/.local/bin")).toHaveLength(1);
+    expect(entries.filter((e) => e === "/opt/homebrew/bin")).toHaveLength(1);
+  });
+
+  it("handles an empty login PATH", () => {
+    const out = ensureSpawnPath("", "/Users/u");
+    expect(out.split(":")).toContain("/Users/u/.local/bin");
+    expect(out.startsWith(":")).toBe(false);
+  });
+
+  it("the spawned daemon env PATH always contains ~/.local/bin (integration)", async () => {
+    const spawn = makeSpawnRecorder();
+    const probe = probeAlwaysTrue();
+    await startDaemon("local", 7315, { spawn: spawn.fn, probePort: probe });
+    const envPath = spawn.calls[0].env.PATH ?? "";
+    const home = (await import("node:os")).homedir();
+    expect(envPath.split(":")).toContain(`${home}/.local/bin`);
   });
 });
 
