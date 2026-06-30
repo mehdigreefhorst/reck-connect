@@ -45,6 +45,12 @@ export interface SearchSurfaceAdapter {
    *  is cleared. */
   clearHighlights(): void;
 
+  /** Fractional vertical position (0..1) of a flat-text offset within the
+   *  full content, used to place the overlay scrollbar's match ticks.
+   *  Optional — returns null when the position can't be determined (e.g.
+   *  no layout yet). */
+  fractionForOffset?(offset: number): number | null;
+
   /** Tear down decorations / overlays / listeners. */
   dispose(): void;
 }

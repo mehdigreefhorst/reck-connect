@@ -204,6 +204,15 @@ export class SearchController {
   }
 
   private publishMatches(): void {
-    this.opts.onMatchesChanged?.([]); // fractions filled in Phase 6
+    if (!this.opts.onMatchesChanged) return;
+    const surface = this.currentSurface;
+    const fractions: number[] = [];
+    if (surface?.fractionForOffset) {
+      for (const m of this.matches) {
+        const f = surface.fractionForOffset(m.start);
+        if (f !== null && f !== undefined) fractions.push(f);
+      }
+    }
+    this.opts.onMatchesChanged(fractions);
   }
 }

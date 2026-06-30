@@ -139,6 +139,15 @@ export class TerminalSearchAdapter implements SearchSurfaceAdapter {
     this.disposeDecorations();
   }
 
+  fractionForOffset(offset: number): number | null {
+    if (this.disposed) return null;
+    if (this.rowSpans.length === 0) this.getText();
+    const loc = this.locate(offset);
+    if (!loc) return null;
+    const len = this.term.buffer.active.length;
+    return len > 0 ? loc.row / len : 0;
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposeDecorations();

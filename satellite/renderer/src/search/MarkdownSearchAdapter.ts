@@ -108,6 +108,23 @@ export class MarkdownSearchAdapter implements SearchSurfaceAdapter {
     }
   }
 
+  fractionForOffset(offset: number): number | null {
+    if (this.disposed) return null;
+    if (!this.indexBuilt) this.buildIndex();
+    const range = this.rangeFor({ start: offset, end: offset });
+    if (!range) return null;
+    try {
+      const rect = range.getBoundingClientRect();
+      const bodyRect = this.body.getBoundingClientRect();
+      const scrollHeight = this.body.scrollHeight;
+      if (scrollHeight <= 0) return null;
+      const contentTop = rect.top - bodyRect.top + this.body.scrollTop;
+      return Math.max(0, Math.min(1, contentTop / scrollHeight));
+    } catch {
+      return null;
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     const reg = highlightRegistry();

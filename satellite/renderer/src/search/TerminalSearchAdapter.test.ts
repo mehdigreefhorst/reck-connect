@@ -121,6 +121,16 @@ describe("TerminalSearchAdapter", () => {
     expect(f.getScrollLine()).toBe(2);
   });
 
+  it("fractionForOffset maps a match to its row fraction", () => {
+    const f = fakeTerm(ROWS, { rows: 3, baseY: 2, cursorY: 2 });
+    const a = new TerminalSearchAdapter({ container, term: f.term });
+    a.getText();
+    // offset 20 -> row 3; length 5 -> 0.6
+    expect(a.fractionForOffset(20)).toBeCloseTo(0.6, 5);
+    // offset 0 -> row 0 -> 0
+    expect(a.fractionForOffset(0)).toBe(0);
+  });
+
   it("is a no-op after dispose", () => {
     const f = fakeTerm(ROWS, { rows: 3, baseY: 2, cursorY: 2 });
     const a = new TerminalSearchAdapter({ container, term: f.term });

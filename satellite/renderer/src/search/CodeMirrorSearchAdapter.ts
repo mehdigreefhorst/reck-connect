@@ -111,6 +111,19 @@ export class CodeMirrorSearchAdapter implements SearchSurfaceAdapter {
     }
   }
 
+  fractionForOffset(offset: number): number | null {
+    if (this.disposed || this.isViewDestroyed()) return null;
+    try {
+      const docLen = this.view.state.doc.length;
+      const pos = Math.max(0, Math.min(offset, docLen));
+      const block = this.view.lineBlockAt(pos);
+      const height = this.view.contentHeight;
+      return height > 0 ? Math.max(0, Math.min(1, block.top / height)) : 0;
+    } catch {
+      return null;
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;

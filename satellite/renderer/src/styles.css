@@ -3321,3 +3321,58 @@ textarea.file-viewer-merge-pane {
   background-color: rgba(212, 104, 58, 0.6);
   color: inherit;
 }
+
+/* ── Reusable auto-hiding overlay scrollbar ───────────────────────────
+   Mounted into a non-scrolling positioned host (the pane wrapper or the
+   viewer root). Fades in on scroll/wheel and out after an idle delay
+   (the .visible class is toggled from JS; the opacity transition does the
+   fade). Light, Reck-orange thumb. Match ticks are painted in the ticks
+   layer by the search controller. */
+.reck-scrollbar {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  bottom: 2px;
+  width: 10px;
+  z-index: 25;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.45s var(--ease-smooth, ease);
+}
+.reck-scrollbar.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.reck-scrollbar--disabled { display: none; }
+
+.reck-scrollbar-thumb {
+  position: absolute;
+  right: 0;
+  width: 8px;
+  min-height: 24px;
+  border-radius: 6px;
+  background: var(--claude-orange-glow, #e8875c);
+  opacity: 0.6;
+  cursor: grab;
+  transition: opacity 0.15s ease;
+}
+.reck-scrollbar-thumb:hover { opacity: 0.85; }
+.reck-scrollbar--dragging .reck-scrollbar-thumb {
+  opacity: 0.95;
+  cursor: grabbing;
+}
+
+.reck-scrollbar-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.reck-scrollbar-tick {
+  position: absolute;
+  right: 1px;
+  width: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--claude-orange, #d4683a);
+  transform: translateY(-1px);
+}

@@ -177,6 +177,26 @@ describe("SearchController — options re-run search", () => {
   });
 });
 
+describe("SearchController — match-tick fractions", () => {
+  it("emits a fraction per match via onMatchesChanged", () => {
+    const surfaceObj = fakeSurface("foo bar foo");
+    const withFraction = {
+      ...surfaceObj,
+      fractionForOffset: (offset: number) => offset / 100,
+    };
+    const fractionCalls: number[][] = [];
+    const c = new SearchController({
+      barFactory: bars.factory,
+      getActiveSurface: () => withFraction as unknown as SearchSurfaceAdapter,
+      debounceMs: 0,
+      onMatchesChanged: (f) => fractionCalls.push(f),
+    });
+    c.open();
+    bars.cb().onQueryChange("foo"); // matches at 0 and 8
+    expect(fractionCalls.at(-1)).toEqual([0, 0.08]);
+  });
+});
+
 describe("SearchController — dispose", () => {
   it("disposes the bar and clears highlights, idempotently", () => {
     controller.open();
