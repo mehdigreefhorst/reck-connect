@@ -278,9 +278,11 @@ export function probePort(port: number, timeoutMs = 250): Promise<boolean> {
 export interface StartDaemonDeps {
   spawn?: typeof spawn;
   probePort?: (port: number, timeoutMs?: number) => Promise<boolean>;
-  /** Override the wait-for-listen budget. Default 3 s is plenty for a
-   * cold-start daemon on a developer machine; the tests use a shorter
-   * value to keep the suite fast. */
+  /** Override the wait-for-listen budget. Default 8 s: a freshly
+   * rebuilt ad-hoc-signed binary triggers a one-time macOS Gatekeeper
+   * (syspolicyd) assessment between posix_spawn and Go's main() that
+   * can exceed the old 3 s budget — warm binds take ~100 ms. The tests
+   * use a shorter value to keep the suite fast. */
   liveProbeTimeoutMs?: number;
   /** Override the per-attempt TCP probe timeout. Default 250 ms. */
   liveProbeStepMs?: number;
@@ -363,7 +365,7 @@ export async function startDaemon(
 
   const spawnFn = deps.spawn ?? spawn;
   const probeFn = deps.probePort ?? probePort;
-  const probeTimeoutMs = deps.liveProbeTimeoutMs ?? 3000;
+  const probeTimeoutMs = deps.liveProbeTimeoutMs ?? 8000;
   const probeStepMs = deps.liveProbeStepMs ?? 250;
 
   const child = spawnFn(
@@ -391,17 +393,24 @@ export async function startDaemon(
       },
     },
   );
-  // Capture stderr early so port-bind failure is surfaced as a typed
-  // code rather than a generic "spawn ok then nothing happens".
-  let stderrBuf = "";
+  // Capture BOTH streams for diagnostics. The daemon's slog JSONHandler
+  // writes to os.Stdout (daemon/cmd/reck-stationd/main.go:49), so the
+  // actionable failure reason — including the `listen failed` bind
+  // error at main.go:402 — lands on STDOUT, not stderr. Stderr still
+  // carries the top-level fatal path (`fmt.Fprintf` at main.go:59), so
+  // both feed the same diagnostic buffer.
+  let diagBuf = "";
+  const onStdoutCapture = (d: Buffer | string) => {
+    const s = d.toString();
+    diagBuf += s;
+    console.log(`[reck-stationd] ${s.trimEnd()}`);
+  };
   const onStderrCapture = (d: Buffer | string) => {
     const s = d.toString();
-    stderrBuf += s;
+    diagBuf += s;
     console.error(`[reck-stationd] ${s.trimEnd()}`);
   };
-  child.stdout?.on("data", (d) =>
-    console.log(`[reck-stationd] ${d.toString().trimEnd()}`),
-  );
+  child.stdout?.on("data", onStdoutCapture);
   child.stderr?.on("data", onStderrCapture);
   child.on("exit", (code, signal) => {
     lastExits.set("local", { code, signal });
@@ -447,24 +456,39 @@ export async function startDaemon(
   localToken = null;
 
   // EADDRINUSE detection: the daemon's `net.Listen` failure path logs
-  // the err string verbatim (see daemon/cmd/reck-stationd/main.go:258
-  // — `logger.Error("listen failed", "err", err, ...)`). Match the
-  // canonical Go error substring; if we don't see it but the child
-  // exited early, return EUNKNOWN with the captured stderr so the
-  // renderer / user can still diagnose.
-  const stderrLower = stderrBuf.toLowerCase();
-  if (stderrLower.includes("address already in use")) {
+  // the err string verbatim via slog to STDOUT (JSONHandler at
+  // daemon/cmd/reck-stationd/main.go:49; `logger.Error("listen
+  // failed", "err", err, ...)` at main.go:402). Match the canonical Go
+  // error substring across the combined capture; if we don't see it
+  // but the child never bound, return EUNKNOWN carrying the daemon's
+  // own ERROR line so the renderer / user can still diagnose.
+  const diagLower = diagBuf.toLowerCase();
+  if (diagLower.includes("address already in use")) {
     return {
       ok: false,
       code: "EADDRINUSE",
       reason: `Port ${port} is already in use by another process. Stop it (or pick a different port in Settings) and try again.`,
     };
   }
+  // Prefer the daemon's own failure line over a raw tail dump — it's a
+  // single JSON log line with the exact errno text. Any ERROR-level
+  // slog line qualifies (bind failures, `resolve claude binary failed`
+  // + os.Exit(1) at main.go:220, …); fall back to the tail of whatever
+  // we captured (either stream), then to the bare timeout message.
+  const errorLine = diagBuf
+    .split("\n")
+    .filter(
+      (l) =>
+        l.includes('"level":"ERROR"') ||
+        l.toLowerCase().includes("listen failed"),
+    )
+    .pop();
+  const detail = (errorLine ?? diagBuf).trim().slice(-500);
   return {
     ok: false,
     code: "EUNKNOWN",
-    reason: stderrBuf.trim()
-      ? `local daemon failed to listen within ${probeTimeoutMs} ms: ${stderrBuf.trim().slice(-500)}`
+    reason: detail
+      ? `local daemon failed to listen within ${probeTimeoutMs} ms: ${detail}`
       : `local daemon failed to listen within ${probeTimeoutMs} ms`,
   };
 }
