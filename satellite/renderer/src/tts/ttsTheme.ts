@@ -8,13 +8,12 @@ export interface TtsTheme {
 }
 
 // Per-mode highlight tuned for the typical terminal foreground colour:
-//   light mode → dark text on a LIGHT amber  (#fde68a)
-//   dark  mode → light text on a DARKER amber (#696241,
+//   light mode → dark text under a LIGHT amber  (#fde68a)
+//   dark  mode → light text under a DARKER amber (#696241,
 //                  the pre-blended result of
 //                  rgba(253, 230, 138, 0.45) over black)
-// Both are SOLID hex — no alpha-blending against the cell background,
-// so the rendered colour is exactly what's specified. With
-// XtermHighlighter's layer:"bottom" the cell text reads on top.
+// Solid hex; XtermHighlighter paints them as a translucent DOM overlay
+// (OVERLAY_OPACITY) so the word reads through the tint in both themes.
 const TTS_HIGHLIGHT_BG_LIGHT = "#fde68a";
 const TTS_HIGHLIGHT_BG_DARK = "#696241";
 
