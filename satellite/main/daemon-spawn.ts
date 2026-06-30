@@ -304,7 +304,11 @@ export interface StartDaemonDeps {
 
 export type StartDaemonResult =
   | { ok: true }
-  | { ok: false; reason: string; code?: "EADDRINUSE" | "ENOENT" | "EUNKNOWN" };
+  | {
+      ok: false;
+      reason: string;
+      code?: "EADDRINUSE" | "ENOENT" | "ESPAWN" | "EUNKNOWN";
+    };
 
 /**
  * Start the daemon for the given host.
@@ -422,6 +426,17 @@ export async function startDaemon(
       localToken = null;
     }
   });
+  // posix_spawn-level failure (EACCES, exec-format error, Gatekeeper
+  // killing the binary before main). Node surfaces these as an 'error'
+  // event with NO 'exit' and exitCode stuck at null — without a
+  // listener the EventEmitter throw would crash the main process, and
+  // the probe loop below would burn its full budget on a child that
+  // never existed. Capture it; the loop breaks on it and the
+  // classification below returns a typed ESPAWN.
+  let spawnError: Error | null = null;
+  child.on("error", (err) => {
+    spawnError = err;
+  });
   children.set("local", child);
   // Stash the token *before* the probe so a fast-listening daemon can't
   // race the renderer fetching it before we record. The probe outcome
@@ -430,10 +445,11 @@ export async function startDaemon(
 
   // Wait for the daemon to actually bind. Poll TCP every `probeStepMs`
   // until success or budget exhausted, OR until the child exits early
-  // (port collision typically logs to stderr then exits non-zero).
+  // (port collision typically logs to stderr then exits non-zero), OR
+  // until a spawn-level 'error' fires.
   const deadline = Date.now() + probeTimeoutMs;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.killed) break;
+    if (spawnError !== null || child.exitCode !== null || child.killed) break;
     if (await probeFn(port, probeStepMs)) {
       return { ok: true };
     }
@@ -454,6 +470,17 @@ export async function startDaemon(
     children.delete("local");
   }
   localToken = null;
+
+  // Spawn-level error beats stream classification: there was never a
+  // process to produce diagnostics, so the errno from the 'error'
+  // event IS the reason.
+  if (spawnError !== null) {
+    return {
+      ok: false,
+      code: "ESPAWN",
+      reason: `local daemon failed to spawn: ${(spawnError as Error).message}`,
+    };
+  }
 
   // EADDRINUSE detection: the daemon's `net.Listen` failure path logs
   // the err string verbatim via slog to STDOUT (JSONHandler at

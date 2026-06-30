@@ -47,6 +47,11 @@ interface FakeChildOptions {
   exitCode?: number;
   /** Milliseconds after spawn before the fake child auto-exits. */
   exitAfterMs?: number;
+  /** Emit this Error as the child's 'error' event right after spawn.
+   * Models posix_spawn-level failures (EACCES, exec-format, Gatekeeper
+   * SIGKILL-before-main): NO exit event, NO output, exitCode stays
+   * null. */
+  errorEvent?: Error;
 }
 
 class FakeChild extends EventEmitter {
@@ -65,6 +70,9 @@ class FakeChild extends EventEmitter {
     }
     if (opts.stdout) {
       queueMicrotask(() => this.stdout.emit("data", Buffer.from(opts.stdout!)));
+    }
+    if (opts.errorEvent) {
+      queueMicrotask(() => this.emit("error", opts.errorEvent!));
     }
     if (opts.exitCode !== undefined) {
       const ms = opts.exitAfterMs ?? 0;
@@ -450,6 +458,37 @@ describe("startDaemon('local') — cold-start probe budget", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/within 8000 ms/);
+  });
+});
+
+describe("startDaemon('local') — spawn-level errors", () => {
+  it("returns { ok:false, code:'ESPAWN' } without burning the probe budget when the child emits 'error'", async () => {
+    // posix_spawn-level failures (EACCES, exec-format, Gatekeeper
+    // SIGKILL-before-main) surface as a child 'error' event: no exit,
+    // no output, exitCode stays null. Previously unhandled, so the
+    // probe loop burned its full budget and the user saw the bare
+    // EUNKNOWN timeout — and the unhandled 'error' event could crash
+    // the main process.
+    const spawn = makeSpawnRecorder({ errorEvent: new Error("spawn EACCES") });
+    const probe = probeAlwaysFalse();
+    const startedAt = Date.now();
+    const result = await startDaemon("local", 7315, {
+      spawn: spawn.fn,
+      probePort: probe,
+      // Deliberately generous: the implementation must resolve from the
+      // 'error' event, NOT from this deadline expiring.
+      liveProbeTimeoutMs: 4000,
+      liveProbeStepMs: 25,
+    });
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("ESPAWN");
+    expect(result.reason).toMatch(/EACCES/);
+    // Same invariant as the port-bind failure: no token / no child
+    // left dangling for the renderer to trust.
+    expect(localDaemonToken()).toBeNull();
+    expect(daemonStatus("local").running).toBe(false);
   });
 });
 
