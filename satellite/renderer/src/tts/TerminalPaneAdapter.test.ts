@@ -11,8 +11,6 @@ import type { TtsBoundary } from "./TtsEngine";
 // object that carries every field both contracts need.
 type FakeTerm = ResolverTerminal & HighlighterTerminal & {
   registerMarkerCalls: number;
-  registerDecorationCalls: number;
-  lastDecorationOpts: unknown;
 };
 
 function fakeTerm(opts: {
@@ -24,6 +22,7 @@ function fakeTerm(opts: {
 }): FakeTerm {
   const baseY = opts.baseY ?? 0;
   const cursorY = opts.cursorY ?? 0;
+  const noop = () => ({ dispose() {} });
   const term: FakeTerm = {
     cols: 80,
     rows: 24,
@@ -46,19 +45,21 @@ function fakeTerm(opts: {
       },
     },
     registerMarkerCalls: 0,
-    registerDecorationCalls: 0,
-    lastDecorationOpts: null,
-    registerMarker(_offset?: number) {
+    registerMarker(offset?: number) {
       this.registerMarkerCalls++;
-      const m = { disposed: false, dispose() { this.disposed = true; } };
+      const m = {
+        line: baseY + cursorY + (offset ?? 0),
+        isDisposed: false,
+        dispose() {
+          this.isDisposed = true;
+        },
+      };
       return m;
     },
-    registerDecoration(o) {
-      this.registerDecorationCalls++;
-      this.lastDecorationOpts = o;
-      const d = { disposed: false, dispose() { this.disposed = true; } };
-      return d;
-    },
+    // The overlay highlighter subscribes to these on construction.
+    onRender: noop,
+    onScroll: noop,
+    onResize: noop,
   };
   return term;
 }
@@ -158,7 +159,7 @@ describe("TerminalPaneAdapter", () => {
     expect(chunk.rangeMap).toEqual([]);
   });
 
-  it("highlightBoundary delegates to XtermHighlighter (registers marker + decoration)", () => {
+  it("highlightBoundary delegates to XtermHighlighter (anchors a marker + paints an overlay)", () => {
     const term = fakeTerm({ lines: ["alpha"] });
     const adapter = new TerminalPaneAdapter({
       term,
@@ -173,7 +174,14 @@ describe("TerminalPaneAdapter", () => {
     };
     adapter.highlightBoundary(boundary);
     expect(term.registerMarkerCalls).toBe(1);
-    expect(term.registerDecorationCalls).toBe(1);
+    // line 0, viewportY 0 → on screen → a visible overlay is painted.
+    const overlay = document.querySelector<HTMLDivElement>(".reck-tts-highlight");
+    expect(overlay).not.toBeNull();
+    expect(overlay!.style.display).toBe("block");
+    // Introspection reflects the live boundary (not a silent empty array).
+    expect(adapter.__highlights()).toEqual([boundary]);
+    adapter.clearHighlight();
+    expect(adapter.__highlights()).toEqual([]);
   });
 
   it("clearHighlight disposes the active decoration", () => {

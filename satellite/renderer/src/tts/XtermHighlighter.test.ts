@@ -1,51 +1,86 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   XtermHighlighter,
   type HighlighterTerminal,
+  type HighlightTheme,
 } from "./XtermHighlighter";
+
+// A fireable event emitter standing in for xterm's onRender/onScroll/onResize.
+function makeEmitter() {
+  const listeners = new Set<() => void>();
+  return {
+    on(cb: () => void) {
+      listeners.add(cb);
+      return { dispose: () => listeners.delete(cb) };
+    },
+    fire() {
+      for (const cb of [...listeners]) cb();
+    },
+    size() {
+      return listeners.size;
+    },
+  };
+}
 
 interface FakeMarker {
   id: number;
-  line: number; // absolute line (for assertions)
-  cursorYOffset: number;
+  _line: number;
   isDisposed: boolean;
+  readonly line: number;
   dispose(): void;
 }
 
-interface FakeDecoration {
-  id: number;
-  marker: FakeMarker;
-  x: number;
-  width: number;
-  backgroundColor: string;
-  layer: string | undefined;
-  isDisposed: boolean;
-  dispose(): void;
-}
-
-function fakeTerm(opts: { baseY?: number; cursorY?: number } = {}) {
-  let markerSeq = 0;
-  let decoSeq = 0;
+function fakeTerm(
+  init: Partial<{
+    baseY: number;
+    cursorY: number;
+    viewportY: number;
+    cols: number;
+    rows: number;
+  }> = {},
+) {
+  const state = {
+    baseY: init.baseY ?? 100,
+    cursorY: init.cursorY ?? 5,
+    viewportY: init.viewportY ?? 100,
+    cols: init.cols ?? 80,
+    rows: init.rows ?? 24,
+  };
+  const render = makeEmitter();
+  const scroll = makeEmitter();
+  const resize = makeEmitter();
   const markers: FakeMarker[] = [];
-  const decorations: FakeDecoration[] = [];
-
-  const baseY = opts.baseY ?? 0;
-  const cursorY = opts.cursorY ?? 0;
-  const cursorAbs = baseY + cursorY;
+  let markerSeq = 0;
+  const cursorAbs = () => state.baseY + state.cursorY;
 
   const term: HighlighterTerminal = {
+    get cols() {
+      return state.cols;
+    },
+    get rows() {
+      return state.rows;
+    },
     buffer: {
       active: {
-        baseY,
-        cursorY,
+        get baseY() {
+          return state.baseY;
+        },
+        get cursorY() {
+          return state.cursorY;
+        },
+        get viewportY() {
+          return state.viewportY;
+        },
       },
     },
     registerMarker(offset = 0) {
       const m: FakeMarker = {
         id: ++markerSeq,
-        cursorYOffset: offset,
-        line: cursorAbs + offset,
+        _line: cursorAbs() + offset,
         isDisposed: false,
+        get line() {
+          return this.isDisposed ? -1 : this._line;
+        },
         dispose() {
           this.isDisposed = true;
         },
@@ -53,169 +88,234 @@ function fakeTerm(opts: { baseY?: number; cursorY?: number } = {}) {
       markers.push(m);
       return m;
     },
-    registerDecoration(opts) {
-      const d: FakeDecoration = {
-        id: ++decoSeq,
-        marker: opts.marker as FakeMarker,
-        x: opts.x ?? 0,
-        width: opts.width ?? 1,
-        backgroundColor: opts.backgroundColor ?? "",
-        layer: opts.layer,
-        isDisposed: false,
-        dispose() {
-          this.isDisposed = true;
-        },
-      };
-      decorations.push(d);
-      return d;
-    },
+    onRender: render.on,
+    onScroll: scroll.on,
+    onResize: resize.on,
   };
-  return { term, markers, decorations };
+
+  return {
+    term,
+    state,
+    markers,
+    fireRender: () => render.fire(),
+    fireScroll: () => scroll.fire(),
+    fireResize: () => resize.fire(),
+    renderListeners: () => render.size(),
+    scrollListeners: () => scroll.size(),
+  };
 }
 
-describe("XtermHighlighter.highlight", () => {
-  let env: ReturnType<typeof fakeTerm>;
-  let h: XtermHighlighter;
+function setup(
+  init?: Parameters<typeof fakeTerm>[0],
+  theme: HighlightTheme = { backgroundColor: "rgb(1, 2, 3)" },
+) {
+  const env = fakeTerm(init);
+  const parent = document.createElement("div");
+  document.body.appendChild(parent);
+  // Fixed cell metrics, mutable so resize can be simulated.
+  const cell = { width: 8, height: 16 };
+  let currentTheme = theme;
+  const h = new XtermHighlighter(env.term, () => currentTheme, {
+    overlayParent: parent,
+    measureCell: () => cell,
+  });
+  const overlay = () =>
+    parent.querySelector<HTMLDivElement>(".reck-tts-highlight");
+  return {
+    ...env,
+    h,
+    parent,
+    cell,
+    overlay,
+    setTheme: (t: HighlightTheme) => {
+      currentTheme = t;
+    },
+  };
+}
 
+const B = (line: number, col: number, len: number) => ({
+  line,
+  col,
+  len,
+  word: "x".repeat(len),
+  charIndex: 0,
+});
+
+describe("XtermHighlighter.highlight — overlay placement", () => {
+  let s: ReturnType<typeof setup>;
   beforeEach(() => {
-    env = fakeTerm({ baseY: 100, cursorY: 5 }); // cursorAbs = 105
-    h = new XtermHighlighter(env.term, () => ({
-      backgroundColor: "#cfe7ff",
-    }));
+    s = setup({ baseY: 100, cursorY: 5, viewportY: 100 }); // cursorAbs 105
   });
-
   afterEach(() => {
-    h.dispose();
+    s.h.dispose();
+    s.parent.remove();
   });
 
-  it("registers a marker at the correct absolute line", () => {
-    h.highlight({
-      line: 102,
-      col: 6,
-      len: 4,
-      word: "beta",
-      charIndex: 6,
-    });
-
-    expect(env.markers).toHaveLength(1);
-    // cursorAbs=105, target line=102 → offset = 102 - 105 = -3
-    expect(env.markers[0].cursorYOffset).toBe(-3);
-    expect(env.markers[0].line).toBe(102);
+  it("creates a visible overlay positioned at the word", () => {
+    s.h.highlight(B(102, 6, 4)); // line 102 → screen row 2 (viewportY 100)
+    const el = s.overlay();
+    expect(el).not.toBeNull();
+    expect(el!.style.display).toBe("block");
+    expect(el!.style.top).toBe("32px"); // row 2 * 16
+    expect(el!.style.left).toBe("48px"); // col 6 * 8
+    expect(el!.style.width).toBe("32px"); // 4 cells * 8
+    expect(el!.style.height).toBe("16px");
+    expect(el!.style.backgroundColor).toBe("rgb(1, 2, 3)");
   });
 
-  it("registers a decoration with the correct x, width, and theme color", () => {
-    h.highlight({
-      line: 102,
-      col: 6,
-      len: 4,
-      word: "beta",
-      charIndex: 6,
-    });
-
-    expect(env.decorations).toHaveLength(1);
-    const d = env.decorations[0];
-    expect(d.x).toBe(6);
-    expect(d.width).toBe(4);
-    expect(d.backgroundColor).toBe("#cfe7ff");
-  });
-
-  it("registers the decoration on the BOTTOM layer (so the text reads on top of the highlight, not under it)", () => {
-    h.highlight({
-      line: 102,
-      col: 6,
-      len: 4,
-      word: "beta",
-      charIndex: 6,
-    });
-    expect(env.decorations[0].layer).toBe("bottom");
-  });
-
-  it("disposes the previous marker + decoration when highlighting a new word", () => {
-    h.highlight({ line: 102, col: 0, len: 5, word: "alpha", charIndex: 0 });
-    h.highlight({ line: 102, col: 6, len: 4, word: "beta", charIndex: 6 });
-
-    expect(env.markers[0].isDisposed).toBe(true);
-    expect(env.decorations[0].isDisposed).toBe(true);
-    expect(env.markers[1].isDisposed).toBe(false);
-    expect(env.decorations[1].isDisposed).toBe(false);
-  });
-
-  it("uses the latest theme on each highlight (theme can change live)", () => {
-    let bg = "#cfe7ff";
-    const h2 = new XtermHighlighter(env.term, () => ({ backgroundColor: bg }));
-
-    h2.highlight({ line: 100, col: 0, len: 1, word: "a", charIndex: 0 });
-    expect(env.decorations[0].backgroundColor).toBe("#cfe7ff");
-
-    bg = "rgba(74,166,255,0.28)";
-    h2.highlight({ line: 100, col: 1, len: 1, word: "b", charIndex: 1 });
-    expect(env.decorations[1].backgroundColor).toBe("rgba(74,166,255,0.28)");
-    h2.dispose();
+  it("anchors the marker at the word's absolute buffer line", () => {
+    s.h.highlight(B(102, 6, 4));
+    expect(s.markers).toHaveLength(1);
+    expect(s.markers[0].line).toBe(102); // cursorAbs 105 + offset(-3)
   });
 });
 
-describe("XtermHighlighter.clear", () => {
-  it("disposes the active decoration but the highlighter remains usable", () => {
-    const env = fakeTerm();
-    const h = new XtermHighlighter(env.term, () => ({
-      backgroundColor: "#cfe7ff",
-    }));
-
-    h.highlight({ line: 0, col: 0, len: 5, word: "alpha", charIndex: 0 });
-    h.clear();
-    expect(env.decorations[0].isDisposed).toBe(true);
-    expect(env.markers[0].isDisposed).toBe(true);
-
-    h.highlight({ line: 0, col: 6, len: 4, word: "beta", charIndex: 6 });
-    expect(env.decorations).toHaveLength(2);
-    expect(env.decorations[1].isDisposed).toBe(false);
-    h.dispose();
+describe("XtermHighlighter — scroll / render / resize tracking", () => {
+  let s: ReturnType<typeof setup>;
+  beforeEach(() => {
+    s = setup({ baseY: 100, cursorY: 5, viewportY: 100 });
+  });
+  afterEach(() => {
+    s.h.dispose();
+    s.parent.remove();
   });
 
-  it("is a no-op when nothing is currently highlighted", () => {
-    const env = fakeTerm();
-    const h = new XtermHighlighter(env.term, () => ({
-      backgroundColor: "#cfe7ff",
-    }));
-    expect(() => h.clear()).not.toThrow();
-    h.dispose();
+  it("moves the overlay DOWN when the viewport scrolls up", () => {
+    s.h.highlight(B(102, 6, 4));
+    expect(s.overlay()!.style.top).toBe("32px"); // row 2
+    s.state.viewportY = 98; // scrolled up two lines
+    s.fireScroll();
+    expect(s.overlay()!.style.top).toBe("64px"); // row 4 — followed the text
+  });
+
+  it("repositions on a render event (e.g. new output) as well", () => {
+    s.h.highlight(B(102, 6, 4));
+    s.state.viewportY = 99;
+    s.fireRender();
+    expect(s.overlay()!.style.top).toBe("48px"); // row 3
+  });
+
+  it("realigns to new cell metrics on resize", () => {
+    s.h.highlight(B(102, 6, 4));
+    s.cell.width = 10;
+    s.cell.height = 20;
+    s.fireResize();
+    const el = s.overlay()!;
+    expect(el.style.left).toBe("60px"); // col 6 * 10
+    expect(el.style.top).toBe("40px"); // row 2 * 20
+    expect(el.style.width).toBe("40px"); // 4 cells * 10
+  });
+
+  it("hides the overlay when the word scrolls off the bottom", () => {
+    s.h.highlight(B(102, 6, 4));
+    expect(s.overlay()!.style.display).toBe("block");
+    s.state.viewportY = 70; // row would be 32 ≥ rows(24)
+    s.fireScroll();
+    expect(s.overlay()!.style.display).toBe("none");
+  });
+
+  it("hides the overlay when the word scrolls off the top", () => {
+    s.h.highlight(B(102, 6, 4));
+    s.state.viewportY = 110; // row would be -8
+    s.fireScroll();
+    expect(s.overlay()!.style.display).toBe("none");
+  });
+
+  it("re-shows the overlay when the word scrolls back into view", () => {
+    s.h.highlight(B(102, 6, 4));
+    s.state.viewportY = 110; // off-screen
+    s.fireScroll();
+    expect(s.overlay()!.style.display).toBe("none");
+    s.state.viewportY = 100; // back in view
+    s.fireScroll();
+    expect(s.overlay()!.style.display).toBe("block");
+    expect(s.overlay()!.style.top).toBe("32px");
+  });
+
+  it("hides when the underlying marker is disposed by the buffer", () => {
+    s.h.highlight(B(102, 6, 4));
+    s.markers[0].dispose(); // simulate scrollback eviction
+    s.fireRender();
+    expect(s.overlay()!.style.display).toBe("none");
+  });
+
+  it("uses the latest theme colour on each reposition", () => {
+    s.h.highlight(B(102, 6, 4));
+    expect(s.overlay()!.style.backgroundColor).toBe("rgb(1, 2, 3)");
+    s.setTheme({ backgroundColor: "rgb(4, 5, 6)" });
+    s.fireScroll();
+    expect(s.overlay()!.style.backgroundColor).toBe("rgb(4, 5, 6)");
   });
 });
 
-describe("XtermHighlighter.dispose", () => {
-  it("disposes any active highlight and ignores subsequent highlight calls", () => {
-    const env = fakeTerm();
-    const h = new XtermHighlighter(env.term, () => ({
-      backgroundColor: "#cfe7ff",
-    }));
-    h.highlight({ line: 0, col: 0, len: 5, word: "alpha", charIndex: 0 });
-    h.dispose();
-    expect(env.decorations[0].isDisposed).toBe(true);
-
-    // A highlight call after dispose should be a safe no-op.
-    h.highlight({ line: 0, col: 6, len: 4, word: "beta", charIndex: 6 });
-    expect(env.decorations).toHaveLength(1); // No new decoration was added.
+describe("XtermHighlighter — lifecycle", () => {
+  it("disposes the previous marker and re-points to the new word", () => {
+    const s = setup({ baseY: 100, cursorY: 5, viewportY: 100 });
+    s.h.highlight(B(102, 0, 5));
+    s.h.highlight(B(103, 2, 3));
+    expect(s.markers[0].isDisposed).toBe(true);
+    expect(s.markers[1].isDisposed).toBe(false);
+    // Re-pointed: line 103 → row 3 → top 48; col 2 → left 16; 3 cells → 24.
+    const el = s.overlay()!;
+    expect(el.style.top).toBe("48px");
+    expect(el.style.left).toBe("16px");
+    expect(el.style.width).toBe("24px");
+    s.h.dispose();
+    s.parent.remove();
   });
-});
 
-describe("XtermHighlighter resilience", () => {
-  it("gracefully no-ops when the marker registration returns undefined (off-screen)", () => {
-    const env = fakeTerm();
-    // Override registerMarker to simulate off-screen failure.
-    env.term.registerMarker = vi.fn(() => undefined);
-    const h = new XtermHighlighter(env.term, () => ({
-      backgroundColor: "#cfe7ff",
-    }));
-    expect(() =>
-      h.highlight({
-        line: 999,
-        col: 0,
-        len: 4,
-        word: "test",
-        charIndex: 0,
-      }),
-    ).not.toThrow();
-    expect(env.decorations).toHaveLength(0);
-    h.dispose();
+  it("clear() releases the overlay + marker + listeners, then stays usable", () => {
+    const s = setup();
+    s.h.highlight(B(102, 6, 4));
+    expect(s.scrollListeners()).toBe(1); // subscribed while live
+    s.h.clear();
+    expect(s.overlay()).toBeNull(); // overlay removed, not just hidden
+    expect(s.markers[0].isDisposed).toBe(true);
+    expect(s.scrollListeners()).toBe(0); // listeners released
+    // Re-highlighting after clear works (re-subscribes + repaints).
+    s.h.highlight(B(102, 0, 2));
+    expect(s.markers).toHaveLength(2);
+    expect(s.scrollListeners()).toBe(1);
+    expect(s.overlay()!.style.display).toBe("block");
+    s.h.dispose();
+    s.parent.remove();
+  });
+
+  it("dispose() removes the overlay, unsubscribes, and ignores later calls", () => {
+    const s = setup();
+    s.h.highlight(B(102, 6, 4));
+    expect(s.overlay()).not.toBeNull();
+    s.h.dispose();
+    expect(s.overlay()).toBeNull(); // removed from the parent
+    expect(s.renderListeners()).toBe(0);
+    expect(s.scrollListeners()).toBe(0);
+    s.h.highlight(B(102, 6, 4)); // no-op after dispose
+    expect(s.overlay()).toBeNull();
+    s.parent.remove();
+  });
+
+  it("no-ops without throwing when marker registration fails (off-screen)", () => {
+    const s = setup();
+    s.term.registerMarker = () => undefined;
+    expect(() => s.h.highlight(B(999, 0, 4))).not.toThrow();
+    const el = s.overlay();
+    // Either no overlay yet, or one left hidden — never shown.
+    expect(el === null || el.style.display === "none").toBe(true);
+    s.h.dispose();
+    s.parent.remove();
+  });
+
+  it("releases listeners when a re-highlight fails to anchor (degenerate path)", () => {
+    const s = setup({ baseY: 100, cursorY: 5, viewportY: 100 });
+    s.h.highlight(B(102, 6, 4)); // succeeds → subscribed
+    expect(s.scrollListeners()).toBe(1);
+    s.term.registerMarker = () => undefined; // next anchor fails
+    s.h.highlight(B(103, 0, 3));
+    // Listeners from the prior word are released — not left firing no-op
+    // reposition() on every frame for the rest of the read.
+    expect(s.scrollListeners()).toBe(0);
+    expect(s.overlay()!.style.display).toBe("none");
+    s.h.dispose();
+    s.parent.remove();
   });
 });
