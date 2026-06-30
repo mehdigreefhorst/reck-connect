@@ -19,6 +19,12 @@ export interface ScrollSurface {
   scrollToFraction(fraction: number): void;
   /** Subscribe to scroll changes; returns an unsubscribe thunk. */
   onScroll(cb: () => void): () => void;
+  /** Optional: true when the SURFACE owns scrolling and xterm's viewportY
+   *  won't track it — i.e. a mouse-tracking TUI (Claude Code, less, vim) that
+   *  grabs the wheel and redraws in place. The scrollbar then can't read a
+   *  real position from metrics and falls back to a simulated (cumulative
+   *  wheel-delta) thumb. Absent/false → the metrics are truthful. */
+  ownsScroll?(): boolean;
   /** Optional: fires when the surface re-renders without a scroll (new
    *  output, in-place TUI redraw, font/size change). The scrollbar uses this
    *  to recompute geometry — e.g. clear its disabled state once scrollback
@@ -49,6 +55,10 @@ export function domScrollSurface(el: HTMLElement): ScrollSurface {
 interface ScrollableTerminal {
   readonly rows: number;
   buffer: { active: { length: number; baseY: number; viewportY: number } };
+  /** xterm's DEC mode set. `mouseTrackingMode !== 'none'` means a full-screen
+   *  TUI (Claude Code, less, vim) has grabbed the mouse — see `ownsScroll`.
+   *  Optional so fakes/older shims that don't model it default to truthful. */
+  modes?: { mouseTrackingMode: string };
   scrollToLine(line: number): void;
   onScroll(cb: () => void): { dispose(): void };
   onRender?(cb: () => void): { dispose(): void };
@@ -68,6 +78,11 @@ export function terminalScrollSurface(term: ScrollableTerminal): ScrollSurface {
       const line = Math.round(clamp01(fraction) * term.buffer.active.baseY);
       term.scrollToLine(line);
     },
+    // A mouse-tracking TUI repaints in place and never moves `viewportY`, so
+    // the metrics above are frozen and a truthful thumb is impossible. Report
+    // that so the scrollbar switches to its simulated (wheel-delta) thumb.
+    // Default to "none" (truthful) when the terminal doesn't model modes.
+    ownsScroll: () => (term.modes?.mouseTrackingMode ?? "none") !== "none",
     onScroll: (cb) => {
       const sub = term.onScroll(cb);
       return () => sub.dispose();

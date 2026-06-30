@@ -3,8 +3,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createOverlayScrollbar, type OverlayScrollbar } from "./OverlayScrollbar";
 import type { ScrollMetrics, ScrollSurface } from "./scrollSurfaces";
 
-function fakeSurface(initial: ScrollMetrics) {
+function fakeSurface(initial: ScrollMetrics, ownsScrollInit = false) {
   const m: ScrollMetrics = { ...initial };
+  let owns = ownsScrollInit;
   let cbs: Array<() => void> = [];
   let renderCbs: Array<() => void> = [];
   const surface: ScrollSurface = {
@@ -22,15 +23,25 @@ function fakeSurface(initial: ScrollMetrics) {
         renderCbs = renderCbs.filter((c) => c !== cb);
       };
     },
+    ownsScroll: () => owns,
   };
   return {
     surface,
     setMetrics: (nm: Partial<ScrollMetrics>) => Object.assign(m, nm),
+    setOwnsScroll: (v: boolean) => (owns = v),
     fireScroll: () => cbs.slice().forEach((c) => c()),
     fireRender: () => renderCbs.slice().forEach((c) => c()),
     subCount: () => cbs.length,
     renderSubCount: () => renderCbs.length,
   };
+}
+
+/** A `wheel` event with the deltas jsdom's bare Event doesn't carry. */
+function wheelEvent(deltaY: number, deltaMode = 0): WheelEvent {
+  const e = new Event("wheel", { bubbles: true, cancelable: true }) as WheelEvent;
+  Object.defineProperty(e, "deltaY", { value: deltaY, configurable: true });
+  Object.defineProperty(e, "deltaMode", { value: deltaMode, configurable: true });
+  return e;
 }
 
 const disabled = () =>
@@ -184,6 +195,89 @@ describe("OverlayScrollbar — drag", () => {
 
     window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
     expect(track().classList.contains("reck-scrollbar--dragging")).toBe(false);
+  });
+});
+
+describe("OverlayScrollbar — simulated mode (mouse-tracking TUI)", () => {
+  // In a Claude Code / less / vim pane xterm's viewportY is frozen, so the
+  // metrics are meaningless. The thumb is driven by cumulative wheel delta:
+  // a SIM_TRAVEL of 4000px maps to the track, the thumb is a fixed 16% tall,
+  // and bottom=84% top / top=0%.
+  const FROZEN = { scrollTop: 25, scrollHeight: 25, clientHeight: 25 };
+
+  it("starts pinned to the bottom and is never disabled despite zero overflow", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    expect(disabled()).toBe(false);
+    expect(thumb().style.height).toBe("16%");
+    expect(thumb().style.top).toBe("84%"); // (1 - 0) * (100 - 16)
+  });
+
+  it("wheel-up raises the thumb, wheel-down lowers it back to the bottom", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    host.dispatchEvent(wheelEvent(-2000)); // up 2000px → simPos=2000 → frac 0.5
+    expect(thumb().style.top).toBe("42%"); // (1 - 0.5) * 84
+    host.dispatchEvent(wheelEvent(2000)); // down 2000px → back to bottom
+    expect(thumb().style.top).toBe("84%");
+  });
+
+  it("clamps at the top (SIM_TRAVEL) and the bottom (0)", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    host.dispatchEvent(wheelEvent(-100000)); // far past the travel budget
+    expect(thumb().style.top).toBe("0%"); // pinned at the top
+    host.dispatchEvent(wheelEvent(100000)); // far past the bottom
+    expect(thumb().style.top).toBe("84%"); // pinned at the bottom
+  });
+
+  it("normalizes line-mode wheel deltas (deltaMode 1) by the line height", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    host.dispatchEvent(wheelEvent(-125, 1)); // 125 lines * 16px = 2000px → 0.5
+    expect(thumb().style.top).toBe("42%");
+  });
+
+  it("preventDefault()s the wheel in simulated mode to stop native scroll", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    const e = wheelEvent(-100);
+    const spy = vi.spyOn(e, "preventDefault");
+    host.dispatchEvent(e);
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it("does NOT preventDefault in truthful mode — native scroll must still work", () => {
+    const f = fakeSurface({ scrollTop: 0, scrollHeight: 1000, clientHeight: 100 }, false);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    const e = wheelEvent(-100);
+    const spy = vi.spyOn(e, "preventDefault");
+    host.dispatchEvent(e);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("flashes the bar into view on a wheel gesture", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface, hideDelayMs: 1000 });
+    host.dispatchEvent(wheelEvent(-100));
+    expect(visible()).toBe(true);
+  });
+
+  it("does not drive the surface when the thumb is dragged (passive indicator)", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    thumb().dispatchEvent(new MouseEvent("pointerdown", { clientY: 5, bubbles: true }));
+    window.dispatchEvent(new MouseEvent("pointermove", { clientY: 50, bubbles: true }));
+    expect(f.surface.scrollToFraction).not.toHaveBeenCalled();
+  });
+
+  it("re-renders the simulated thumb on a render tick without resetting simPos", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    host.dispatchEvent(wheelEvent(-2000)); // simPos → 2000, top 42%
+    f.fireRender(); // an in-place TUI redraw
+    expect(thumb().style.top).toBe("42%"); // unchanged, NOT pinned back to bottom
+    expect(disabled()).toBe(false);
   });
 });
 

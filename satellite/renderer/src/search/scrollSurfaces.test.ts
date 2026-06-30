@@ -74,3 +74,45 @@ describe("terminalScrollSurface", () => {
     expect(f.hasSub()).toBe(false);
   });
 });
+
+describe("terminalScrollSurface — ownsScroll (mouse-tracking detection)", () => {
+  function baseTerm() {
+    return {
+      rows: 24,
+      buffer: { active: { length: 100, baseY: 76, viewportY: 0 } },
+      scrollToLine: vi.fn(),
+      onScroll: () => ({ dispose: () => {} }),
+    };
+  }
+
+  it("is false for a plain shell — mouseTrackingMode 'none' or no modes at all", () => {
+    const none = terminalScrollSurface({ ...baseTerm(), modes: { mouseTrackingMode: "none" } });
+    expect(none.ownsScroll?.()).toBe(false);
+    // A fake/old terminal without a `modes` field defaults to truthful.
+    const bare = terminalScrollSurface(baseTerm());
+    expect(bare.ownsScroll?.()).toBe(false);
+  });
+
+  it("is true for a mouse-tracking TUI — any non-'none' mode (Claude Code, less, vim)", () => {
+    for (const mode of ["x10", "vt200", "drag", "any"] as const) {
+      const s = terminalScrollSurface({ ...baseTerm(), modes: { mouseTrackingMode: mode } });
+      expect(s.ownsScroll?.()).toBe(true);
+    }
+  });
+
+  it("reflects a live mode flip (plain shell → Claude Code launches → exits)", () => {
+    const term = { ...baseTerm(), modes: { mouseTrackingMode: "none" } };
+    const s = terminalScrollSurface(term);
+    expect(s.ownsScroll?.()).toBe(false);
+    term.modes.mouseTrackingMode = "any"; // claude starts
+    expect(s.ownsScroll?.()).toBe(true);
+    term.modes.mouseTrackingMode = "none"; // claude exits
+    expect(s.ownsScroll?.()).toBe(false);
+  });
+});
+
+describe("domScrollSurface — ownsScroll", () => {
+  it("leaves ownsScroll unset so DOM scrollers always render truthfully", () => {
+    expect(domScrollSurface(document.createElement("div")).ownsScroll).toBeUndefined();
+  });
+});
