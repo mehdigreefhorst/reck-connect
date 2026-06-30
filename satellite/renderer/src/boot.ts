@@ -39,6 +39,7 @@ import {
 } from "./viewer/LinkDetector";
 import { HoverFocusController } from "./ui/hover-focus-controller";
 import { StatusBar } from "./ui/status-bar";
+import { deriveConnectionReason, type TailscaleVerdict } from "./ui/connection-reason";
 import { MissionControl } from "./ui/mission-control";
 import {
   askPaneKind,
@@ -2213,6 +2214,25 @@ export async function boot(splash?: StartupSplashController) {
   }
 
   let connInfo: ConnectionInfo = { state: "connecting", lastError: null, uptimeSec: null };
+  // Tailscale verdict for the inline connection reason. Probed lazily when
+  // the station goes unreachable (not on a token error), cleared on
+  // recovery. Single-flight so a flapping link can't stack `tailscale`
+  // CLI calls.
+  let tailscaleVerdict: TailscaleVerdict | null = null;
+  let tailscaleProbeInFlight = false;
+  async function refreshTailscaleVerdict(): Promise<void> {
+    if (tailscaleProbeInFlight) return;
+    tailscaleProbeInFlight = true;
+    try {
+      const v = await window.reckAPI.tailscale.status(activeUrl);
+      tailscaleVerdict = v.ok ? v : null;
+      renderStatus();
+    } catch {
+      tailscaleVerdict = null;
+    } finally {
+      tailscaleProbeInFlight = false;
+    }
+  }
 
   // --- Phase 9 push state (declared before renderStatus so the status
   // bar can read localPushError on its very first paint) --------------
@@ -2253,6 +2273,7 @@ export async function boot(splash?: StartupSplashController) {
       host: new URL(activeUrl).host,
       conn: connInfo.state,
       connError: connInfo.lastError,
+      connDetail: deriveConnectionReason(connInfo.lastError, tailscaleVerdict),
       mount: displayedMount,
       localPushError,
     });
@@ -2539,6 +2560,16 @@ export async function boot(splash?: StartupSplashController) {
       // local's info is consumed by the registry but not surfaced.
       if (host !== primaryHost) return;
       connInfo = info;
+      // When the station goes unreachable (not a token problem), probe
+      // Tailscale so the inline reason can say whether to fix this Mac or
+      // the station; clear the verdict once we recover.
+      if (primaryHost === "station") {
+        if (info.state === "connected") {
+          tailscaleVerdict = null;
+        } else if (info.lastError !== "Unauthorized") {
+          void refreshTailscaleVerdict();
+        }
+      }
       renderStatus();
     },
   });
