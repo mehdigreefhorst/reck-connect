@@ -1,6 +1,7 @@
 import { HttpError } from "@client-core/api/client";
 import { describeError } from "./daemon/connection";
 import type { ConnectionInfo } from "./daemon/connection";
+import { decidePollFailureAction } from "./daemon/poll-failure-policy";
 import {
   connectionForHost,
   enabledHosts,
@@ -2577,34 +2578,31 @@ export async function boot(splash?: StartupSplashController) {
       void projectRefresher.run();
     },
     onPollFailure: (host, _reason, e) => {
-      // Phase 4: 401 → host-aware re-auth prompt, but only for the
-      // primary host (`mode`). The secondary connection in hybrid
-      // mode polls in the background and its state is intentionally
-      // not surfaced anywhere in the UI yet (Phase 11 wires Mission
-      // Control aggregation). If we forwarded a secondary 401 to
-      // requestTokenUpdate, a misconfigured local token would pop a
-      // blocking modal at boot demanding the user fix something
-      // they have no UI affordance to even see is broken — flagged
-      // by codex review on the Phase 4 split. The 1008-on-pane
-      // path stays host-aware (panes have visible host badges in
-      // Phase 10); only this background-poll branch defers.
-      if (host !== primaryHost) return;
-      if (e instanceof HttpError && e.status === 401) {
-        // Phase 5 (an earlier release): for local, the user has no token to
-        // paste — main owns the per-spawn random bearer. Refresh
-        // from main and let the next poll retry; if the daemon is
-        // really gone (token cleared on exit) the request will
-        // fail again and the next failure-log entry tells the
-        // operator what's up. For station, prompt as before.
-        if (host === "local") {
-          console.info(
-            "[poll] local 401: refreshing per-spawn token from main process",
-          );
-          void refreshLocalDaemonToken().catch((err) => {
-            console.warn("[poll] local token refresh failed after 401", err);
-          });
-          return;
-        }
+      // Route the failure through a pure, tested policy. The subtle rule:
+      // a LOCAL 401 must self-heal even when it's the background host.
+      // The local daemon's per-spawn bearer rotates on every (re)start,
+      // so when the station is primary the local connection is polling in
+      // the background with a stale token — if we gated the refresh
+      // behind `host === primaryHost` (as an earlier draft did), local
+      // would 401-loop and grey out until the whole app was restarted.
+      // A STATION 401 stays host-aware: only prompt when it's the host
+      // we're actively driving. Forwarding a background station 401 to
+      // requestTokenUpdate would pop a blocking modal for a token the
+      // user has no UI affordance to fix (flagged in the Phase 4 review);
+      // the 1008-on-pane path keeps that host-aware separately.
+      const action = decidePollFailureAction(host, primaryHost, e);
+      if (action === "refresh-local-token") {
+        // The user has no token to paste — main owns the per-spawn
+        // bearer. Refresh from main and let the next poll retry; if the
+        // daemon is really gone the request fails again and the
+        // failure-log entry tells the operator what's up.
+        console.info(
+          "[poll] local 401: refreshing per-spawn token from main process",
+        );
+        void refreshLocalDaemonToken().catch((err) => {
+          console.warn("[poll] local token refresh failed after 401", err);
+        });
+      } else if (action === "prompt-station-token") {
         const reason =
           "Station rejected the current token. Paste a fresh one to reconnect.";
         void requestTokenUpdate(host, reason);
