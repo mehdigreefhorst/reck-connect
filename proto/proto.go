@@ -111,6 +111,12 @@ type HealthResponse struct {
 	Status    string `json:"status"`
 	Version   string `json:"version"`
 	UptimeSec int64  `json:"uptime_sec"`
+	// CodexAvailable is true when the station resolved a codex binary on
+	// PATH at startup (len(codexCmd) > 0). The Satellite reads it to show
+	// the "Codex" new-pane button only where a codex pane can actually
+	// spawn. Omitted/false ⇒ hide it (older daemons that don't send the
+	// field decode to false, which is the safe default).
+	CodexAvailable bool `json:"codex_available"`
 }
 
 type Project struct {

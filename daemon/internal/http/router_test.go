@@ -115,6 +115,30 @@ func TestHealth(t *testing.T) {
 	if h.Status != "ok" {
 		t.Fatalf("status: %s", h.Status)
 	}
+	// newServer builds a manager with no codex binary, so /health must
+	// report codex unavailable.
+	if h.CodexAvailable {
+		t.Fatalf("expected codex_available=false on a codex-less server")
+	}
+}
+
+// /health must surface whether the daemon has a codex binary so the
+// Satellite can gate the "Codex" new-pane button on it.
+func TestHealth_reportsCodexAvailable(t *testing.T) {
+	s := newServer(t)
+	s.CodexAvailable = true
+	srv := httptest.NewServer(newTestHandler(t, s))
+	defer srv.Close()
+
+	r, err := nethttp.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var h proto.HealthResponse
+	json.NewDecoder(r.Body).Decode(&h)
+	if !h.CodexAvailable {
+		t.Fatalf("expected codex_available=true when Server.CodexAvailable is set")
+	}
 }
 
 func TestProjectsList(t *testing.T) {

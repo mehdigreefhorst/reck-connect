@@ -81,6 +81,10 @@ type Server struct {
 	MC        MissionControlHandler // optional; nil-safe — MC endpoints omitted when unset
 	StartedAt time.Time
 	Version   string
+	// CodexAvailable mirrors whether the daemon resolved a codex binary at
+	// startup; surfaced on /health so the Satellite can gate the "Codex"
+	// new-pane button. Set from len(codexCmd) > 0 in main.
+	CodexAvailable bool
 	// SupervisorAuth, when non-nil, enables a second bearer token that
 	// identifies the Mission Control supervisor pane. The supervisor
 	// token lets a pane child authenticate to the daemon without the
@@ -449,9 +453,10 @@ func isLoopbackAddr(remoteAddr string) bool {
 
 func (s *Server) handleHealth(w nethttp.ResponseWriter, r *nethttp.Request) {
 	writeJSON(w, proto.HealthResponse{
-		Status:    "ok",
-		Version:   s.Version,
-		UptimeSec: int64(time.Since(s.StartedAt).Seconds()),
+		Status:         "ok",
+		Version:        s.Version,
+		UptimeSec:      int64(time.Since(s.StartedAt).Seconds()),
+		CodexAvailable: s.CodexAvailable,
 	})
 }
 

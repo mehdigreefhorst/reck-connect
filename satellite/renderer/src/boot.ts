@@ -8,6 +8,7 @@ import {
   isHostReady,
   setHostReady,
   subscribeHostReady,
+  setHostCodexAvailable,
 } from "./daemon/connection-for-host";
 import {
   makePushState,
@@ -2560,6 +2561,11 @@ export async function boot(splash?: StartupSplashController) {
         // because there's no station catalog to mirror.
         void pushStationProjectsToLocal();
       }
+      // Record codex availability for EVERY host (before the primary-host
+      // early-return) so the New-pane dialog can show the Codex button on
+      // whichever host the user targets. `codex_available` is absent on
+      // older daemons → coerced to false (button stays hidden).
+      setHostCodexAvailable(host, health.codex_available === true);
       if (host !== primaryHost) return;
       if (lastUptimeSec >= 0 && health.uptime_sec < lastUptimeSec) {
         window.location.reload();
