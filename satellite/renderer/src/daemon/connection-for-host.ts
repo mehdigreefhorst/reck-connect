@@ -29,7 +29,11 @@ import type { ConnectionInfo } from "./connection";
 import { DaemonConnection } from "./connection";
 import type { HostRef } from "../host";
 import type { Settings } from "../config";
-import { apiForHost } from "../api-for-host";
+import {
+  apiForHost,
+  hasTokenForHost,
+  refreshLocalDaemonToken,
+} from "../api-for-host";
 
 export interface ConnectionsForHostOptions {
   /** Interval between polls after a successful probe (per connection). */
@@ -295,6 +299,19 @@ function buildEntry(
     pollIntervalMs: opts.pollIntervalMs,
     pollTimeoutMs: opts.pollTimeoutMs,
     refreshTimeoutMs: opts.refreshTimeoutMs,
+    shouldPoll: () => {
+      // Station always polls (its token comes from settings and doesn't
+      // rotate under us). Local is different: its per-spawn bearer is
+      // owned by main and rotates on every daemon (re)start. Hold off
+      // probing until we hold a token — a token-less probe just draws a
+      // 401 and greys the host out. When the token is missing (daemon
+      // down at boot, or (re)started after boot), quietly re-acquire it
+      // from main so a later tick can poll; skip probing this tick.
+      if (host === "station") return true;
+      if (hasTokenForHost("local")) return true;
+      void refreshLocalDaemonToken().catch(() => {});
+      return false;
+    },
     onPollSuccess: async (health) => {
       // Recovery — clear the once-per-host failure-log gate so the
       // next outage re-arms a single info line. Only emit a recovery

@@ -509,3 +509,81 @@ describe("disposeConnections", () => {
     expect(() => disposeConnections()).not.toThrow();
   });
 });
+
+// The local per-spawn bearer is owned by the Electron main process and
+// rotates on every daemon (re)start. The registry gates local's
+// background poll on having a token so a token-less probe never draws a
+// spurious 401, and re-acquires the token from main when it's missing so
+// a daemon that (re)starts after boot is picked up automatically.
+describe("local poll-gate + acquire-on-missing", () => {
+  afterEach(() => {
+    // The mock IPC surface is per-test; drop it so it can't leak.
+    delete (window as unknown as { reckAPI?: unknown }).reckAPI;
+  });
+
+  it("does not probe local while it has no token, and re-acquires from main", async () => {
+    vi.useFakeTimers();
+    const localToken = vi.fn(async () => null); // daemon down / not yet up
+    (window as unknown as { reckAPI: unknown }).reckAPI = {
+      daemon: { localToken },
+    };
+    const localFetch = vi.fn(() => healthOk(5));
+    global.fetch = routedFetch({ local: localFetch });
+    const stubs = makeStubCallbacks();
+    initApiForHost(HYBRID);
+    initConnectionsForHost(HYBRID, {
+      pollIntervalMs: 2000,
+      pollTimeoutMs: 1000,
+      ...stubs,
+    });
+    connectionForHost("local").start();
+    await vi.advanceTimersByTimeAsync(5000); // several would-be ticks
+    connectionForHost("local").stop();
+    expect(localFetch).not.toHaveBeenCalled(); // gate held → no token-less probe
+    expect(localToken).toHaveBeenCalled(); // acquire-on-missing fired
+  });
+
+  it("probes local once the per-spawn token has been acquired", async () => {
+    vi.useFakeTimers();
+    const localToken = vi.fn(async () => "spawn-tok");
+    (window as unknown as { reckAPI: unknown }).reckAPI = {
+      daemon: { localToken },
+    };
+    global.fetch = routedFetch({ local: () => healthOk(9) });
+    const stubs = makeStubCallbacks();
+    initApiForHost(HYBRID);
+    initConnectionsForHost(HYBRID, {
+      pollIntervalMs: 2000,
+      pollTimeoutMs: 1000,
+      ...stubs,
+    });
+    connectionForHost("local").start();
+    // Tick 1: no token → acquire (sets it) → skip. Tick 2: token → probe.
+    await vi.advanceTimersByTimeAsync(4000);
+    connectionForHost("local").stop();
+    expect(localToken).toHaveBeenCalled();
+    const localConnected = stubs.callbacks.infos
+      .filter((i) => i.host === "local")
+      .some((i) => i.info.state === "connected");
+    expect(localConnected).toBe(true);
+  });
+
+  it("polls station regardless of token state (gate only applies to local)", async () => {
+    vi.useFakeTimers();
+    global.fetch = routedFetch({ station: () => healthOk(4) });
+    const stubs = makeStubCallbacks();
+    initApiForHost(HYBRID);
+    initConnectionsForHost(HYBRID, {
+      pollIntervalMs: 2000,
+      pollTimeoutMs: 1000,
+      ...stubs,
+    });
+    connectionForHost("station").start();
+    await vi.advanceTimersByTimeAsync(0);
+    connectionForHost("station").stop();
+    const stationConnected = stubs.callbacks.infos
+      .filter((i) => i.host === "station")
+      .some((i) => i.info.state === "connected");
+    expect(stationConnected).toBe(true);
+  });
+});
