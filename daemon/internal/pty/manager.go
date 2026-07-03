@@ -971,6 +971,7 @@ func (m *Manager) Projects() []proto.Project {
 			PaneStoplights: m.paneStoplightsLocked(id),
 			PaneIDs:        m.paneIDsLocked(id),
 			Docked:         p.Docked,
+			Archived:       p.Archived,
 			DisplayName:    p.DisplayName,
 			Available:      p.Available,
 		})
@@ -1000,6 +1001,7 @@ func (m *Manager) DockedProjects() []proto.Project {
 			PaneStoplights: m.paneStoplightsLocked(id),
 			PaneIDs:        m.paneIDsLocked(id),
 			Docked:         true,
+			Archived:       p.Archived,
 			DisplayName:    p.DisplayName,
 			Available:      p.Available,
 		})
