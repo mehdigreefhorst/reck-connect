@@ -20,9 +20,9 @@ describe("createHtmlRenderer.render", () => {
 
   it("keeps <style> blocks", () => {
     const r = createHtmlRenderer();
-    expect(r.render("<style>.a{color:red}</style><div class='a'>x</div>")).toContain(
-      "<style",
-    );
+    const doc = parse(r.render("<style>.a{color:red}</style><div class='a'>x</div>"));
+    expect(doc.querySelector("style")).not.toBeNull();
+    expect(doc.querySelector("style")?.textContent).toContain(".a");
   });
 
   it("strips <script> but keeps sibling content", () => {
@@ -60,5 +60,47 @@ describe("createHtmlRenderer.render", () => {
         false,
       );
     });
+  });
+
+  it("strips <base>", () => {
+    const r = createHtmlRenderer();
+    const doc = parse(r.render('<base href="https://evil/">'));
+    expect(doc.querySelectorAll("base").length).toBe(0);
+  });
+
+  it("strips <meta http-equiv=refresh>", () => {
+    const r = createHtmlRenderer();
+    const doc = parse(
+      r.render('<meta http-equiv="refresh" content="0;url=https://evil">'),
+    );
+    expect(doc.querySelectorAll("meta").length).toBe(0);
+  });
+
+  it("strips target and ping from <a>", () => {
+    const r = createHtmlRenderer();
+    const doc = parse(
+      r.render('<a href="./x" target="_blank" ping="https://evil">x</a>'),
+    );
+    const a = doc.querySelector("a");
+    expect(a).not.toBeNull();
+    expect(a?.hasAttribute("target")).toBe(false);
+    expect(a?.hasAttribute("ping")).toBe(false);
+  });
+
+  it("strips formaction from <button>", () => {
+    const r = createHtmlRenderer();
+    const doc = parse(r.render('<button formaction="https://evil">b</button>'));
+    const button = doc.querySelector("button");
+    if (button) {
+      expect(button.hasAttribute("formaction")).toBe(false);
+    }
+  });
+
+  it("strips srcdoc", () => {
+    const r = createHtmlRenderer();
+    const doc = parse(r.render('<div srcdoc="x">y</div>'));
+    const el = doc.querySelector("div");
+    expect(el).not.toBeNull();
+    expect(el?.hasAttribute("srcdoc")).toBe(false);
   });
 });

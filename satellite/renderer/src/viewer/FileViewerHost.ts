@@ -988,6 +988,7 @@ async function renderStationRemote(
   });
 
   if (renderable) {
+    // persisted is always defined inside this branch; ?? "rendered" only satisfies the type.
     const currentMode: MarkdownMode = persisted ?? "rendered";
     mountModeToggle(shell.modeToggleSlot, currentMode, async () => {
       const next: MarkdownMode = currentMode === "rendered" ? "source" : "rendered";
@@ -1180,7 +1181,8 @@ const searchHandles = new WeakMap<HTMLElement, ViewerSearchHandle>();
  * viewer just mounted. When a CodeMirror editor exists we speak/search the
  * editor; otherwise we speak/search the rendered DOM in `shell.body`
  * (markdown today, static HTML in Phase A — both are plain DOM, so the
- * MarkdownSurfaceAdapter/MarkdownSearchAdapter handle them unchanged).
+ * MarkdownSurfaceAdapter (search via attachViewerSearch) handles them
+ * unchanged).
  * Registers per-root handles so the next render's teardown disposes them.
  */
 function attachSpeakAndSearch(
@@ -1353,6 +1355,7 @@ async function renderForPath(
     : undefined;
   const mode = pickViewerMode(filePath, persisted);
   if (renderable) {
+    // persisted is always defined inside this branch; ?? "rendered" only satisfies the type.
     const currentMode: MarkdownMode = persisted ?? "rendered";
     mountModeToggle(shell.modeToggleSlot, currentMode, async () => {
       const next: MarkdownMode = currentMode === "rendered" ? "source" : "rendered";

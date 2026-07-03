@@ -31,6 +31,11 @@ describe("pickViewerMode", () => {
   it("uses source for non-renderable files regardless of persisted value", () => {
     expect(pickViewerMode("/a/b.ts", "rendered")).toBe("source");
     expect(pickViewerMode("/a/b.ts", undefined)).toBe("source");
+    expect(pickViewerMode("/a/b.ts", "source")).toBe("source");
+  });
+  it("classifies extensions case-insensitively", () => {
+    expect(pickViewerMode("/a/b.HTML", undefined)).toBe("html-static");
+    expect(pickViewerMode("/a/README.MD", undefined)).toBe("markdown-rendered");
   });
 });
 
