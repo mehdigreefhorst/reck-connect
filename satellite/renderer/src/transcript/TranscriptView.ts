@@ -44,8 +44,11 @@ export interface TranscriptViewHandle {
 const FOLLOW_THRESHOLD_PX = 40;
 
 export function createTranscriptView(opts: TranscriptViewOptions): TranscriptViewHandle {
+  // `reck-native-scroll` opts the overlay out of the pane wrapper's
+  // TUI wheel→PgUp/PgDn remap (OverlayScrollbar capture listener) so
+  // the transcript body scrolls natively.
   const root = document.createElement("div");
-  root.className = "transcript-view";
+  root.className = "transcript-view reck-native-scroll";
 
   const header = document.createElement("div");
   header.className = "transcript-header";

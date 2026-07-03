@@ -1436,3 +1436,55 @@ describe("PaneLayout history button", () => {
     layout.dispose();
   });
 });
+
+/**
+ * Clicking History must focus its leaf first (#51 follow-up): the
+ * toolbar swallows mousedown (stopPropagation), so without an explicit
+ * focus the ⌘F search subsystem resolves the previously-active pane and
+ * searches the terminal's ~40 painted rows instead of the transcript.
+ */
+describe("PaneLayout history button focuses its leaf", () => {
+  let root: HTMLElement;
+
+  beforeEach(() => {
+    root = document.createElement("div");
+    document.body.appendChild(root);
+    MockTerminalPane.instances.length = 0;
+    (PaneLayout as unknown as { draggedTab: unknown }).draggedTab = null;
+  });
+
+  afterEach(() => {
+    root.remove();
+  });
+
+  it("calls focusLeaf with the button's leaf before the callback", () => {
+    const order: string[] = [];
+    const cb = makeCallbacks(root, makeController());
+    cb.onHistoryPane = () => order.push("history");
+    const layout = new PaneLayout(cb);
+    const focusSpy = vi
+      .spyOn(layout, "focusLeaf")
+      .mockImplementation(() => order.push("focus"));
+    layout.setTree({
+      kind: "leaf",
+      id: "leafA",
+      activeTabId: "t1",
+      tabs: [
+        {
+          id: "t1",
+          paneId: "pane-t1",
+          kind: "claude" as const,
+          title: "t1",
+          host: "local" as HostRef,
+        },
+      ],
+    });
+    focusSpy.mockClear();
+    order.length = 0;
+    const btn = root.querySelector<HTMLButtonElement>('.tab-actions button[data-act="history"]');
+    btn!.click();
+    expect(focusSpy).toHaveBeenCalledWith("leafA");
+    expect(order).toEqual(["focus", "history"]);
+    layout.dispose();
+  });
+});

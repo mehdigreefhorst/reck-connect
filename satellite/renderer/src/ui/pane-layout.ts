@@ -1035,7 +1035,13 @@ export class PaneLayout {
           return;
         }
         if (act === "history") {
-          if (activeTab) this.cb.onHistoryPane?.(activeTab.paneId, leaf.id);
+          if (activeTab) {
+            // Focus first: the toolbar swallows mousedown, so without
+            // this the search subsystem keeps resolving the previously
+            // active pane and ⌘F would search the wrong surface.
+            this.focusLeaf(leaf.id);
+            this.cb.onHistoryPane?.(activeTab.paneId, leaf.id);
+          }
           return;
         }
         if (act === "split-right") this.cb.onSplitRight(leaf.id);
