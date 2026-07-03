@@ -1037,6 +1037,35 @@ async function renderStationRemote(
       },
     });
     md.mount(shell.body, md.render(result.content));
+  } else if (mode === "html-static") {
+    const html = createHtmlRenderer({
+      onLinkActivate: (href) => {
+        const target = href.startsWith("/")
+          ? href
+          : window.reckAPI.paths.resolveAgainst(filePath, href);
+        const ctx: ClickContext = {
+          surface: "popup-markdown",
+          href,
+          opener: filePath,
+          target,
+          sourceHost: "station",
+          projectCwd: renderOpts.projectCwd,
+        };
+        void openInViewerWithToast({
+          ctx,
+          openInViewer: () =>
+            window.reckAPI.files.openInViewer(target, {
+              sourceHost: "station",
+              opener: filePath,
+              originalText: href,
+              projectCwd: renderOpts.projectCwd,
+            }) as Promise<{ ok?: boolean; code?: string; error?: string } | undefined>,
+          showToast: (msg, o) =>
+            showToast(shell.body, msg, { durationMs: o?.ttl, kind: o?.kind }),
+        });
+      },
+    });
+    html.mount(shell.body, html.render(result.content));
   } else {
     // Source mode (markdown source OR non-markdown code) — EDITABLE
     // CodeMirror. mountCodeEditor's onChange feeds autoSave.markDirty
