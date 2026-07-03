@@ -2441,6 +2441,36 @@ html, body, #app {
   text-decoration-color: rgba(96, 165, 250, 1);
 }
 
+/* Static HTML preview: baseline layout for structural/media tags the
+   markdown renderer never emits. Keeps pages readable and prevents wide
+   media/tables from breaking the popup's horizontal scroll. */
+.file-viewer-body img,
+.file-viewer-body picture,
+.file-viewer-body video,
+.file-viewer-body svg {
+  max-width: 100%;
+  height: auto;
+}
+.file-viewer-body figure {
+  margin: 1em 0;
+}
+.file-viewer-body figcaption {
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+.file-viewer-body section,
+.file-viewer-body article,
+.file-viewer-body header,
+.file-viewer-body footer,
+.file-viewer-body main,
+.file-viewer-body aside,
+.file-viewer-body nav {
+  display: block;
+}
+.file-viewer-body details {
+  margin: 0.5em 0;
+}
+
 .file-viewer-plain-code {
   white-space: pre;
   overflow-x: auto;
