@@ -7,6 +7,7 @@
 // arrives in P3; editing + conflict UI arrives in P4.
 
 import { createMarkdownRenderer } from "./MarkdownRenderer";
+import { createHtmlRenderer } from "./HtmlRenderer";
 import {
   isRenderablePath,
   pickViewerMode,
@@ -1392,6 +1393,36 @@ async function renderForPath(
       },
     });
     md.mount(shell.body, md.render(result.content));
+  } else if (mode === "html-static") {
+    const html = createHtmlRenderer({
+      onLinkActivate: (href) => {
+        const target = href.startsWith("/")
+          ? href
+          : window.reckAPI.paths.resolveAgainst(result.resolvedPath, href);
+        void window.reckAPI.files
+          .openInViewer(target, {
+            opener: result.resolvedPath,
+            originalText: href,
+            projectCwd: renderOpts.projectCwd,
+          })
+          .then((r) => {
+            const res = r as
+              | { ok?: boolean; code?: string; error?: string }
+              | undefined;
+            if (!res || res.ok !== true) {
+              showToast(
+                shell.body,
+                res?.error ? `Could not open: ${res.error}` : "Could not open file.",
+                3500,
+              );
+            }
+          })
+          .catch(() => {
+            /* openInViewer failures surface via the toast above */
+          });
+      },
+    });
+    html.mount(shell.body, html.render(result.content));
   } else {
     // P4: editable CodeMirror surface. `onChange` feeds the auto-save
     // coordinator, which debounces and flushes to `file:write`.
