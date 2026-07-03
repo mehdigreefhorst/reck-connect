@@ -9,6 +9,7 @@
 
 import DOMPurify, { type Config as DOMPurifyConfig } from "dompurify";
 import { createRenderedDom, type RenderedDomOptions } from "./renderedDom";
+import { neutralizeExternalRefs } from "./externalRefs";
 
 export interface HtmlRenderer {
   /** Sanitize raw HTML file content into safe, inert HTML. */
@@ -39,7 +40,19 @@ export function createHtmlRenderer(opts: RenderedDomOptions = {}): HtmlRenderer 
   return {
     render(rawHtml: string): string {
       const cleaned = DOMPurify.sanitize(rawHtml, HTML_PURIFY_CONFIG);
-      return typeof cleaned === "string" ? cleaned : String(cleaned);
+      const clean = typeof cleaned === "string" ? cleaned : String(cleaned);
+      // DOMPurify strips scripts but KEEPS <img>, <style>, and media
+      // elements, so their remote sub-resources (tracker pixels, remote
+      // CSS) would fetch the instant this markup lands in the DOM. Parse
+      // the sanitized string into a detached element, neutralize every
+      // external-loading reference (parking the live value into a
+      // `data-reck-blocked-*` attribute), and return the inert markup.
+      // Nothing fetches until FileViewerHost calls restoreExternalRefs on
+      // the user's "Load external data" click.
+      const el = document.createElement("div");
+      el.innerHTML = clean;
+      neutralizeExternalRefs(el);
+      return el.innerHTML;
     },
     mount(container: HTMLElement, html: string): void {
       dom.mount(container, html);

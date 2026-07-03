@@ -103,4 +103,25 @@ describe("createHtmlRenderer.render", () => {
     expect(el).not.toBeNull();
     expect(el?.hasAttribute("srcdoc")).toBe(false);
   });
+
+  it("neutralizes an external <img src> (no live src, parked instead)", () => {
+    const r = createHtmlRenderer();
+    const doc = parse(r.render("<img src='https://tracker.example/y.png'>"));
+    const img = doc.querySelector("img");
+    expect(img).not.toBeNull();
+    // The live src must NOT survive — nothing fetches until consent.
+    expect(img?.hasAttribute("src")).toBe(false);
+    expect(img?.getAttribute("data-reck-blocked-src")).toBe(
+      "https://tracker.example/y.png",
+    );
+  });
+
+  it("keeps a relative <img src> live (only external refs are gated)", () => {
+    const r = createHtmlRenderer();
+    const doc = parse(r.render("<img src='./a.png'>"));
+    const img = doc.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("./a.png");
+    expect(img?.hasAttribute("data-reck-blocked-src")).toBe(false);
+  });
 });

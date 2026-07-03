@@ -9,6 +9,10 @@
 import { createMarkdownRenderer } from "./MarkdownRenderer";
 import { createHtmlRenderer } from "./HtmlRenderer";
 import {
+  countBlockedExternalRefs,
+  restoreExternalRefs,
+} from "./externalRefs";
+import {
   isRenderablePath,
   pickViewerMode,
   type PersistedRenderMode,
@@ -216,6 +220,43 @@ function mountReadOnlyBanner(parent: HTMLElement): void {
   banner.textContent =
     "⚠ Read-only on disk (no write permission). Edit elsewhere with elevated permissions.";
   parent.appendChild(banner);
+}
+
+/**
+ * Email-client-style "load external data" consent banner for the static-HTML
+ * preview. The HtmlRenderer neutralizes every external sub-resource reference
+ * (remote images, remote CSS) before the markup mounts, so nothing fetches on
+ * render. This banner tells the user how many refs were blocked and, on click,
+ * restores them (`onLoad`) and removes itself.
+ *
+ * Mounted as a sibling immediately BEFORE `shell.body` (not inside it) so the
+ * TTS engine and search scanner — which walk `shell.body` — never see the
+ * banner text.
+ */
+function mountExternalDataBanner(
+  shell: ViewerShell,
+  count: number,
+  onLoad: () => void,
+): void {
+  const banner = document.createElement("div");
+  banner.className = "file-viewer-ext-banner";
+
+  const label = document.createElement("span");
+  label.className = "file-viewer-ext-banner-label";
+  label.textContent = `⚠ This page tried to load ${count} external resource(s) (images/styles).`;
+  banner.appendChild(label);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "file-viewer-ext-banner-button";
+  button.textContent = "Load external data";
+  button.addEventListener("click", () => {
+    onLoad();
+    banner.remove();
+  });
+  banner.appendChild(button);
+
+  shell.body.insertAdjacentElement("beforebegin", banner);
 }
 
 interface RenderOptions {
@@ -1067,6 +1108,12 @@ async function renderStationRemote(
       },
     });
     html.mount(shell.body, html.render(result.content));
+    const blocked = countBlockedExternalRefs(shell.body);
+    if (blocked > 0) {
+      mountExternalDataBanner(shell, blocked, () =>
+        restoreExternalRefs(shell.body),
+      );
+    }
   } else {
     // Source mode (markdown source OR non-markdown code) — EDITABLE
     // CodeMirror. mountCodeEditor's onChange feeds autoSave.markDirty
@@ -1455,6 +1502,12 @@ async function renderForPath(
       },
     });
     html.mount(shell.body, html.render(result.content));
+    const blocked = countBlockedExternalRefs(shell.body);
+    if (blocked > 0) {
+      mountExternalDataBanner(shell, blocked, () =>
+        restoreExternalRefs(shell.body),
+      );
+    }
   } else {
     // P4: editable CodeMirror surface. `onChange` feeds the auto-save
     // coordinator, which debounces and flushes to `file:write`.
