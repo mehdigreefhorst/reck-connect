@@ -96,6 +96,22 @@ const VECTOR_CASES: VectorCase[] = [
     parkedValue: EXTERNAL,
   },
   {
+    name: "input[type=image] src",
+    html: `<input type="image" src="${EXTERNAL}">`,
+    selector: "input",
+    liveAttr: "src",
+    parkAttr: "data-reck-blocked-src",
+    parkedValue: EXTERNAL,
+  },
+  {
+    name: "table background",
+    html: `<table background="${EXTERNAL}"></table>`,
+    selector: "table",
+    liveAttr: "background",
+    parkAttr: "data-reck-blocked-background",
+    parkedValue: EXTERNAL,
+  },
+  {
     name: "svg image href",
     html: `<svg><image href="${EXTERNAL}"></image></svg>`,
     selector: "image",
@@ -231,6 +247,123 @@ describe("neutralizeExternalRefs — <style> element", () => {
     const root = makeRoot(`<style>${css}</style>`);
     expect(neutralizeExternalRefs(root)).toBe(0);
     expect(root.querySelector("style")!.textContent).toBe(css);
+  });
+});
+
+describe("neutralizeExternalRefs — background / input / feImage", () => {
+  it("parks an external `background` on <td> (no live fetch), restore reverses", () => {
+    const root = makeRoot(
+      `<table><tbody><tr><td background="${EXTERNAL}">x</td></tr></tbody></table>`,
+    );
+    expect(neutralizeExternalRefs(root)).toBe(1);
+    const td = root.querySelector("td")!;
+    // Live background gone, parked verbatim — nothing fetches until consent.
+    expect(td.hasAttribute("background")).toBe(false);
+    expect(td.getAttribute("data-reck-blocked-background")).toBe(EXTERNAL);
+    expect(countBlockedExternalRefs(root)).toBe(1);
+    restoreExternalRefs(root);
+    expect(td.getAttribute("background")).toBe(EXTERNAL);
+    expect(td.hasAttribute("data-reck-blocked-background")).toBe(false);
+  });
+
+  it("leaves a relative `background` attribute live (external-only)", () => {
+    const root = makeRoot(`<table background="./bg.png"></table>`);
+    expect(neutralizeExternalRefs(root)).toBe(0);
+    expect(root.querySelector("table")!.getAttribute("background")).toBe(
+      "./bg.png",
+    );
+  });
+
+  it("parks an external <input type=image src> (no eager load), restore reverses", () => {
+    const root = makeRoot(`<input type="image" src="${EXTERNAL}">`);
+    expect(neutralizeExternalRefs(root)).toBe(1);
+    const input = root.querySelector("input")!;
+    expect(input.hasAttribute("src")).toBe(false);
+    expect(input.getAttribute("data-reck-blocked-src")).toBe(EXTERNAL);
+    restoreExternalRefs(root);
+    expect(input.getAttribute("src")).toBe(EXTERNAL);
+    expect(input.hasAttribute("data-reck-blocked-src")).toBe(false);
+  });
+
+  it("parks an external SVG <feImage href>, restore reverses", () => {
+    const root = makeRoot(
+      `<svg><filter><feImage href="${EXTERNAL}"></feImage></filter></svg>`,
+    );
+    expect(neutralizeExternalRefs(root)).toBe(1);
+    const fe = Array.from(root.querySelectorAll("*")).find(
+      (el) => el.localName === "feImage",
+    )!;
+    expect(fe).not.toBeUndefined();
+    expect(fe.hasAttribute("href")).toBe(false);
+    expect(fe.getAttribute("data-reck-blocked-href")).toBe(EXTERNAL);
+    expect(countBlockedExternalRefs(root)).toBe(1);
+    restoreExternalRefs(root);
+    expect(fe.getAttribute("href")).toBe(EXTERNAL);
+    expect(fe.hasAttribute("data-reck-blocked-href")).toBe(false);
+  });
+
+  it("parks an external SVG <feImage xlink:href>, restore reverses", () => {
+    const root = makeRoot(
+      `<svg><filter><feImage xlink:href="${EXTERNAL}"></feImage></filter></svg>`,
+    );
+    expect(neutralizeExternalRefs(root)).toBe(1);
+    const fe = Array.from(root.querySelectorAll("*")).find(
+      (el) => el.localName === "feImage",
+    )!;
+    expect(fe).not.toBeUndefined();
+    expect(fe.hasAttribute("xlink:href")).toBe(false);
+    expect(fe.getAttribute("data-reck-blocked-xlinkhref")).toBe(EXTERNAL);
+    restoreExternalRefs(root);
+    expect(fe.getAttribute("xlink:href")).toBe(EXTERNAL);
+    expect(fe.hasAttribute("data-reck-blocked-xlinkhref")).toBe(false);
+  });
+});
+
+describe("neutralizeExternalRefs — CSS image-set()", () => {
+  it("parks an inline style using bare-string image-set('https://…'), restore reverses", () => {
+    const style = `background:image-set('${EXTERNAL}' 1x)`;
+    const root = makeRoot(`<div style="${style}">x</div>`);
+    expect(neutralizeExternalRefs(root)).toBe(1);
+    const div = root.querySelector("div")!;
+    expect(div.hasAttribute("style")).toBe(false);
+    expect(div.getAttribute("data-reck-blocked-style")).toBe(style);
+    restoreExternalRefs(root);
+    expect(div.getAttribute("style")).toBe(style);
+    expect(div.hasAttribute("data-reck-blocked-style")).toBe(false);
+  });
+
+  it("parks a <style> block using bare-string image-set('https://…'), restore reverses", () => {
+    const css = `.a{background:image-set('${EXTERNAL}' 1x)}`;
+    const root = makeRoot(`<style>${css}</style>`);
+    expect(neutralizeExternalRefs(root)).toBe(1);
+    const styleEl = root.querySelector("style")!;
+    expect(styleEl.textContent).toBe("");
+    expect(styleEl.getAttribute("data-reck-blocked-styletext")).toBe(css);
+    restoreExternalRefs(root);
+    expect(styleEl.textContent).toBe(css);
+    expect(styleEl.hasAttribute("data-reck-blocked-styletext")).toBe(false);
+  });
+
+  it("still parks the image-set(url(https://…)) form (positive control)", () => {
+    const style = `background:image-set(url(${EXTERNAL}) 1x)`;
+    const root = makeRoot(`<div style="${style}">x</div>`);
+    expect(neutralizeExternalRefs(root)).toBe(1);
+    expect(
+      root.querySelector("div")!.getAttribute("data-reck-blocked-style"),
+    ).toBe(style);
+  });
+
+  it("does NOT park local url(#id) fragment refs or url(data:…) URIs", () => {
+    const root = makeRoot(
+      `<div style="fill:url(#grad);background:url(data:image/png;base64,AAAA)">x</div>` +
+        `<style>.a{content:url(#frag)}</style>`,
+    );
+    expect(neutralizeExternalRefs(root)).toBe(0);
+    expect(countBlockedExternalRefs(root)).toBe(0);
+    expect(root.querySelector("div")!.hasAttribute("style")).toBe(true);
+    expect(root.querySelector("style")!.textContent).toBe(
+      ".a{content:url(#frag)}",
+    );
   });
 });
 

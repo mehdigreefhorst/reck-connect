@@ -27,8 +27,15 @@ const STYLE_TEXT_PARK_ATTR = `${PARK_PREFIX}styletext`;
 type RefKind = "url" | "srcset";
 
 interface RefVector {
-  /** CSS type selector for the element that owns the attribute. */
+  /** CSS selector for candidate elements. When `localName` is also set this is
+   *  a BROAD selector (`"*"`) and the real match is the `localName` filter — a
+   *  camelCase/namespaced SVG type selector (`feImage`) is unreliable across
+   *  DOM engines, so we never lean on it. */
   readonly selector: string;
+  /** When set, only elements whose `.localName` equals this are considered.
+   *  Robustly matches SVG elements (`image`, `feImage`) regardless of how a
+   *  given engine handles camelCase/namespaced type selectors. */
+  readonly localName?: string;
   /** Literal attribute name (qualified names like `xlink:href` allowed). */
   readonly attr: string;
   /** Suffix for the parked `data-reck-blocked-<parkKey>` attribute. Must be a
@@ -51,10 +58,47 @@ const REF_VECTORS: readonly RefVector[] = [
   { selector: "video", attr: "poster", parkKey: "poster", kind: "url" },
   { selector: "audio", attr: "src", parkKey: "src", kind: "url" },
   { selector: "track", attr: "src", parkKey: "src", kind: "url" },
-  // SVG <image> can load a remote raster via either the modern `href` or the
-  // legacy `xlink:href`. Both are handled by literal-name get/set/remove.
-  { selector: "image", attr: "href", parkKey: "href", kind: "url" },
-  { selector: "image", attr: "xlink:href", parkKey: "xlinkhref", kind: "url" },
+  // <input type="image" src="…"> loads its image eagerly, exactly like <img>.
+  // DOMPurify keeps <input src>, so an external src here is a live beacon.
+  { selector: "input", attr: "src", parkKey: "src", kind: "url" },
+  // A legacy `background` attribute on ANY element (e.g. <body|table|td
+  // background="https://…">) is a live background-image fetch that survives
+  // DOMPurify's default allowlist. Selector matches only elements that carry
+  // one; `isExternalUrl` keeps it external-only.
+  {
+    selector: "[background]",
+    attr: "background",
+    parkKey: "background",
+    kind: "url",
+  },
+  // SVG <image> loads a remote raster via the modern `href` or the legacy
+  // `xlink:href`. Matched by localName (robust across engines), then handled
+  // by literal-name get/set/remove.
+  { selector: "*", localName: "image", attr: "href", parkKey: "href", kind: "url" },
+  {
+    selector: "*",
+    localName: "image",
+    attr: "xlink:href",
+    parkKey: "xlinkhref",
+    kind: "url",
+  },
+  // SVG <feImage> fetches its href/xlink:href when a <filter> is applied —
+  // same shape as <image>, same localName-robust matching. `feImage` is
+  // camelCase so a type selector cannot be trusted; the localName filter can.
+  {
+    selector: "*",
+    localName: "feImage",
+    attr: "href",
+    parkKey: "href",
+    kind: "url",
+  },
+  {
+    selector: "*",
+    localName: "feImage",
+    attr: "xlink:href",
+    parkKey: "xlinkhref",
+    kind: "url",
+  },
 ];
 
 /** External = trimmed value starts with http://, https://, or // (protocol-
@@ -79,9 +123,39 @@ const STYLE_URL_EXTERNAL = /url\(\s*['"]?(?:https?:|\/\/)/i;
 // `@import` of an external stylesheet, e.g. `@import "https://…"` or
 // `@import url(https://…)`.
 const STYLE_IMPORT_EXTERNAL = /@import\s+(?:url\(\s*)?['"]?(?:https?:|\/\/)/i;
+// CSS `image-set()` BARE-STRING form, e.g. `image-set('https://…' 1x)` — no
+// `url(` token, so `STYLE_URL_EXTERNAL` misses it entirely. Matches an
+// optionally-quoted external URL as the first `image-set(` argument. The
+// `image-set(url(https://…))` form is already caught by `STYLE_URL_EXTERNAL`.
+const STYLE_IMAGE_SET_EXTERNAL = /image-set\(\s*['"]?(?:https?:|\/\/)/i;
+
+/**
+ * True when CSS text (an inline `style` value OR a `<style>` element body)
+ * references an external sub-resource via `url(…)`, the bare-string
+ * `image-set(…)`, or `@import`. External-only: `url(#id)` fragment refs and
+ * `url(data:…)` URIs do NOT match, so they stay live (they never fetch).
+ */
+function cssHasExternalRef(css: string): boolean {
+  return (
+    STYLE_URL_EXTERNAL.test(css) ||
+    STYLE_IMAGE_SET_EXTERNAL.test(css) ||
+    STYLE_IMPORT_EXTERNAL.test(css)
+  );
+}
 
 function parkAttrFor(parkKey: string): string {
   return `${PARK_PREFIX}${parkKey}`;
+}
+
+/**
+ * Candidate elements for a vector. When `localName` is set we scan broadly and
+ * filter by `.localName` so camelCase/namespaced SVG tags (`feImage`) match on
+ * every DOM engine; otherwise the CSS `selector` is authoritative.
+ */
+function selectVectorTargets(root: HTMLElement, vector: RefVector): Element[] {
+  const nodes = Array.from(root.querySelectorAll(vector.selector));
+  if (vector.localName === undefined) return nodes;
+  return nodes.filter((el) => el.localName === vector.localName);
 }
 
 /**
@@ -96,38 +170,39 @@ function parkAttrFor(parkKey: string): string {
 export function neutralizeExternalRefs(root: HTMLElement): number {
   let count = 0;
 
-  // Element/attribute vectors (img/source/video/audio/track/svg-image).
+  // Element/attribute vectors (img/source/video/audio/track/input/background/
+  // svg-image/svg-feImage).
   for (const vector of REF_VECTORS) {
-    root.querySelectorAll(vector.selector).forEach((el) => {
+    for (const el of selectVectorTargets(root, vector)) {
       const live = el.getAttribute(vector.attr);
-      if (live === null) return;
+      if (live === null) continue;
       const external =
         vector.kind === "srcset" ? srcsetHasExternal(live) : isExternalUrl(live);
-      if (!external) return;
+      if (!external) continue;
       el.setAttribute(parkAttrFor(vector.parkKey), live);
       el.removeAttribute(vector.attr);
       count += 1;
-    });
+    }
   }
 
-  // Inline `style` attribute referencing an external `url(...)`. Park the WHOLE
-  // value — a single declaration may mix relative and external URLs, and we
-  // restore it verbatim, so all-or-nothing keeps neutralize/restore lossless.
+  // Inline `style` attribute referencing an external `url(...)`, bare-string
+  // `image-set(...)`, or `@import`. Park the WHOLE value — a single declaration
+  // may mix relative and external URLs, and we restore it verbatim, so
+  // all-or-nothing keeps neutralize/restore lossless.
   root.querySelectorAll("[style]").forEach((el) => {
     const style = el.getAttribute("style");
-    if (style === null || !STYLE_URL_EXTERNAL.test(style)) return;
+    if (style === null || !cssHasExternalRef(style)) return;
     el.setAttribute(STYLE_PARK_ATTR, style);
     el.removeAttribute("style");
     count += 1;
   });
 
-  // <style> element whose CSS text loads an external `url(...)` or `@import`.
-  // Park the whole textContent and clear it so the stylesheet is inert.
+  // <style> element whose CSS text loads an external `url(...)`, bare-string
+  // `image-set(...)`, or `@import`. Park the whole textContent and clear it so
+  // the stylesheet is inert.
   root.querySelectorAll("style").forEach((el) => {
     const text = el.textContent ?? "";
-    if (!STYLE_URL_EXTERNAL.test(text) && !STYLE_IMPORT_EXTERNAL.test(text)) {
-      return;
-    }
+    if (!cssHasExternalRef(text)) return;
     el.setAttribute(STYLE_TEXT_PARK_ATTR, text);
     el.textContent = "";
     count += 1;
