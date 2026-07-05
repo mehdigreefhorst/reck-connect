@@ -6,6 +6,20 @@
 
 ---
 
+## Implementation update — 2026-07-05 (Phase B built; supersedes the "no daemon changes" claims below)
+
+Phases 0, A, and B were implemented. The build **corrected the spec's central Phase-B assumption**: §3, §6(C), and §9 claim *"v1 needs no daemon changes — run the preview server as a shell pane."* Codebase recon disproved this — `CreatePaneRequest` has no free-form command field, the shell adapter only execs the project's pre-set `Project.Shell`, there is no child-output port parsing, and the station is Go with no JS workspace. **What actually shipped (DECISION D1):**
+
+- A **Go daemon preview manager** (`daemon/internal/preview/manager.go`) spawns a **Node runner embedded in the daemon binary via `go:embed`** (`daemon/internal/preview/runner/`, written out by `WriteRunner`), parses its `RECK_PREVIEW_READY … port=<n>` stdout line, and keeps **one runner process per project** (reused; idle-reaped after 120s; a 30s viewer heartbeat keeps it alive). Endpoints: `POST/GET/DELETE /projects/{id}/preview` (bearer-authed), returning `proto.PreviewStatus`.
+- The runner (`server.mjs` + `plugin.mjs` + `entry-builder.mjs` + `detect.mjs`) loads the **project's own Vite** and serves the synthesized virtual entry via an importer-threaded `/@reck/entry?target=` + `/@reck/providers` (no shared mutable state).
+- Satellite: `project-detect.ts` (previewability over the mount), `ApiClient.startPreview/getPreview/stopPreview`, `pickViewerMode` `component` mode, `ComponentPreview.ts` (cross-origin iframe with **no `sandbox`** → can't reach `reckAPI`; heartbeat lifecycle; toast-on-failure), wired into `renderForPath` via a `projectId` threaded through the openInViewer chain and a station `ApiClient` built in the viewer.
+- **D3 (transport):** direct tailnet dev-server port — **confirmed working**; SSH `-L` fallback deferred; failures degrade to a toast + panel. **D2 (providers):** auto-infer + `*.reck-preview.tsx` override. **RAM:** one Vite process per *actively-previewed* project (~150–400 MB), auto-reclaimed ~2 min after the last viewer closes.
+- Still deferred: the full daemon **service abstraction + authenticated reverse proxy** = **Phase C** (only the minimal endpoint shipped in B); **TTS/search over the live component** = **Phase D**; `renderStationRemote` (SSH-only files outside the mount) does not offer component mode in v1.
+
+Plan: `docs/superpowers/plans/2026-07-05-html-viewer-phase-b-component-preview.md`. The sections below are the original design thinking preserved as-is; where they say "no daemon changes," read the above.
+
+---
+
 ## 1. Goal
 
 Open a `.html`, `.jsx`/`.tsx`, or `.js` file and **see it rendered as it would actually appear** — a rendered HTML page, or a React component rendered *exactly as if you had written a `page.tsx` that just renders it*: with its real imported components, the project's `global.css` / Tailwind / design tokens, path aliases, and (best-effort) its context providers. Reuse the markdown viewer's rendered-vs-source pattern and its TTS read-aloud + search where possible.
