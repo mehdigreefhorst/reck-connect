@@ -14,7 +14,11 @@
 // is rendered as plain text (people type text, not markup). Thinking /
 // tool_use / tool_result blocks fold into collapsed <details>.
 
-import { createMarkdownRenderer, type MarkdownRenderer } from "../viewer/MarkdownRenderer";
+import {
+  createMarkdownRenderer,
+  wrapFreeTextPaths,
+  type MarkdownRenderer,
+} from "../viewer/MarkdownRenderer";
 import { createOverlayScrollbar, type OverlayScrollbar } from "../search/OverlayScrollbar";
 import { domScrollSurface } from "../search/scrollSurfaces";
 import type { TranscriptTurn, TranscriptBlock } from "./parseTranscript";
@@ -24,6 +28,8 @@ export interface TranscriptViewOptions {
   host: HTMLElement;
   /** Header label — typically the pane title. */
   title: string;
+  /** Session UUID — shown (shortened) in the start-of-session divider. */
+  sessionId?: string;
   /** Invoked on the close button or Escape. Owner unmounts via dispose(). */
   onClose(): void;
 }
@@ -78,6 +84,26 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   const body = document.createElement("div");
   body.className = "transcript-body";
 
+  // The start-of-session divider marks where the conversation opens (Claude
+  // Code transcripts have no visible "chat begins here" boundary of their
+  // own). It's the first body child; hidden until the first turn renders so a
+  // loading/empty overlay doesn't claim a session started.
+  const sessionStart = document.createElement("div");
+  sessionStart.className = "transcript-session-start transcript-session-start--hidden";
+  {
+    const label = document.createElement("span");
+    label.className = "transcript-session-start-label";
+    label.textContent = "Start of session";
+    sessionStart.appendChild(label);
+    if (opts.sessionId) {
+      const idEl = document.createElement("span");
+      idEl.className = "transcript-session-start-id";
+      idEl.textContent = opts.sessionId.slice(0, 8);
+      sessionStart.appendChild(idEl);
+    }
+  }
+  body.appendChild(sessionStart);
+
   root.appendChild(header);
   root.appendChild(status);
   root.appendChild(body);
@@ -110,6 +136,19 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     const el = document.createElement("div");
     el.className = "transcript-text";
     el.textContent = text;
+    // People type file paths in prose ("look at services/x.py"). Wrap them in
+    // the same `a.reck-internal-link` anchors the markdown renderer emits, so
+    // the transcript's single delegated Cmd-click handler opens them too.
+    wrapFreeTextPaths(el);
+    return el;
+  }
+
+  // A slash command (/clear, /model, …) the user ran — a slim chip, not a
+  // prose bubble. Distinct from tool activity, so it renders inline.
+  function commandPillEl(name: string): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "transcript-command";
+    el.textContent = `⌘ ${name}`;
     return el;
   }
 
@@ -163,6 +202,8 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     for (const block of turn.blocks) {
       if (block.kind === "text") {
         el.appendChild(textBlockEl(turn.role, block.text));
+      } else if (block.kind === "command") {
+        el.appendChild(commandPillEl(block.name));
       } else {
         toolBlocks.push(block);
       }
@@ -189,6 +230,8 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     while (turnEls.length > turns.length) {
       turnEls.pop()?.remove();
     }
+    // Reveal the "Start of session" divider once the conversation has content.
+    sessionStart.classList.toggle("transcript-session-start--hidden", turns.length === 0);
     scrollbar.update();
     if (wasNearBottom) {
       body.scrollTop = body.scrollHeight;

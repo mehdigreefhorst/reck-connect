@@ -147,4 +147,40 @@ describe("TranscriptView", () => {
     view.setStatus({ kind: "live" });
     expect(status().classList.contains("transcript-status--hidden")).toBe(true);
   });
+
+  it("renders a command block as a slim pill, not prose or a tool group", () => {
+    view.render([{ role: "user", blocks: [{ kind: "command", name: "/clear" }] }], 0);
+    const t = view.body.querySelector(".transcript-turn") as HTMLElement;
+    const pill = t.querySelector(".transcript-command");
+    expect(pill).not.toBeNull();
+    expect(pill?.textContent).toContain("/clear");
+    // A command is not tool activity — never folded into the tool group.
+    expect(t.querySelector("details.transcript-tools")).toBeNull();
+  });
+
+  it("linkifies file paths in user plain-text turns as reck-internal-link anchors", () => {
+    view.render([{ role: "user", blocks: [{ kind: "text", text: "look at services/gpu/ovh.py please" }] }], 0);
+    const t = view.body.querySelector(".transcript-turn--user") as HTMLElement;
+    const link = t.querySelector("a.reck-internal-link");
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("services/gpu/ovh.py");
+    // Still plain text around the link (user prose is never parsed as markdown).
+    expect(t.textContent).toContain("look at");
+    expect(t.textContent).toContain("please");
+  });
+
+  it("shows a start-of-session divider as the first body element with the short session id", () => {
+    const v = createTranscriptView({
+      host,
+      title: "p",
+      onClose,
+      sessionId: "abcd1234-5678-90ab-cdef-000000000000",
+    });
+    v.render([turn("user", "hi")], 0);
+    const first = v.body.firstElementChild as HTMLElement;
+    expect(first.classList.contains("transcript-session-start")).toBe(true);
+    expect(first.textContent?.toLowerCase()).toContain("start of session");
+    expect(first.textContent).toContain("abcd1234");
+    v.dispose();
+  });
 });

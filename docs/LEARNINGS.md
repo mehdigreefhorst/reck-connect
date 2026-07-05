@@ -43,6 +43,30 @@ file-viewer by reusing existing components. Plan in
 - Wrapper stripping is deliberately tolerant: unknown tags pass through as text
   (the JSONL schema is not a public API).
 
+### Phase 2 — view: session divider, command pills, user-turn linkify
+
+**What we learned**
+- The `a.reck-internal-link` anchor-wrapper the file viewer uses is a private
+  `wrapFreeTextPaths(root)` inside `MarkdownRenderer.ts`. Exporting it (vs.
+  re-deriving via the already-exported `detectPathsInLine`) lets user prose
+  turns get the *exact* same anchors — same class, same `⌘+click to open`
+  tooltip, same skip rules — so Phase 3's single delegated handler covers user
+  and assistant turns uniformly.
+- Command blocks render inline as a slim pill (`.transcript-command`), branched
+  in `renderTurn` before the tool-group fold — a `/clear` is user intent, not
+  tool activity, so it must not land in the `<details>` tool group.
+
+**Surprises**
+- Assistant turns were already visually linkified (the `wrapFreeTextPaths` pass
+  runs unconditionally inside `md.mount`), but user turns were raw `.textContent`
+  with no anchors at all — so "make paths clickable" needed a *view* change
+  (wrap user text), not just a click handler.
+
+**Decisions**
+- The start-of-session divider is a permanent first body child, hidden via
+  `--hidden` until the first turn renders (so a loading/empty overlay doesn't
+  claim a session began). Shows the short 8-char session id when provided.
+
 ## Codex preamble via `developer_instructions` (follow-up to #33, 2026-07-01)
 
 Undeferred the #32 preamble for codex after web-researching the actual `codex` CLI.
