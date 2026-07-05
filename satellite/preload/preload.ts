@@ -177,22 +177,31 @@ contextBridge.exposeInMainWorld("reckAPI", {
              * addition to the resolved path's own base.
              */
             projectCwd?: string;
+            /**
+             * Phase B Task 12: the active project's id (daemon key) at
+             * the time of the click. Forwarded to the popup so its
+             * component-preview arm can drive the station dev server.
+             */
+            projectId?: string;
           },
     ) => {
       // Back-compat shim: the old signature was `openInViewer(filePath, opener?)`.
-      // The new signature is `openInViewer(filePath, { opener?, sourceHost?, originalText?, projectCwd? })`.
+      // The new signature is `openInViewer(filePath, { opener?, sourceHost?, originalText?, projectCwd?, projectId? })`.
       const opener = typeof opts === "string" ? opts : opts?.opener;
       const sourceHost = typeof opts === "object" ? opts?.sourceHost : undefined;
       const originalText =
         typeof opts === "object" ? opts?.originalText : undefined;
       const projectCwd =
         typeof opts === "object" ? opts?.projectCwd : undefined;
+      const projectId =
+        typeof opts === "object" ? opts?.projectId : undefined;
       return ipcRenderer.invoke("file:openInViewer", {
         path: filePath,
         opener,
         sourceHost,
         originalText,
         projectCwd,
+        projectId,
       }) as Promise<{ ok: true } | { ok: false; code: string; error: string }>;
     },
     /**

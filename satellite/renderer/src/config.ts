@@ -131,6 +131,12 @@ declare global {
                  * project tree.
                  */
                 projectCwd?: string;
+                /**
+                 * Phase B Task 12 — the active project's id (daemon key)
+                 * at the time of the click. Threaded to the popup so its
+                 * component-preview arm can drive the station dev server.
+                 */
+                projectId?: string;
               },
         ): Promise<{ ok: true } | { ok: false; code: string; error: string }>;
         /**
@@ -234,6 +240,15 @@ declare global {
          * query string. Returns `null` in the main window (no `?path=`).
          */
         getViewerPath(): string | null;
+      };
+      /**
+       * Phase B — component-preview capability probe. `detect(cwd)` asks
+       * main whether the project at `cwd` (a Mac-mount path) can host a
+       * live component preview (a Vite + React project readable over the
+       * sshfs mount). Backed by `preview:detect` in the preload bridge.
+       */
+      preview: {
+        detect(cwd: string): Promise<{ previewable: boolean; reason: string }>;
       };
       mount: {
         status(): Promise<"green" | "yellow" | "gray">;

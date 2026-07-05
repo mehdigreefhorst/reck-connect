@@ -13,17 +13,24 @@ import {
   restoreExternalRefs,
 } from "./externalRefs";
 import {
+  isComponentPath,
   isRenderablePath,
   pickViewerMode,
   type PersistedRenderMode,
 } from "./pickViewerMode";
+import { deriveComponentTarget } from "./componentTarget";
+import {
+  createComponentPreview,
+  type ComponentPreviewHandle,
+} from "./ComponentPreview";
+import { ApiClient } from "@client-core/api/client";
 import { mountCodeEditor, type CodeEditorHandle } from "./CodeEditor";
 import { installCodeMirrorPathLinkifier } from "./CodeMirrorPathLinkifier";
 import {
   setExtensionlessAllowlist,
   SEEDED_EXTENSIONLESS_FILENAMES,
 } from "./LinkDetector";
-import { loadLinkifierAllowlist } from "../config";
+import { loadLinkifierAllowlist, loadSettings } from "../config";
 import { initTts, type TtsHandle } from "../tts/initTts";
 import { MarkdownSurfaceAdapter } from "../tts/MarkdownSurfaceAdapter";
 import { CodeMirrorSurfaceAdapter } from "../tts/CodeMirrorSurfaceAdapter";
@@ -284,6 +291,13 @@ interface RenderOptions {
    * anchored to the originating project.
    */
   projectCwd?: string;
+  /**
+   * Phase B Task 12 — the active project's id (daemon key) at the time
+   * of the original click. Threaded alongside `projectCwd` so the
+   * component-preview arm can start/poll the station dev server for the
+   * right project. Absent for clicks that carry no project context.
+   */
+  projectId?: string;
 }
 
 interface LockBannerOptions {
@@ -458,6 +472,10 @@ export async function mountFileViewer(
   // through `?projectCwd=` so cascaded clicks from this popup can pass
   // the same value back to main. Available throughout this function.
   const projectCwdParam = opts.params.get("projectCwd") ?? undefined;
+  // Phase B Task 12 — the active project's id (daemon key), threaded
+  // through `?projectId=` so the component-preview arm can drive the
+  // station dev server. Mirrors `projectCwd` above.
+  const projectIdParam = opts.params.get("projectId") ?? undefined;
   // Round 8 follow-up — when set, the picker displays each Mac-mount
   // matched path as its Pi-side form so station-context clicks read
   // in the user's mental conventions.
@@ -533,12 +551,14 @@ export async function mountFileViewer(
   if (host === "station-remote") {
     await renderStationRemote(opts.root, shell, path, {
       projectCwd: projectCwdParam,
+      projectId: projectIdParam,
     });
     return;
   }
   await renderForPath(opts.root, shell, path, {
     displayPath: displayPathParam,
     projectCwd: projectCwdParam,
+    projectId: projectIdParam,
   });
 }
 
@@ -1224,6 +1244,12 @@ const speakHandles = new WeakMap<HTMLElement, SpeakHandle>();
 // alongside the speak handle.
 const searchHandles = new WeakMap<HTMLElement, ViewerSearchHandle>();
 
+// Phase B Task 12 — per-host live component-preview handle. Torn down on
+// re-render / close alongside the speak + search handles. `dispose()` stops
+// the keep-warm heartbeat and removes the iframe (it deliberately never
+// calls `stopPreview` — the station dev server is shared across panes).
+const componentHandles = new WeakMap<HTMLElement, ComponentPreviewHandle>();
+
 /**
  * Attach the unified TTS engine + search bar to whichever surface the
  * viewer just mounted. When a CodeMirror editor exists we speak/search the
@@ -1283,6 +1309,8 @@ async function renderForPath(
   speakHandles.delete(root);
   searchHandles.get(root)?.dispose();
   searchHandles.delete(root);
+  componentHandles.get(root)?.dispose();
+  componentHandles.delete(root);
   disposeSession(root);
 
   const spinner = mountSpinner(shell.spinnerSlot);
@@ -1312,6 +1340,7 @@ async function renderForPath(
           // and the content (empty) will land in the body.
           await renderForPath(root, shell, filePath, {
             projectCwd: renderOpts.projectCwd,
+            projectId: renderOpts.projectId,
           });
         },
       });
@@ -1410,7 +1439,39 @@ async function renderForPath(
   const persisted: PersistedRenderMode | undefined = renderable
     ? await readMarkdownMode(result.resolvedPath)
     : undefined;
-  const mode = pickViewerMode(filePath, persisted);
+
+  // Phase B Task 12 — component live-preview probe. Gated so the async
+  // detect only runs for `.tsx/.jsx` files opened with a known project id
+  // and a configured station. We derive the daemon-side detect path AND
+  // the project-root-relative target from the canonical Mac-mount path
+  // (`result.resolvedPath`) + the sshfs mount root, avoiding any Pi→Mac
+  // translation in the viewer. On any failure we degrade to `source`.
+  const settings = await loadSettings();
+  let componentTarget: ReturnType<typeof deriveComponentTarget> = null;
+  let componentPreviewAvailable = false;
+  if (
+    isComponentPath(filePath) &&
+    renderOpts.projectId &&
+    settings?.station?.url
+  ) {
+    try {
+      const mount = await window.reckAPI.paths.localMountPoint();
+      componentTarget = deriveComponentTarget(result.resolvedPath, mount);
+      if (componentTarget) {
+        const det = await window.reckAPI.preview.detect(
+          componentTarget.projectRootMac,
+        );
+        componentPreviewAvailable = det.previewable;
+      }
+    } catch (e) {
+      console.warn("[file-viewer] component-preview detect failed", e);
+      componentPreviewAvailable = false;
+    }
+  }
+
+  const mode = pickViewerMode(filePath, persisted, {
+    componentPreviewAvailable,
+  });
   if (renderable) {
     // persisted is always defined inside this branch; ?? "rendered" only satisfies the type.
     const currentMode: MarkdownMode = persisted ?? "rendered";
@@ -1426,6 +1487,7 @@ async function renderForPath(
       await renderForPath(root, shell, filePath, {
         initialUnlocked: next === "source",
         projectCwd: renderOpts.projectCwd,
+        projectId: renderOpts.projectId,
       });
     });
   } else {
@@ -1518,6 +1580,30 @@ async function renderForPath(
         restoreExternalRefs(shell.body),
       );
     }
+  } else if (mode === "component" && componentTarget) {
+    // Phase B Task 12 — live component preview. `settings.station.url`
+    // is provably set here: `mode === "component"` implies
+    // `componentPreviewAvailable`, which is only true when the gated
+    // detect ran (station configured) and `componentTarget` resolved.
+    shell.body.innerHTML = "";
+    const api = new ApiClient({
+      baseUrl: settings!.station!.url.replace(/\/$/, ""),
+      token: settings!.station!.token,
+    });
+    const stationHost = new URL(settings!.station!.url).hostname;
+    const handle = createComponentPreview({
+      api,
+      projectId: renderOpts.projectId!,
+      stationHost,
+      targetRelPath: componentTarget.targetRelPath,
+      onError: (m) =>
+        showToast(shell.body, m, { kind: "error", durationMs: 5000 }),
+    });
+    shell.body.appendChild(handle.el);
+    componentHandles.set(root, handle);
+    // Skip the shared TTS / session / watch tail below: a preview surface
+    // has no CodeEditor or baseline. TTS for previews is deferred to Phase D.
+    return;
   } else {
     // P4: editable CodeMirror surface. `onChange` feeds the auto-save
     // coordinator, which debounces and flushes to `file:write`.

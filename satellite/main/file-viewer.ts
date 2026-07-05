@@ -1261,6 +1261,11 @@ export interface CreateViewerOptions extends ViewerGeometryOverride {
    *  cascaded clicks, keeping the multi-root suffix search anchored
    *  to the originating project. */
   projectCwd?: string;
+  /** Phase B Task 12 — the active project's id (daemon key) at click
+   *  time. Threaded to the popup via `?projectId=` so the
+   *  component-preview arm can start/poll the station dev server for
+   *  the right project. */
+  projectId?: string;
   /** Round 8 follow-up — when set, the streaming-picker popup
    *  translates each matched path (Mac mount mirror) into its Pi-side
    *  form for display only. Used for station-context clicks so the
@@ -1358,6 +1363,9 @@ export function createFileViewerWindow(
   }
   if (opts.projectCwd) {
     params.set("projectCwd", opts.projectCwd);
+  }
+  if (opts.projectId) {
+    params.set("projectId", opts.projectId);
   }
   if (opts.displayTranslation) {
     params.set("displayMountRoot", opts.displayTranslation.mountRoot);
@@ -1632,6 +1640,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
         sourceHost?: unknown;
         originalText?: unknown;
         projectCwd?: unknown;
+        projectId?: unknown;
       },
     ) => {
       const rawPath = arg?.path;
@@ -1660,6 +1669,13 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
         typeof arg?.projectCwd === "string" && arg.projectCwd.length > 0
           ? arg.projectCwd
           : undefined;
+      // Phase B Task 12 — the active project's id (daemon key). Forwarded
+      // to every `createFileViewerWindow` call below so the popup's
+      // component-preview arm can drive the station dev server.
+      const projectId =
+        typeof arg?.projectId === "string" && arg.projectId.length > 0
+          ? arg.projectId
+          : undefined;
       const opener = typeof arg?.opener === "string" ? arg.opener : undefined;
       console.log("[file-viewer] [file:openInViewer] in", {
         rawPath,
@@ -1667,6 +1683,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
         opener,
         originalText,
         projectCwd,
+        projectId,
       });
       // Phase 3 of linkifier-followups: host-aware expansion. Station-pane
       // tildes expand against the Pi's home; non-mount station paths are
@@ -1792,6 +1809,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
               progressCapable: backend.progressCapable,
             },
             projectCwd,
+            projectId,
             displayTranslation: {
               mountRoot: mountPoint,
               stationRoot: stationRoot!,
@@ -1882,6 +1900,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
           host: "station-remote",
           title,
           projectCwd,
+          projectId,
         });
         fileViewerWindows.delete(stationPath);
         fileViewerWindows.set(key, win);
@@ -1924,6 +1943,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
           ...baseOpts,
           title: path.basename(resolved),
           projectCwd,
+          projectId,
         });
         return { ok: true };
       }
@@ -1964,6 +1984,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
           title: path.basename(resolved),
           displayPath,
           projectCwd,
+          projectId,
         });
         return { ok: true };
       }
@@ -2038,6 +2059,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
             ...baseOpts,
             title: path.basename(rootResolved),
             projectCwd,
+            projectId,
           });
           return { ok: true };
         }
@@ -2071,6 +2093,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
           title: path.basename(resolved),
           displayPath,
           projectCwd,
+          projectId,
         });
         return { ok: true };
       }
@@ -2133,6 +2156,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
         },
         displayPath,
         projectCwd,
+        projectId,
         displayTranslation: localDisplayTranslation,
       });
 
