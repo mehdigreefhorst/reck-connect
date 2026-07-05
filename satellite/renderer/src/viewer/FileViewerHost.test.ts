@@ -1308,6 +1308,84 @@ describe("Round 6 Phase CC4 — streaming suffix-search picker", () => {
     for (let i = 0; i < 20; i++) await Promise.resolve();
     expect(closeSpy).toHaveBeenCalled();
   });
+
+  // Phase B follow-up — projectId threading. A pane click carries
+  // projectId, but when the literal path doesn't exist the suffix-search
+  // fallback re-enters openInViewer from the picker — and used to drop
+  // projectId on that hop, so the re-opened popup could never offer the
+  // component preview (its gate requires projectId). Every cascaded
+  // openInViewer out of the pickers must forward BOTH projectCwd and
+  // projectId from the popup's own URL params.
+  it("row click forwards projectId alongside projectCwd", async () => {
+    await mountFileViewer({
+      root,
+      params: new URLSearchParams(
+        "path=/safe/Navbar.tsx&suffixSearchPending=1&searchId=sx-pid-1" +
+          "&suffix=Navbar.tsx&projectId=commitify" +
+          "&projectCwd=" +
+          encodeURIComponent("/home/strijders/projects/commitify"),
+      ),
+    });
+    vi.spyOn(window, "close").mockImplementation(() => {});
+    onMatchCb!({ searchId: "sx-pid-1", path: "/safe/src/components/Navbar.tsx" });
+    const item = root.querySelector(
+      ".file-viewer-suffix-streaming-list .file-viewer-suffix-picker-item",
+    ) as HTMLElement;
+    item.click();
+    expect(files.openInViewer).toHaveBeenCalledWith(
+      "/safe/src/components/Navbar.tsx",
+      {
+        projectCwd: "/home/strijders/projects/commitify",
+        projectId: "commitify",
+      },
+    );
+  });
+
+  it("auto-open on single match forwards projectId alongside projectCwd", async () => {
+    await mountFileViewer({
+      root,
+      params: new URLSearchParams(
+        "path=/safe/Navbar.tsx&suffixSearchPending=1&searchId=sx-pid-2" +
+          "&suffix=Navbar.tsx&projectId=commitify" +
+          "&projectCwd=" +
+          encodeURIComponent("/home/strijders/projects/commitify"),
+      ),
+    });
+    vi.spyOn(window, "close").mockImplementation(() => {});
+    onMatchCb!({ searchId: "sx-pid-2", path: "/safe/src/components/Navbar.tsx" });
+    onDoneCb!({ searchId: "sx-pid-2", totalFound: 1 });
+    expect(files.openInViewer).toHaveBeenCalledWith(
+      "/safe/src/components/Navbar.tsx",
+      {
+        projectCwd: "/home/strijders/projects/commitify",
+        projectId: "commitify",
+      },
+    );
+  });
+
+  it("candidates picker pick forwards projectId alongside projectCwd", async () => {
+    await mountFileViewer({
+      root,
+      params: new URLSearchParams(
+        "path=Navbar.tsx&candidates=" +
+          encodeURIComponent(
+            JSON.stringify(["/safe/a/Navbar.tsx", "/safe/b/Navbar.tsx"]),
+          ) +
+          "&projectId=commitify&projectCwd=" +
+          encodeURIComponent("/home/strijders/projects/commitify"),
+      ),
+    });
+    vi.spyOn(window, "close").mockImplementation(() => {});
+    const first = root.querySelector(
+      ".file-viewer-suffix-picker-item",
+    ) as HTMLElement;
+    expect(first).not.toBeNull();
+    first.click();
+    expect(files.openInViewer).toHaveBeenCalledWith("/safe/a/Navbar.tsx", {
+      projectCwd: "/home/strijders/projects/commitify",
+      projectId: "commitify",
+    });
+  });
 });
 
 /**

@@ -508,6 +508,7 @@ export async function mountFileViewer(
       suffix,
       originalPath: path,
       projectCwd: projectCwdParam,
+      projectId: projectIdParam,
       displayTranslation,
       searchProgressCapable,
     });
@@ -530,8 +531,11 @@ export async function mountFileViewer(
           onPick: (picked) => {
             // Re-enter the viewer at the picked candidate. The new
             // popup will be a fresh load with `?path=<picked>`.
+            // Phase B follow-up — forward projectId too, or the picked
+            // popup can never offer the component preview.
             void window.reckAPI.files.openInViewer(picked, {
               projectCwd: projectCwdParam,
+              projectId: projectIdParam,
             });
             // Close THIS popup — the registry now owns the new one.
             window.close();
@@ -628,6 +632,11 @@ interface SuffixStreamingPickerOptions {
   /** Round 8 Phase MM — active project's cwd, forwarded on every
    *  cascaded openInViewer click out of this picker. */
   projectCwd?: string;
+  /** Phase B follow-up — active project's id, forwarded alongside
+   *  projectCwd. Dropping it here silently disabled the component
+   *  preview for every suffix-search-resolved open (the preview gate
+   *  requires projectId). */
+  projectId?: string;
   /** Round 8 follow-up — Mac-mount → Pi-side translation applied to
    *  each matched path for display ONLY. Click handler still uses
    *  the Mac path (main reads via the sshfs mount). */
@@ -714,6 +723,7 @@ function renderSuffixStreamingPicker(opts: SuffixStreamingPickerOptions): void {
   const openMatchAndClose = async (matchedPath: string): Promise<void> => {
     await window.reckAPI.files.openInViewer(matchedPath, {
       projectCwd: opts.projectCwd,
+      projectId: opts.projectId,
     });
     window.close();
   };
@@ -825,6 +835,7 @@ function renderSuffixStreamingPicker(opts: SuffixStreamingPickerOptions): void {
           if (created.ok) {
             void window.reckAPI.files.openInViewer(created.resolvedPath, {
               projectCwd: opts.projectCwd,
+              projectId: opts.projectId,
             });
             window.close();
           }
