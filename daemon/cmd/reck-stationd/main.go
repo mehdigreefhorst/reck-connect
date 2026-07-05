@@ -23,6 +23,7 @@ import (
 	httpsrv "github.com/rudie-verweij/reck-connect/daemon/internal/http"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/launcher"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/mountprobe"
+	"github.com/rudie-verweij/reck-connect/daemon/internal/preview"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/pty"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/sessions"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/stoplight"
@@ -359,6 +360,35 @@ func main() {
 		CodexAvailable: len(codexCmd) > 0,
 	}
 
+	// Component live-preview (Phase B, D1). The Node runner is embedded in
+	// this binary; materialize it to a scratch dir and wire a real
+	// preview.Manager onto the HTTP server so POST/GET/DELETE
+	// /projects/{id}/preview spawn real per-project Vite dev servers.
+	//
+	// Best-effort, mirroring the codex-resolution posture above: if node is
+	// absent or the runner can't be written, previewMgr stays nil, srv.Preview
+	// stays nil, and the /preview handlers already answer 503. node is resolved
+	// to an absolute path (like claude/shell/codex) so the runner exec never
+	// depends on $PATH at spawn time.
+	var previewMgr *preview.Manager
+	if nodePath, lpErr := exec.LookPath("node"); lpErr == nil {
+		if !filepath.IsAbs(nodePath) {
+			if abs, absErr := filepath.Abs(nodePath); absErr == nil {
+				nodePath = abs
+			}
+		}
+		runnerDir := filepath.Join(os.TempDir(), "reck-preview-runner")
+		if entry, werr := preview.WriteRunner(runnerDir); werr == nil {
+			previewMgr = preview.NewManager(nodePath, entry)
+			srv.Preview = previewMgr
+			logger.Info("component preview ready", "node", nodePath, "runner", entry)
+		} else {
+			logger.Warn("preview: WriteRunner failed; component preview disabled", "err", werr)
+		}
+	} else {
+		logger.Warn("preview: node not found on PATH; component preview disabled", "err", lpErr)
+	}
+
 	// Mission Control supervisor — owns a hidden meta-project + an
 	// on-demand claude pane with a supervisor system prompt. The
 	// DaemonURL is filled in after the listener binds (below). We
@@ -586,6 +616,15 @@ func main() {
 	closeCancel()
 	for _, p := range mgr.AllPanes() {
 		p.Kill()
+	}
+	// Tear down every component-preview dev server the preview.Manager
+	// spawned (Node/Vite children) and stop its idle-reaper. Runs after
+	// httpServer.Shutdown so no new /preview Start can race the teardown, and
+	// alongside the pane kills since both reap daemon-spawned children. nil
+	// when previews were disabled at startup (no node / WriteRunner failed).
+	if previewMgr != nil {
+		previewMgr.Shutdown()
+		logger.Info("component preview stopped")
 	}
 	// Stop the reck-pane-launcher helper after panes are killed so any
 	// final ExitNotice / fd close races resolve cleanly. Helper exit also
