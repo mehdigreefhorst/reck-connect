@@ -21,6 +21,7 @@ function arg(name, def) {
 
 const cwd = arg("cwd", process.cwd());
 const host = arg("host", "0.0.0.0");
+const hmrHost = arg("hmr-host", host);
 const port = Number(arg("port", "0"));
 
 // Resolve the PROJECT's own vite so its config/plugins/aliases apply verbatim.
@@ -61,7 +62,7 @@ if (typeof createServer !== "function") {
 const server = await createServer({
   root: cwd,
   configFile: undefined, // auto-load the project's vite.config.*
-  server: { host, port, strictPort: false, hmr: { host } },
+  server: { host, port, strictPort: false, hmr: { host: hmrHost } },
   plugins: [reckPreviewPlugin({ cwd })],
   clearScreen: false,
   logLevel: "warn",
