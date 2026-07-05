@@ -18,7 +18,11 @@ import {
   pickViewerMode,
   type PersistedRenderMode,
 } from "./pickViewerMode";
-import { deriveComponentTarget } from "./componentTarget";
+import {
+  deriveComponentTarget,
+  deriveStationComponentTarget,
+} from "./componentTarget";
+import { detectStationProjectPreview } from "./stationPreviewDetect";
 import {
   createComponentPreview,
   type ComponentPreviewHandle,
@@ -913,6 +917,8 @@ async function renderStationRemote(
   speakHandles.delete(root);
   searchHandles.get(root)?.dispose();
   searchHandles.delete(root);
+  componentHandles.get(root)?.dispose();
+  componentHandles.delete(root);
   disposeSession(root);
   // Round 3 follow-up — the mode toggle re-enters this function after
   // writing the new mode. Without clearing the body here, the previous
@@ -979,7 +985,49 @@ async function renderStationRemote(
   const persisted: PersistedRenderMode | undefined = renderable
     ? await readMarkdownMode(filePath)
     : undefined;
-  const mode = pickViewerMode(filePath, persisted);
+
+  // Phase B follow-up — station-remote component preview probe. A station
+  // file never passes through the Mac mount, so previewability comes from
+  // the station's own package.json (read over the same SSH bridge that
+  // just fetched the file) and the Vite `?target=` path is derived from
+  // the pane's station cwd. Same gate shape as renderForPath: only pay
+  // the settings IPC + SSH probe for `.tsx/.jsx` opened with a project
+  // context and a configured station; any failure degrades to `source`.
+  let settings: Awaited<ReturnType<typeof loadSettings>> = null;
+  let stationTarget: ReturnType<typeof deriveStationComponentTarget> = null;
+  let componentPreviewAvailable = false;
+  if (isComponentPath(filePath)) {
+    settings = await loadSettings();
+    if (
+      renderOpts.projectId &&
+      renderOpts.projectCwd &&
+      settings?.station?.url
+    ) {
+      try {
+        stationTarget = deriveStationComponentTarget(
+          filePath,
+          renderOpts.projectCwd,
+        );
+        if (stationTarget) {
+          const det = await detectStationProjectPreview(async (p) => {
+            const r = await window.reckAPI.files.readStation(p);
+            return r.ok ? r.content : null;
+          }, renderOpts.projectCwd);
+          componentPreviewAvailable = det.previewable;
+        }
+      } catch (e) {
+        console.warn(
+          "[file-viewer] station component-preview detect failed",
+          e,
+        );
+        componentPreviewAvailable = false;
+      }
+    }
+  }
+
+  const mode = pickViewerMode(filePath, persisted, {
+    componentPreviewAvailable,
+  });
   let codeEditor: CodeEditorHandle | null = null;
   let baseline: FileBaseline = result.baseline;
 
@@ -1062,6 +1110,7 @@ async function renderStationRemote(
       await renderStationRemote(root, shell, filePath, {
         initialUnlocked: next === "source",
         projectCwd: renderOpts.projectCwd,
+        projectId: renderOpts.projectId,
       });
     });
   } else {
@@ -1135,6 +1184,32 @@ async function renderStationRemote(
         restoreExternalRefs(shell.body),
       );
     }
+  } else if (mode === "component" && stationTarget) {
+    // Phase B follow-up — station-remote live component preview. Mirrors
+    // renderForPath's component arm: `settings.station.url` is provably
+    // set here because `mode === "component"` implies the gated probe ran
+    // (station configured, projectId + projectCwd present) and passed.
+    // The daemon resolves the project root itself from the project id, so
+    // only the rel target crosses the wire.
+    shell.body.innerHTML = "";
+    const api = new ApiClient({
+      baseUrl: settings!.station!.url.replace(/\/$/, ""),
+      token: settings!.station!.token,
+    });
+    const stationHost = new URL(settings!.station!.url).hostname;
+    const handle = createComponentPreview({
+      api,
+      projectId: renderOpts.projectId!,
+      stationHost,
+      targetRelPath: stationTarget.targetRelPath,
+      onError: (m) =>
+        showToast(shell.body, m, { kind: "error", durationMs: 5000 }),
+    });
+    shell.body.appendChild(handle.el);
+    componentHandles.set(root, handle);
+    // Skip the session / TTS tail below: a preview surface has no
+    // CodeEditor or baseline. TTS over previews is deferred to Phase D.
+    return;
   } else {
     // Source mode (markdown source OR non-markdown code) — EDITABLE
     // CodeMirror. mountCodeEditor's onChange feeds autoSave.markDirty

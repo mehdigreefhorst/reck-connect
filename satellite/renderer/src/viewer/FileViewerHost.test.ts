@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from "vitest";
 import { mountFileViewer } from "./FileViewerHost";
 
 interface FilesApiStub {
@@ -1424,5 +1424,171 @@ describe("Round 8.4 Bug D — popup root scroll clamp + banner spacing", () => {
         : NaN;
     expect(Number.isFinite(verticalPx)).toBe(true);
     expect(verticalPx).toBeLessThanOrEqual(7);
+  });
+});
+
+/*
+ * Phase B follow-up — station-remote component preview. A `.tsx` opened
+ * with `host=station-remote` never touches the Mac mount, so previewability
+ * comes from the station's own package.json (read over the same
+ * `files.readStation` bridge) and the Vite `?target=` path is derived from
+ * the pane's `projectCwd`. The daemon spawns Vite on the station either
+ * way; a non-previewable project falls straight to source with no spawn
+ * attempt.
+ */
+describe("Phase B — station-remote component preview", () => {
+  const CWD = "/home/strijders/projects/commitify";
+  const FILE = `${CWD}/Testimonials.tsx`;
+  const PKG_PREVIEWABLE = JSON.stringify({
+    dependencies: { react: "^19.0.0" },
+    devDependencies: { vite: "^6.0.0" },
+  });
+  const SETTINGS = {
+    station: { enabled: true, url: "http://station.local:7315" },
+  };
+
+  let root: HTMLElement;
+  let files: FilesApiStub;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  /** readStation stub keyed by path; unknown paths → not-found. */
+  function stationFiles(
+    byPath: Record<string, string>,
+  ): ReturnType<typeof vi.fn> {
+    return vi.fn().mockImplementation(async (p: string) =>
+      p in byPath
+        ? {
+            ok: true,
+            content: byPath[p],
+            baseline: { mtimeMs: 1, sha256: "abc", size: byPath[p].length },
+            writable: true,
+          }
+        : { ok: false, code: "not-found", error: "no such file" },
+    );
+  }
+
+  function settingsConfig(): ConfigStub {
+    return {
+      get: vi
+        .fn()
+        .mockImplementation(async (key: string) =>
+          key === "settings" ? SETTINGS : undefined,
+        ),
+      set: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    root = document.createElement("div");
+    document.body.appendChild(root);
+    files = {
+      read: vi.fn(),
+      stat: vi.fn(),
+      openInViewer: vi.fn().mockResolvedValue({ ok: true }),
+      write: vi.fn(),
+      watchSubscribe: vi.fn().mockResolvedValue({ ok: true, resolvedPath: "" }),
+      watchUnsubscribe: vi.fn().mockResolvedValue({ ok: true }),
+      onWatchEvent: vi.fn().mockReturnValue(() => {}),
+      suffixSearch: {
+        onMatch: vi.fn().mockReturnValue(() => {}),
+        onProgress: vi.fn().mockReturnValue(() => {}),
+        onDone: vi.fn().mockReturnValue(() => {}),
+        onCancelled: vi.fn().mockReturnValue(() => {}),
+        cancel: vi.fn().mockResolvedValue({ ok: true }),
+      },
+    };
+    // ApiClient.startPreview goes through global fetch; answer ready.
+    fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({ running: true, ready: true, port: 5199, error: "" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("mounts the live preview iframe for a previewable station project", async () => {
+    files.readStation = stationFiles({
+      [FILE]: "export default function T() { return null }",
+      [`${CWD}/package.json`]: PKG_PREVIEWABLE,
+    });
+    installReckApi(files, settingsConfig());
+    await mountFileViewer({
+      root,
+      params: new URLSearchParams(
+        `path=${encodeURIComponent(FILE)}&host=station-remote` +
+          `&projectId=p1&projectCwd=${encodeURIComponent(CWD)}`,
+      ),
+    });
+    // Let startPreview settle + the iframe swap in.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    const surface = root.querySelector(".file-viewer-component");
+    expect(surface).not.toBeNull();
+    const frame = root.querySelector(
+      ".file-viewer-component-frame",
+    ) as HTMLIFrameElement | null;
+    expect(frame).not.toBeNull();
+    // Cross-origin URL: station host + daemon-reported port + rel target.
+    expect(frame!.getAttribute("src")).toBe(
+      "http://station.local:5199/?target=Testimonials.tsx",
+    );
+    // The preview start hit the daemon's project-scoped endpoint.
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://station.local:7315/projects/p1/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    // No CodeMirror behind the preview.
+    expect(root.querySelector(".cm-editor")).toBeNull();
+  });
+
+  it("falls back to source when the station project is not previewable", async () => {
+    files.readStation = stationFiles({
+      [FILE]: "export default function T() { return null }",
+      [`${CWD}/package.json`]: JSON.stringify({
+        dependencies: { express: "^4.0.0" },
+      }),
+    });
+    installReckApi(files, settingsConfig());
+    await mountFileViewer({
+      root,
+      params: new URLSearchParams(
+        `path=${encodeURIComponent(FILE)}&host=station-remote` +
+          `&projectId=p1&projectCwd=${encodeURIComponent(CWD)}`,
+      ),
+    });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    expect(root.querySelector(".file-viewer-component")).toBeNull();
+    expect(root.querySelector(".cm-editor")).not.toBeNull();
+    // No spawn attempt for a non-previewable project.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("skips detection entirely without a projectId (source, one SSH read)", async () => {
+    files.readStation = stationFiles({
+      [FILE]: "export default function T() { return null }",
+      [`${CWD}/package.json`]: PKG_PREVIEWABLE,
+    });
+    installReckApi(files, settingsConfig());
+    await mountFileViewer({
+      root,
+      params: new URLSearchParams(
+        `path=${encodeURIComponent(FILE)}&host=station-remote` +
+          `&projectCwd=${encodeURIComponent(CWD)}`,
+      ),
+    });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    expect(root.querySelector(".file-viewer-component")).toBeNull();
+    expect(root.querySelector(".cm-editor")).not.toBeNull();
+    // Only the file itself was read — no package.json probe.
+    expect(files.readStation).toHaveBeenCalledTimes(1);
+    expect(files.readStation).toHaveBeenCalledWith(FILE);
   });
 });

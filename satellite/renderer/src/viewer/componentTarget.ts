@@ -46,3 +46,37 @@ export function deriveComponentTarget(
     slug,
   };
 }
+
+/** Station-remote counterpart of {@link ComponentTarget}: the project root
+ * is already known (the pane's station-side cwd), so only the relative
+ * target survives. */
+export interface StationComponentTarget {
+  /** Path of the component file relative to the project cwd. */
+  targetRelPath: string;
+}
+
+/**
+ * Derive the project-root-relative path of a station-side file from the
+ * pane's station cwd. Unlike {@link deriveComponentTarget} there is no
+ * mount/slug arithmetic — the daemon resolves the project root itself from
+ * the project id; the viewer only needs the Vite `?target=` path.
+ *
+ * Returns `null` when the file is not strictly inside `projectCwd` (a
+ * sibling directory sharing the prefix does not count) or when `projectCwd`
+ * is empty/root — an empty cwd would make every absolute path "match".
+ */
+export function deriveStationComponentTarget(
+  filePath: string,
+  projectCwd: string,
+): StationComponentTarget | null {
+  const cwd = projectCwd.replace(/\/+$/, "");
+  if (!cwd) return null;
+
+  const prefix = cwd + "/";
+  if (!filePath.startsWith(prefix)) return null;
+
+  const targetRelPath = filePath.slice(prefix.length);
+  if (!targetRelPath) return null;
+
+  return { targetRelPath };
+}
