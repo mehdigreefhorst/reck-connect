@@ -6,7 +6,11 @@
 export type PersistedRenderMode = "rendered" | "source";
 
 /** The concrete surface a viewer should mount for a file. */
-export type ViewerMode = "markdown-rendered" | "html-static" | "source";
+export type ViewerMode =
+  | "markdown-rendered"
+  | "html-static"
+  | "component"
+  | "source";
 
 export function isMarkdownPath(p: string): boolean {
   return /\.(md|markdown)$/i.test(p);
@@ -14,6 +18,11 @@ export function isMarkdownPath(p: string): boolean {
 
 export function isHtmlPath(p: string): boolean {
   return /\.html?$/i.test(p);
+}
+
+/** True for React component files that can be live-previewed (.tsx/.jsx only for v1). */
+export function isComponentPath(p: string): boolean {
+  return /\.(t|j)sx$/i.test(p);
 }
 
 /** True for file types that offer a rendered view (and thus a
@@ -30,10 +39,13 @@ export function isRenderablePath(p: string): boolean {
 export function pickViewerMode(
   path: string,
   persisted: PersistedRenderMode | undefined,
+  opts?: { componentPreviewAvailable?: boolean },
 ): ViewerMode {
   if (persisted !== "source") {
     if (isMarkdownPath(path)) return "markdown-rendered";
     if (isHtmlPath(path)) return "html-static";
+    if (opts?.componentPreviewAvailable && isComponentPath(path))
+      return "component";
   }
   return "source";
 }

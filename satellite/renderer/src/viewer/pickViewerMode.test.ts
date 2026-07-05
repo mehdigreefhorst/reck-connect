@@ -4,6 +4,7 @@ import {
   isRenderablePath,
   pickViewerMode,
   isHtmlPath,
+  isComponentPath,
 } from "./pickViewerMode";
 
 describe("isMarkdownPath", () => {
@@ -36,6 +37,44 @@ describe("pickViewerMode", () => {
   it("classifies extensions case-insensitively", () => {
     expect(pickViewerMode("/a/b.HTML", undefined)).toBe("html-static");
     expect(pickViewerMode("/a/README.MD", undefined)).toBe("markdown-rendered");
+  });
+});
+
+describe("pickViewerMode (component)", () => {
+  it("component: .tsx with componentPreviewAvailable → component", () => {
+    expect(
+      pickViewerMode("src/Button.tsx", undefined, {
+        componentPreviewAvailable: true,
+      }),
+    ).toBe("component");
+  });
+  it("component: .jsx with flag → component", () => {
+    expect(
+      pickViewerMode("a/b/Widget.jsx", undefined, {
+        componentPreviewAvailable: true,
+      }),
+    ).toBe("component");
+  });
+  it("no preview available → .tsx falls through to source", () => {
+    expect(pickViewerMode("src/Button.tsx", undefined)).toBe("source");
+    expect(
+      pickViewerMode("src/Button.tsx", undefined, {
+        componentPreviewAvailable: false,
+      }),
+    ).toBe("source");
+  });
+  it("persisted source overrides component", () => {
+    expect(
+      pickViewerMode("src/Button.tsx", "source", {
+        componentPreviewAvailable: true,
+      }),
+    ).toBe("source");
+  });
+  it("isComponentPath matches only .tsx/.jsx", () => {
+    expect(isComponentPath("a.tsx")).toBe(true);
+    expect(isComponentPath("a.jsx")).toBe(true);
+    expect(isComponentPath("a.ts")).toBe(false);
+    expect(isComponentPath("a.js")).toBe(false);
   });
 });
 
