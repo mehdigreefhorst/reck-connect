@@ -1009,6 +1009,12 @@ async function renderStationRemote(
   let componentPreviewAvailable = false;
   if (isComponentPath(filePath)) {
     settings = await loadSettings();
+    console.info(
+      `[preview] gate(station) file=${filePath} ` +
+        `projectId=${renderOpts.projectId ?? "<none>"} ` +
+        `projectCwd=${renderOpts.projectCwd ?? "<none>"} ` +
+        `station=${settings?.station?.url ?? "<unconfigured>"}`,
+    );
     if (
       renderOpts.projectId &&
       renderOpts.projectCwd &&
@@ -1019,12 +1025,24 @@ async function renderStationRemote(
           filePath,
           renderOpts.projectCwd,
         );
+        console.info(
+          `[preview] target(station) cwd=${renderOpts.projectCwd} ` +
+            `file=${filePath} -> ` +
+            (stationTarget
+              ? `rel=${stationTarget.targetRelPath}`
+              : "<not under cwd>"),
+        );
         if (stationTarget) {
           const det = await detectStationProjectPreview(async (p) => {
             const r = await window.reckAPI.files.readStation(p);
             return r.ok ? r.content : null;
           }, renderOpts.projectCwd);
           componentPreviewAvailable = det.previewable;
+          console.info(
+            `[preview] detect(station) cwd=${renderOpts.projectCwd} ` +
+              `previewable=${det.previewable}` +
+              (det.reason ? ` reason=${det.reason}` : ""),
+          );
         }
       } catch (e) {
         console.warn(
@@ -1033,12 +1051,19 @@ async function renderStationRemote(
         );
         componentPreviewAvailable = false;
       }
+    } else {
+      console.info(
+        "[preview] gate(station) not met (needs projectId + projectCwd + station URL) -> source",
+      );
     }
   }
 
   const mode = pickViewerMode(filePath, persisted, {
     componentPreviewAvailable,
   });
+  if (isComponentPath(filePath)) {
+    console.info(`[preview] mode(station)=${mode}`);
+  }
   let codeEditor: CodeEditorHandle | null = null;
   let baseline: FileBaseline = result.baseline;
 
@@ -1543,26 +1568,50 @@ async function renderForPath(
   let componentPreviewAvailable = false;
   if (isComponentPath(filePath)) {
     settings = await loadSettings();
+    console.info(
+      `[preview] gate(local) file=${filePath} ` +
+        `projectId=${renderOpts.projectId ?? "<none>"} ` +
+        `station=${settings?.station?.url ?? "<unconfigured>"}`,
+    );
     if (renderOpts.projectId && settings?.station?.url) {
       try {
         const mount = await window.reckAPI.paths.localMountPoint();
         componentTarget = deriveComponentTarget(result.resolvedPath, mount);
+        console.info(
+          `[preview] target(local) mount=${mount} ` +
+            `resolved=${result.resolvedPath} -> ` +
+            (componentTarget
+              ? `slug=${componentTarget.slug} rel=${componentTarget.targetRelPath}`
+              : "<not under mount>"),
+        );
         if (componentTarget) {
           const det = await window.reckAPI.preview.detect(
             componentTarget.projectRootMac,
           );
           componentPreviewAvailable = det.previewable;
+          console.info(
+            `[preview] detect(local) root=${componentTarget.projectRootMac} ` +
+              `previewable=${det.previewable}` +
+              (det.reason ? ` reason=${det.reason}` : ""),
+          );
         }
       } catch (e) {
         console.warn("[file-viewer] component-preview detect failed", e);
         componentPreviewAvailable = false;
       }
+    } else {
+      console.info(
+        "[preview] gate(local) not met (needs projectId + station URL) -> source",
+      );
     }
   }
 
   const mode = pickViewerMode(filePath, persisted, {
     componentPreviewAvailable,
   });
+  if (isComponentPath(filePath)) {
+    console.info(`[preview] mode(local)=${mode}`);
+  }
   if (renderable) {
     // persisted is always defined inside this branch; ?? "rendered" only satisfies the type.
     const currentMode: MarkdownMode = persisted ?? "rendered";

@@ -97,6 +97,7 @@ export function createComponentPreview(
   // `dispose()` so a spurious watchdog trip can't stop keep-warm polling.
   const fail = (message: string): void => {
     if (disposed || degraded) return;
+    console.warn(`[preview] degraded project=${projectId}: ${message}`);
     degraded = true;
     clearWatchdog();
     spinner.remove();
@@ -122,6 +123,7 @@ export function createComponentPreview(
     const src = `http://${stationHost}:${status.port}/?target=${encodeURIComponent(
       targetRelPath,
     )}`;
+    console.info(`[preview] iframe project=${projectId} src=${src}`);
     frame.setAttribute("src", src);
     frame.className = "file-viewer-component-frame";
     frame.setAttribute("title", "Live component preview");
@@ -145,9 +147,17 @@ export function createComponentPreview(
   };
 
   const hmrHost = opts.hmrHost ?? stationHost;
+  console.info(
+    `[preview] startPreview project=${projectId} hmrHost=${hmrHost} target=${targetRelPath}`,
+  );
   void api.startPreview(projectId, { hmrHost }).then(
     (status) => {
       if (disposed) return;
+      console.info(
+        `[preview] startPreview project=${projectId} -> ` +
+          `running=${status.running} ready=${status.ready} port=${status.port}` +
+          (status.error ? ` error=${status.error}` : ""),
+      );
       if (status.ready) showFrame(status);
       else fail(status.error || DEFAULT_ERROR);
     },
@@ -155,6 +165,9 @@ export function createComponentPreview(
       if (disposed) return;
       const message =
         err instanceof Error && err.message ? err.message : DEFAULT_ERROR;
+      console.warn(
+        `[preview] startPreview project=${projectId} threw: ${message}`,
+      );
       fail(message);
     },
   );
