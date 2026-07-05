@@ -121,6 +121,31 @@ file-viewer by reusing existing components. Plan in
 - Surface is lazy: a History overlay that's never spoken carries no highlight
   overlay or scroll listener.
 
+### Round 2 (2026-07-05) — polish pass from live use
+
+Second batch of requests after using the History view: "transcript not found"
+for some panes, questions/plans invisible, top-right control layout, styling.
+
+#### P1 — "transcript not found" for worktree/subdir sessions
+
+**What we learned**
+- Root cause (probed live on the Pi): a Claude session that ran in a **git
+  worktree** is written under `~/.claude/projects/<EncodeCwd(worktreeCwd)>/`,
+  e.g. `-home-strijders-projects-CyborgStudio--claude-worktrees-transcript-search-fts5/`,
+  NOT under the project's registered cwd dir. The daemon computed the path from
+  `detail.Cwd` (the project cwd) → wrong dir → 404. Same for any project that
+  never wrote a session.
+- Fix: `sessions.FindTranscript()` prefers the canonical path but falls back to
+  a `filepath.Glob(claudeDir/*/<sid>.jsonl)` — the session id is a
+  globally-unique UUID, so the match is unambiguous. Handler validates the UUID
+  first (already did), so no glob-metachar/traversal risk.
+
+**Surprises**
+- The worktree session's *internal* `"cwd"` field still reads the git root
+  (`…/CyborgStudio`), but Claude places the file under `EncodeCwd(process.cwd())`
+  = the worktree path. So trusting the recorded cwd wouldn't help — glob-by-id is
+  the reliable locator.
+
 ## Codex preamble via `developer_instructions` (follow-up to #33, 2026-07-01)
 
 Undeferred the #32 preamble for codex after web-researching the actual `codex` CLI.

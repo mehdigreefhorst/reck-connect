@@ -75,10 +75,17 @@ func (s *Server) handleTranscript(w nethttp.ResponseWriter, r *nethttp.Request) 
 		nethttp.Error(w, err.Error(), nethttp.StatusInternalServerError)
 		return
 	}
-	f, err := os.Open(sessions.TranscriptPath(claudeDir, detail.Cwd, sessionID))
+	// Locate by session id, not just the canonical path: worktree/subdir
+	// sessions live under a different EncodeCwd() dir than the project cwd.
+	path, found := sessions.FindTranscript(claudeDir, detail.Cwd, sessionID)
+	if !found {
+		nethttp.Error(w, "transcript not found", nethttp.StatusNotFound)
+		return
+	}
+	f, err := os.Open(path)
 	if err != nil {
-		// Missing file ↔ no transcript for that session (or TTL'd by
-		// Claude Code). Anything else is a genuine server problem.
+		// Raced away between the stat and the open (TTL'd by Claude Code),
+		// or a genuine server problem.
 		if os.IsNotExist(err) {
 			nethttp.Error(w, "transcript not found", nethttp.StatusNotFound)
 			return

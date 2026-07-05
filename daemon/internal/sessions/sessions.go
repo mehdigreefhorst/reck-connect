@@ -396,6 +396,25 @@ func TranscriptPath(claudeProjectsDir, cwd, sessionID string) string {
 	return filepath.Join(claudeProjectsDir, EncodeCwd(cwd), sessionID+".jsonl")
 }
 
+// FindTranscript locates a session's JSONL. It prefers the canonical path
+// (EncodeCwd(cwd)/<sid>.jsonl) but falls back to a glob across every project
+// dir when that misses: a session that ran in a git worktree or a subdir is
+// stored under the EncodeCwd() of its *actual* cwd, which differs from the
+// project's registered cwd. The session id is a globally-unique UUID, so the
+// glob is unambiguous. Callers MUST validate sessionID as a UUID first (the
+// HTTP handler does) so it can't smuggle glob metacharacters or path parts.
+func FindTranscript(claudeProjectsDir, cwd, sessionID string) (string, bool) {
+	direct := TranscriptPath(claudeProjectsDir, cwd, sessionID)
+	if _, err := os.Stat(direct); err == nil {
+		return direct, true
+	}
+	matches, err := filepath.Glob(filepath.Join(claudeProjectsDir, "*", sessionID+".jsonl"))
+	if err == nil && len(matches) > 0 {
+		return matches[0], true
+	}
+	return "", false
+}
+
 // DefaultClaudeProjectsDir returns the conventional Claude Code transcript
 // root (~/.claude/projects) for the current user.
 func DefaultClaudeProjectsDir() (string, error) {

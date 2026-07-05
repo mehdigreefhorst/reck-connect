@@ -201,6 +201,29 @@ func TestTranscript_missingTranscript404s(t *testing.T) {
 	}
 }
 
+func TestTranscript_findsSessionInWorktreeDir(t *testing.T) {
+	// A session that ran in a git worktree / subdir is stored under a
+	// DIFFERENT EncodeCwd() dir than the project's registered cwd, so the
+	// canonical path 404s. The handler must still find it by session id —
+	// the UUID is globally unique across all project dirs.
+	content := `{"type":"user","message":{"content":"from a worktree"}}` + "\n"
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	s, _, projectCwd := newServerWithSessions(t)
+	worktreeCwd := filepath.Join(projectCwd, ".claude", "worktrees", "feature-x")
+	seedTranscript(t, fakeHome, worktreeCwd, testSessionID, content)
+	srv := httptest.NewServer(newTestHandler(t, s))
+	t.Cleanup(srv.Close)
+
+	r, body := getTranscript(t, srv.URL, "p1", testSessionID, "")
+	if r.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200 (found via session-id glob)", r.StatusCode)
+	}
+	if body != content {
+		t.Fatalf("body = %q, want %q", body, content)
+	}
+}
+
 func TestTranscript_authRequired(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
