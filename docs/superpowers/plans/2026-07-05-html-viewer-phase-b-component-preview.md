@@ -22,7 +22,7 @@ The design spec (`docs/superpowers/specs/2026-07-02-html-react-viewer-design.md`
 
 **DECISION D2 (providers): auto-infer + manual override** (spec §8 default). Auto-detect a root `Providers`/layout; honor a `<Component>.reck-preview.tsx` override; degrade to a bare render with a visible hint.
 
-**DECISION D3 (transport): direct tailnet dev-server port** (spec §14 default). The runner binds `0.0.0.0:<port>`; the satellite frames `http://<station-host>:<port>/`. **Depends on Tailscale ACLs permitting non-`7315` ports between the user's own devices** (spec §14 open item — confirm with user before Task 13 e2e). Task 12b adds an SSH-`-L` fallback that is only needed if that check fails; a daemon reverse-proxy is the Phase C hardening.
+**DECISION D3 (transport): direct tailnet dev-server port** (spec §14 default) — **CONFIRMED 2026-07-05: the user's Tailscale permits non-`7315` ports between their devices, so the direct port is the shipping path.** The runner binds `0.0.0.0:<port>`; the satellite frames `http://<station-host>:<port>/`. Task 12b's SSH-`-L` fallback is therefore **optional/deferred** (only for hardened tailnets); a daemon reverse-proxy is the Phase C hardening. **In place of auto-fallback, every preview failure (start error, `node` missing, unreachable port, readiness timeout, iframe load error) MUST surface a user-facing toast + a degrade panel** (user request 2026-07-05) — see Tasks 11–12.
 
 **Post-plan follow-ups (do at Task 15, after code):** correct spec §3/§6/§9 and GitHub issue #44 to match D1.
 
@@ -543,6 +543,8 @@ export interface PreviewStatus { running: boolean; ready: boolean; port: number;
 
 Design: `Start` writes the embedded runner to a per-daemon temp dir once (Task 7), then `exec.Command(node, runnerPath, "--cwd", cwd, "--host", "0.0.0.0", "--port", "0")`. A goroutine scans stdout for `RECK_PREVIEW_READY port=(\d+)`; `Start` blocks on a channel until ready or a 60s timeout, draining stdout after. Registry keyed by projectID; re-`Start` returns the existing ready status. `Stop`/`Shutdown` send SIGTERM then SIGKILL after a grace period.
 
+**Lifecycle / RAM model (per user question 2026-07-05):** exactly **one runner process per project**, reused across every component/target opened in that project (re-`Start` returns the existing server; the target varies only via the iframe `?target=` query). It is **not** global (each project has its own `vite.config`/`node_modules`), and **not** per-pane/per-file. The Manager records `lastSeen` per project (bumped on `Start` and `Status`) and runs a **reaper** goroutine (ticks every 30s) that `Stop`s any project idle longer than `idleTimeout` (default 120s). The satellite keeps a mounted preview alive with a 30s `Status` heartbeat (Task 11), so a shared server survives while ≥1 viewer is open and is reclaimed ~2 min after the last closes. `Shutdown` kills all. This bounds resident RAM to ~one Vite dev server (~150–400 MB) **per actively-previewed project**. `NewManager` starts the reaper; expose an `idleTimeout` field (default 120s) for the test seam.
+
 - [ ] **Step 1: Write the failing test** (fake runner = a tiny node/sh script that prints the READY line, injected via an unexported `runnerCmd` seam)
 
 ```go
@@ -591,7 +593,7 @@ func TestStartTimeoutOnSilentRunner(t *testing.T) {
 ```
 
 - [ ] **Step 2: Run — expect FAIL** (`go test ./daemon/internal/preview/` → undefined `newManagerForTest`).
-- [ ] **Step 3: Implement `manager.go`** (registry, spawn via injected `nodePath`+`runnerPath`, stdout scanner, timeout, SIGTERM/SIGKILL, mutex-guarded map). Provide the `newManagerForTest(nodePath, runnerPath)` test seam and a `readyTimeout` field (default 60s). Keep <300 lines.
+- [ ] **Step 3: Implement `manager.go`** (registry, spawn via injected `nodePath`+`runnerPath`, stdout scanner, ready timeout, `lastSeen` bumped on `Start`/`Status`, a **reaper goroutine** on a `reapInterval` ticker that `Stop`s projects idle > `idleTimeout`, SIGTERM/SIGKILL, mutex-guarded map). Provide the `newManagerForTest(nodePath, runnerPath)` seam and `readyTimeout` (default 60s), `idleTimeout` (default 120s), `reapInterval` (default 30s) fields. Also add **`TestIdleReaperStopsAfterTimeout`** (test-first, in Step 1): short `idleTimeout`+`reapInterval`, start the fake runner, send no `Status`, assert the child is `Stop`ped within the window — and that a `Status` call before the window keeps it alive. Keep <320 lines.
 - [ ] **Step 4: Run — expect PASS.**
 - [ ] **Step 5: Commit** — `git commit -am "feat(preview): daemon child manager with port/readiness parsing"`
 
@@ -682,7 +684,11 @@ Precedence: `persisted === "source"` → `source`. Else md → markdown-rendered
 
 **Interfaces — Produces:** `createComponentPreview(opts): ComponentPreviewHandle` (shared vocabulary). Consumes: a `PreviewApi` slice (`startPreview`/`getPreview`/`stopPreview`), `stationHost`.
 
-Behavior: mount a container with a readiness spinner → call `api.startPreview(projectId)` → on ready, set `iframe.src = http://<stationHost>:<port>/?target=<encodeURIComponent(targetRelPath)>`; the iframe has **no** `sandbox="allow-same-origin"` and no `allow` grants beyond default. On error/timeout, render a degrade panel with `status.error` (or "not a previewable project") and call `opts.onError`. `dispose()` removes the iframe and calls `api.stopPreview(projectId)` (best-effort; ignore rejection).
+Behavior: mount a container with a readiness spinner → call `api.startPreview(projectId)` → on ready, set `iframe.src = http://<stationHost>:<port>/?target=<encodeURIComponent(targetRelPath)>`; the iframe has **no** `sandbox="allow-same-origin"` and no `allow` grants beyond default.
+
+**Failure handling (D3 / user request 2026-07-05):** on start error, `node`-missing (`status.error` non-empty), readiness timeout, OR an iframe load error / watchdog (no `load` event within ~15s), render a degrade panel with the message **and** call `opts.onError(message)` — Task 12 wires `onError` to `showToast`, so every failure is visible.
+
+**Lifecycle / RAM:** the station server is **per-project and shared** (the daemon reuses it by `projectID`), so `dispose()` must **not** kill it — killing would break other open previews of the same project. Instead, while mounted, ComponentPreview sends a keepalive `api.getPreview(projectId)` heartbeat every 30s; `dispose()` clears the heartbeat and detaches the iframe but does **not** call `stopPreview` (the daemon idle-reaps the shared server — Task 5). `stopPreview` stays on the API for explicit/manual stop only.
 
 - [ ] **Step 1: Failing test** (jsdom; a fake `PreviewApi`)
 
@@ -715,13 +721,20 @@ describe("createComponentPreview", () => {
     expect(h.el.querySelector("iframe")).toBeNull();
   });
 
-  it("stops the preview on dispose", async () => {
-    const api = { startPreview: vi.fn().mockResolvedValue(ready), getPreview: vi.fn(), stopPreview: vi.fn().mockResolvedValue(undefined) };
+  it("heartbeats while mounted and does NOT kill the shared server on dispose", async () => {
+    vi.useFakeTimers();
+    const api = { startPreview: vi.fn().mockResolvedValue(ready), getPreview: vi.fn().mockResolvedValue(ready), stopPreview: vi.fn().mockResolvedValue(undefined) };
     const h = createComponentPreview({ api, projectId: "p", stationHost: "h", targetRelPath: "a.tsx" });
     document.body.appendChild(h.el);
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);       // resolve startPreview
+    await vi.advanceTimersByTimeAsync(30_000);  // one heartbeat while mounted
+    expect(api.getPreview).toHaveBeenCalledWith("p");
+    const beats = api.getPreview.mock.calls.length;
     h.dispose();
-    expect(api.stopPreview).toHaveBeenCalledWith("p");
+    await vi.advanceTimersByTimeAsync(90_000);  // no further heartbeats after dispose
+    expect(api.getPreview.mock.calls.length).toBe(beats);
+    expect(api.stopPreview).not.toHaveBeenCalled(); // daemon idle-reaps; viewer never kills the shared server
+    vi.useRealTimers();
   });
 });
 ```
@@ -737,7 +750,7 @@ describe("createComponentPreview", () => {
 
 **Interfaces — Consumes:** `pickViewerMode` (with `componentPreviewAvailable`), `createComponentPreview`, `reckAPI.preview.detect`, the station `ApiClient`, `stationHostFromUrl`.
 
-Threading: before calling `pickViewerMode`, resolve `componentPreviewAvailable` = (path is component) && `(await reckAPI.preview.detect(projectCwd)).previewable`, cached per project. Add `else if (mode === "component")` arms in **both** `renderForPath` (~1475/1511) and `renderStationRemote` (~1082), mounting `createComponentPreview({ api, projectId, stationHost, targetRelPath })` into `shell.body`. `targetRelPath` = the opened file made relative to `projectCwd`. TTS/search read **source** in Phase B (spec §9) — so the `component` arm does **not** call `attachSpeakAndSearch` over the iframe; add `"component"` to both `SurfaceKind` unions now (cheap, forward-looking for Phase D) but do not wire an adapter yet.
+Threading: before calling `pickViewerMode`, resolve `componentPreviewAvailable` = (path is component) && `(await reckAPI.preview.detect(projectCwd)).previewable`, cached per project. Add `else if (mode === "component")` arms in **both** `renderForPath` (~1475/1511) and `renderStationRemote` (~1082), mounting `createComponentPreview({ api, projectId, stationHost, targetRelPath, onError: (msg) => showToast(shell.body, msg, { kind: "error" }) })` into `shell.body`. Reuse the existing `showToast` from `./Toast` (already imported at FileViewerHost.ts:36, as the html-static link arm uses it) so every preview failure surfaces as a toast. `targetRelPath` = the opened file made relative to `projectCwd`. TTS/search read **source** in Phase B (spec §9) — so the `component` arm does **not** call `attachSpeakAndSearch` over the iframe; add `"component"` to both `SurfaceKind` unions now (cheap, forward-looking for Phase D) but do not wire an adapter yet.
 
 - [ ] **Step 1:** Failing test: with `preview.detect` stubbed `previewable:true` and `pickViewerMode` returning `component`, the render path calls the (mocked) `createComponentPreview` with the encoded rel path + station host; with `previewable:false`, it falls back to the source arm.
 - [ ] **Step 2:** Run — expect FAIL.
@@ -745,7 +758,7 @@ Threading: before calling `pickViewerMode`, resolve `componentPreviewAvailable` 
 - [ ] **Step 4:** Run — expect PASS; `pnpm --dir satellite typecheck` + full `pnpm --dir satellite test` green.
 - [ ] **Step 5: Commit** — `git commit -am "feat(viewer): component-live arm in both render paths"`
 
-- [ ] **Task 12b (optional — only if D3 tailnet check fails): SSH `-L` fallback.** If the user's Tailscale ACLs block non-`7315` ports, add a satellite-main helper that opens `ssh -L <localPort>:127.0.0.1:<devPort> <reck-station>` (reusing the existing sshfs identity) and have `ComponentPreview` frame `http://127.0.0.1:<localPort>/`. Gate behind a setting; skip entirely if the direct port works.
+- [ ] **Task 12b (DEFERRED — D3 confirmed working 2026-07-05; build only for hardened tailnets): SSH `-L` fallback.** Not needed for the user's current setup (their Tailscale permits non-`7315` ports). If ever required: a satellite-main helper opens `ssh -L <localPort>:127.0.0.1:<devPort> <reck-station>` (reusing the sshfs identity) and `ComponentPreview` frames `http://127.0.0.1:<localPort>/`. v1 ships **without** it; any unreachable port degrades via the toast + panel (Tasks 11–12) instead of silently failing.
 
 ---
 
@@ -767,7 +780,7 @@ Threading: before calling `pickViewerMode`, resolve `componentPreviewAvailable` 
 
 **Files:** extend the fixture; add `daemon/internal/preview/runner/detect.test.mjs` cases (done in Task 2) + a runner integration assertion that the themed provider's `data-provider` wrapper appears in the entry graph.
 
-- [ ] **Step 1:** Add an integration assertion (Task 3 harness): `GET /@reck/entry?target=…` includes the `/@reck/providers` import when `src/Providers.tsx` exists; add a `Button.reck-preview.tsx` override fixture and assert `detectProviders` returns it (override wins).
+- [ ] **Step 1:** Add an integration assertion (Task 3 harness): `GET /@reck/entry?target=…` includes the `/@reck/providers` import when `src/Providers.tsx` exists; add a `Button.reck-preview.tsx` override fixture and assert `detectProviders` returns it (override wins). **Also fold in the deferred Task-1 Minor test-quality notes** into `entry-builder.test.mjs`: pin `buildProvidersModule({ providersImportPath:"/x", providersExport:"wrap" })` → `/export \{ wrap as Providers \}/` (the branch `detect` actually hits), and add `assert.doesNotMatch(bareEntry, /@reck\/providers/)` so the bare-render path is truly pinned.
 - [ ] **Step 2–4:** Run — expect PASS.
 - [ ] **Step 5: Commit** — `git commit -am "test(preview): provider auto-wrap + manual override acceptance"`
 
@@ -798,6 +811,7 @@ After Task 15: dispatch the whole-branch code review (superpowers:requesting-cod
 |---|---|
 | **`node` absent on station** | Manager surfaces `PreviewStatus.error`; ComponentPreview degrades with the message (Task 5/7/11). |
 | Per-target virtual entry coupling (`load.lastTarget`) | Acceptable for single-target v1; reviewer may fold providers inline (Task 3 note). |
-| Tailnet ACL blocks non-7315 port (D3) | Confirm with user before Task 13; Task 12b SSH `-L` fallback; Phase C proxy is the end state. |
+| Tailnet ACL blocks non-7315 port (D3) | **Resolved — confirmed working 2026-07-05.** Residual unreachability degrades via toast + panel (Tasks 11–12); SSH `-L` (12b) deferred; Phase C proxy is the end state. |
+| Preview processes accumulate RAM | **One Vite process per project (reused, ~150–400 MB), never per-pane/per-file.** Idle-reaped after 120s; a 30s viewer heartbeat keeps mounted previews alive; all killed on daemon shutdown (Task 5/11). |
 | Dev server sends `X-Frame-Options` | Vite dev does not by default; if a project config adds it, add `session.defaultSession.webRequest.onHeadersReceived` (greenfield — flag to user, likely unnecessary). |
 | Fixture `node_modules` install in tests | Integration/e2e install on first run + are guarded/skippable in CI with a logged reason; must pass locally before merge. |
