@@ -37,9 +37,12 @@ const (
 	defaultStopGrace    = 3 * time.Second
 )
 
-// previewProc is the bookkeeping for one running runner child. All fields are
-// guarded by Manager.mu except cmd (immutable after construction) and exited
-// (a channel closed once, by the supervising goroutine).
+// previewProc is the bookkeeping for one runner child (or one in-flight spawn).
+// All fields are guarded by Manager.mu, except: cmd is assigned exactly once in
+// spawn (under mu, before the supervising goroutine starts, so the go statement
+// publishes it); exited is a channel closed once by the supervising goroutine;
+// readyCh is a broadcast channel closed exactly once (guarded by closed) to wake
+// every waiter — on READY, on failure/timeout, or on child exit.
 type previewProc struct {
 	cmd      *exec.Cmd
 	port     int
@@ -47,6 +50,8 @@ type previewProc struct {
 	errMsg   string
 	lastSeen time.Time
 	exited   chan struct{}
+	readyCh  chan struct{}
+	closed   bool
 }
 
 // Manager keeps one runner child per project and reaps idle ones.
@@ -114,56 +119,149 @@ func (m *Manager) Start(ctx context.Context, projectID, cwd, hmrHost string) (pr
 	m.startReaper()
 
 	m.mu.Lock()
-	if p, ok := m.procs[projectID]; ok && p.ready {
-		p.lastSeen = time.Now()
-		st := statusOf(p)
+	if p, ok := m.procs[projectID]; ok {
+		if p.ready {
+			// Fast path: a live, ready child is reused without spawning.
+			p.lastSeen = time.Now()
+			st := statusOf(p)
+			m.mu.Unlock()
+			return st, nil
+		}
+		// A concurrent caller has already reserved this slot and is spawning
+		// (I1). Do NOT spawn a second child: wait on its broadcast readyCh.
+		readyCh := p.readyCh
+		readyTimeout := m.readyTimeout
 		m.mu.Unlock()
-		return st, nil
+		return m.waitReadyAsObserver(ctx, projectID, readyCh, readyTimeout)
 	}
-	// Replace any stale (non-ready) entry rather than leaking it.
-	stale := m.procs[projectID]
-	if stale != nil {
-		delete(m.procs, projectID)
+
+	// Reserve the map slot with an in-flight proc BEFORE unlocking and spawning
+	// (I1). Concurrent callers now observe this entry instead of double-spawning.
+	proc := &previewProc{
+		lastSeen: time.Now(),
+		exited:   make(chan struct{}),
+		readyCh:  make(chan struct{}),
 	}
+	m.procs[projectID] = proc
 	readyTimeout := m.readyTimeout
 	grace := m.stopGrace
 	m.mu.Unlock()
-	if stale != nil {
-		m.terminate(stale, grace)
-	}
 
-	proc, readyCh, err := m.spawn(projectID, cwd, hmrHost)
-	if err != nil {
+	if err := m.spawn(projectID, cwd, hmrHost, proc); err != nil {
+		// Spawn failed: drop the poisoned in-flight entry (if still ours) and
+		// broadcast so any observers wake and see the failure.
+		m.abandonInFlight(projectID, proc, err.Error())
 		return proto.PreviewStatus{Error: err.Error()}, err
 	}
 
+	return m.waitReadyAsOwner(ctx, projectID, proc, readyTimeout, grace)
+}
+
+// waitReadyAsOwner blocks until the child this goroutine spawned becomes ready,
+// its context is cancelled, or readyTimeout elapses. It owns the child, so on
+// cancellation (M1) or timeout it tears the child down and clears the in-flight
+// entry before returning.
+func (m *Manager) waitReadyAsOwner(ctx context.Context, projectID string, proc *previewProc, readyTimeout, grace time.Duration) (proto.PreviewStatus, error) {
 	select {
-	case <-readyCh:
+	case <-proc.readyCh:
 		m.mu.Lock()
+		ready := proc.ready
 		st := statusOf(proc)
 		m.mu.Unlock()
+		if !ready {
+			// readyCh closed without READY: the child exited or failed first.
+			return proto.PreviewStatus{Ready: false, Error: st.Error},
+				fmt.Errorf("preview: runner for %q exited before ready", projectID)
+		}
 		return st, nil
 	case <-ctx.Done():
-		m.mu.Lock()
-		st := statusOf(proc)
-		m.mu.Unlock()
-		return st, ctx.Err()
+		m.abandonInFlight(projectID, proc, ctx.Err().Error())
+		m.terminate(proc, grace)
+		return proto.PreviewStatus{Ready: false, Error: ctx.Err().Error()}, ctx.Err()
 	case <-time.After(readyTimeout):
-		_ = m.Stop(projectID)
+		m.abandonInFlight(projectID, proc, "timeout")
+		m.terminate(proc, grace)
 		return proto.PreviewStatus{Running: true, Ready: false, Error: "timeout"},
 			fmt.Errorf("preview: runner for %q not ready within %s", projectID, readyTimeout)
 	}
 }
 
-// spawn launches the runner child, wires up output scanning, registers the
-// proc, and returns a channel that fires once the READY line is parsed.
-func (m *Manager) spawn(projectID, cwd, hmrHost string) (*previewProc, <-chan struct{}, error) {
+// waitReadyAsObserver blocks a concurrent caller that found an in-flight entry.
+// It never spawns or tears down the shared child: it waits for the owner's
+// broadcast readyCh (or its own ctx/deadline), then re-reads the current status.
+func (m *Manager) waitReadyAsObserver(ctx context.Context, projectID string, readyCh <-chan struct{}, readyTimeout time.Duration) (proto.PreviewStatus, error) {
+	select {
+	case <-readyCh:
+		m.mu.Lock()
+		p, ok := m.procs[projectID]
+		var st proto.PreviewStatus
+		ready := false
+		if ok {
+			p.lastSeen = time.Now()
+			st = statusOf(p)
+			ready = p.ready
+		}
+		m.mu.Unlock()
+		if !ok {
+			return proto.PreviewStatus{}, fmt.Errorf("preview: runner for %q did not become ready", projectID)
+		}
+		if !ready {
+			return st, fmt.Errorf("preview: runner for %q not ready", projectID)
+		}
+		return st, nil
+	case <-ctx.Done():
+		m.mu.Lock()
+		var st proto.PreviewStatus
+		if p, ok := m.procs[projectID]; ok {
+			st = statusOf(p)
+		}
+		m.mu.Unlock()
+		return st, ctx.Err()
+	case <-time.After(readyTimeout):
+		m.mu.Lock()
+		var st proto.PreviewStatus
+		if p, ok := m.procs[projectID]; ok {
+			st = statusOf(p)
+		}
+		m.mu.Unlock()
+		return st, fmt.Errorf("preview: waiting for runner %q timed out", projectID)
+	}
+}
+
+// abandonInFlight drops the in-flight entry for projectID (only if it is still
+// proc, so a newer child is never clobbered), records errMsg, and broadcasts
+// readyCh so any observers wake and re-read the status.
+func (m *Manager) abandonInFlight(projectID string, proc *previewProc, errMsg string) {
+	m.mu.Lock()
+	if m.procs[projectID] == proc {
+		delete(m.procs, projectID)
+	}
+	if errMsg != "" {
+		proc.errMsg = errMsg
+	}
+	m.closeReadyLocked(proc)
+	m.mu.Unlock()
+}
+
+// closeReadyLocked closes proc.readyCh at most once (broadcasting to every
+// waiter). Must be called with m.mu held.
+func (m *Manager) closeReadyLocked(proc *previewProc) {
+	if !proc.closed {
+		proc.closed = true
+		close(proc.readyCh)
+	}
+}
+
+// spawn launches the runner child for the already-reserved proc and wires up
+// output scanning. The proc is registered in m.procs by the caller (Start)
+// before spawn runs, so a failed spawn leaves no orphaned child in the map.
+func (m *Manager) spawn(projectID, cwd, hmrHost string, proc *previewProc) error {
 	cmd := exec.CommandContext(context.Background(), m.nodePath, m.runnerPath,
 		"--cwd", cwd, "--host", "0.0.0.0", "--hmr-host", hmrHost, "--port", "0")
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	cmd.Stdout = pw
 	cmd.Stderr = pw
@@ -171,33 +269,39 @@ func (m *Manager) spawn(projectID, cwd, hmrHost string) (*previewProc, <-chan st
 	if err := cmd.Start(); err != nil {
 		_ = pw.Close()
 		_ = pr.Close()
-		return nil, nil, err
+		return err
 	}
 	_ = pw.Close() // the child holds its own dup of the write end
 
 	m.mu.Lock()
 	m.spawnCount++
+	proc.cmd = cmd
 	m.mu.Unlock()
 
-	proc := &previewProc{cmd: cmd, lastSeen: time.Now(), exited: make(chan struct{})}
-	readyCh := make(chan struct{}, 1)
-	go m.supervise(proc, pr, readyCh)
-
-	m.mu.Lock()
-	m.procs[projectID] = proc
-	m.mu.Unlock()
-
-	return proc, readyCh, nil
+	go m.supervise(projectID, proc, pr)
+	return nil
 }
 
 // supervise reaps the child and scans its merged stdout/stderr. A dedicated
 // goroutine waits on the process so proc.exited closes promptly even if a
-// grandchild keeps the pipe open; closing pr there unblocks the scanner.
-func (m *Manager) supervise(proc *previewProc, pr *os.File, readyCh chan<- struct{}) {
+// grandchild keeps the pipe open; closing pr there unblocks the scanner. When
+// the child exits it also clears the registry entry (I2) so a dead child is
+// never reported Running/Ready nor reused, and broadcasts readyCh so any waiter
+// stops blocking.
+func (m *Manager) supervise(projectID string, proc *previewProc, pr *os.File) {
 	go func() {
 		_ = proc.cmd.Wait()
 		_ = pr.Close()
 		close(proc.exited)
+
+		m.mu.Lock()
+		// Only clear if this proc is still the registered one — a Stop/replace
+		// may already have swapped in a newer child, which must not be clobbered.
+		if m.procs[projectID] == proc {
+			delete(m.procs, projectID)
+		}
+		m.closeReadyLocked(proc)
+		m.mu.Unlock()
 	}()
 
 	scanner := bufio.NewScanner(pr)
@@ -206,10 +310,6 @@ func (m *Manager) supervise(proc *previewProc, pr *os.File, readyCh chan<- struc
 		switch {
 		case readyRe.MatchString(line):
 			m.markReady(proc, line)
-			select {
-			case readyCh <- struct{}{}:
-			default:
-			}
 		case errRe.MatchString(line):
 			msg := strings.TrimSpace(strings.TrimPrefix(line, "RECK_PREVIEW_ERROR"))
 			m.mu.Lock()
@@ -230,6 +330,8 @@ func (m *Manager) markReady(proc *previewProc, line string) {
 	m.mu.Lock()
 	proc.port = port
 	proc.ready = true
+	// Broadcast to the owner and every observer waiting on this spawn.
+	m.closeReadyLocked(proc)
 	m.mu.Unlock()
 }
 
@@ -269,19 +371,26 @@ func (m *Manager) Stop(projectID string) error {
 }
 
 // terminate signals SIGTERM then, in a goroutine, SIGKILLs the child if it has
-// not exited within grace.
+// not exited within grace. cmd is read under mu because spawn assigns it after
+// the proc is already registered (an in-flight proc may have a nil cmd).
 func (m *Manager) terminate(p *previewProc, grace time.Duration) {
-	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+	if p == nil {
 		return
 	}
-	_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	m.mu.Lock()
+	cmd := p.cmd
+	m.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
 	go func() {
 		timer := time.NewTimer(grace)
 		defer timer.Stop()
 		select {
 		case <-p.exited:
 		case <-timer.C:
-			_ = p.cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
 	}()
 }
