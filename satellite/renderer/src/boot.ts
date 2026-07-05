@@ -2003,6 +2003,11 @@ export async function boot(splash?: StartupSplashController) {
         getActiveSpeakSurface: () => {
           const rec = layout.getActiveTerminalRecord();
           if (!rec) return null;
+          // An open History overlay owns TTS for its pane (#51): speak the
+          // rendered transcript, not the terminal's visible rows — same
+          // switch as ⌘F below. Reuses the file-viewer's MarkdownSurfaceAdapter.
+          const overlay = transcripts.get(rec.tab.paneId);
+          if (overlay) return overlay.view.getSpeakSurface();
           // Wrap the active xterm pane in a TerminalPaneAdapter so the
           // TtsController treats it as a generic SpeakSurfaceAdapter,
           // identical to how the file-viewer popup wraps its markdown /

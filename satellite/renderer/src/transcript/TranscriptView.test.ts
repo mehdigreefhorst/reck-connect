@@ -205,6 +205,17 @@ describe("TranscriptView", () => {
     v.dispose();
   });
 
+  it("exposes a cached markdown speak surface over the body, disposed with the view", () => {
+    const surface = view.getSpeakSurface();
+    expect(surface.kind).toBe("markdown");
+    expect(surface.getContainerEl()).toBe(view.root);
+    // Same instance on repeat calls (one highlight overlay, not N).
+    expect(view.getSpeakSurface()).toBe(surface);
+    const disposeSpy = vi.spyOn(surface, "dispose");
+    view.dispose();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("routes external links to onExternalActivate on ⌘+click", () => {
     const onLinkActivate = vi.fn();
     const onExternalActivate = vi.fn();

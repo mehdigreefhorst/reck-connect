@@ -95,6 +95,32 @@ file-viewer by reusing existing components. Plan in
   preventDefaulted (no navigation) but not opened — consistent with the viewer.
   `onExternalActivate` is left plumbed for a future preload bridge.
 
+### Phase 4 — TTS
+
+**What we learned**
+- `tts/MarkdownSurfaceAdapter` is drop-in: `TranscriptView.getSpeakSurface()`
+  lazily builds `new MarkdownSurfaceAdapter({ container: root, body })` — the
+  same (positioned container, scrollable markdown body) split the file viewer
+  speaks with — cached and disposed in the view's `dispose()`.
+- No second `initTts`: the main window already runs one TtsController
+  (`boot.ts`), so a second would double the control bar + shortcuts. Instead the
+  existing `getActiveSpeakSurface` closure gains a one-line switch — when
+  `transcripts.get(rec.tab.paneId)` is open, return its speak surface — the
+  exact mirror of the `initSearch` transcript switch already there. Same
+  one-liner in `popout.ts`.
+
+**Surprises**
+- `MarkdownSurfaceAdapter`'s constructor is trivial (stores container/body;
+  overlay + scroll listener are lazy), so it's jsdom-safe to unit-test the
+  surface directly.
+- In `popout.ts` the `initTts` closure is defined *before* the `transcripts`
+  const — fine because the closure only runs on a user speak action (long after
+  module init), and TS permits the forward reference from inside a function.
+
+**Decisions**
+- Surface is lazy: a History overlay that's never spoken carries no highlight
+  overlay or scroll listener.
+
 ## Codex preamble via `developer_instructions` (follow-up to #33, 2026-07-01)
 
 Undeferred the #32 preamble for codex after web-researching the actual `codex` CLI.

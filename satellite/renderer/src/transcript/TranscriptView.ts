@@ -21,6 +21,8 @@ import {
 } from "../viewer/MarkdownRenderer";
 import { createOverlayScrollbar, type OverlayScrollbar } from "../search/OverlayScrollbar";
 import { domScrollSurface } from "../search/scrollSurfaces";
+import { MarkdownSurfaceAdapter } from "../tts/MarkdownSurfaceAdapter";
+import type { SpeakSurfaceAdapter } from "../tts/SpeakSurfaceAdapter";
 import type { TranscriptTurn, TranscriptBlock } from "./parseTranscript";
 
 export interface TranscriptViewOptions {
@@ -56,6 +58,10 @@ export interface TranscriptViewHandle {
   setStatus(status: TranscriptStatus): void;
   /** Route search-match fractions to the overlay scrollbar's ticks. */
   setMatches(fractions: readonly number[]): void;
+  /** The TTS speak surface over the transcript body (lazily built + cached).
+   *  The window's single TtsController returns this when the overlay is the
+   *  focused surface — same MarkdownSurfaceAdapter the file viewer speaks. */
+  getSpeakSurface(): SpeakSurfaceAdapter;
   dispose(): void;
 }
 
@@ -130,6 +136,8 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   // One element per turn, index-aligned with the parser's turn list.
   const turnEls: HTMLElement[] = [];
   let disposed = false;
+  // Lazily built so a never-spoken overlay carries no highlight overlay.
+  let speakSurface: MarkdownSurfaceAdapter | null = null;
 
   function onKeyDown(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
@@ -291,6 +299,15 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     render,
     setStatus,
     setMatches: (fractions) => scrollbar.setMatches(fractions),
+    getSpeakSurface(): SpeakSurfaceAdapter {
+      // `root` is the positioned overlay (offset parent for the control bar +
+      // highlight overlay); `body` is the scrollable rendered-markdown root —
+      // exactly the (container, body) split the file viewer speaks with.
+      if (!speakSurface) {
+        speakSurface = new MarkdownSurfaceAdapter({ container: root, body });
+      }
+      return speakSurface;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
@@ -298,6 +315,7 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
       body.removeEventListener("click", onBodyClick);
       scrollbar.dispose();
       md.dispose();
+      speakSurface?.dispose();
       root.remove();
     },
   };

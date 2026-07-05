@@ -182,6 +182,10 @@ async function bootPopout(): Promise<void> {
     try {
       await initTts({
         getActiveSpeakSurface: () => {
+          // An open History overlay owns TTS for this pane (#51) — speak the
+          // rendered transcript, mirroring the ⌘F switch below.
+          const overlay = transcripts.get(panePaneId);
+          if (overlay) return overlay.view.getSpeakSurface();
           const xterm = term.getXterm();
           const xtermEl = (xterm.element as HTMLElement | undefined) ?? body;
           const dims = (xterm as unknown as {
