@@ -67,6 +67,12 @@ type Manager struct {
 	// index Upsert / Touch on exit. Nil-safe: the Manager falls back to
 	// plain claude invocations without any persistence.
 	sessions *sessions.Store
+	// claudeProjectsDir is the root Claude Code writes per-session JSONL
+	// under (~/.claude/projects by default). Stored so the resume path can
+	// recover a git-worktree session's real runtime cwd (issue #56). Empty
+	// falls back to sessions.DefaultClaudeProjectsDir() lazily; tests set it
+	// to a t.TempDir() via ManagerConfig.ClaudeProjectsDir.
+	claudeProjectsDir string
 	// Adapters is the multi-agent (claude, codex, shell) spawn registry.
 	// Always non-nil once NewManager returns.
 	adapters *agent.Registry
@@ -133,6 +139,15 @@ var defaultRemoveProjectChildWaitTimeout = 5 * time.Second
 // HTTP layer maps this to 409 Conflict. Exported so callers can match
 // against it with errors.Is.
 var ErrSlotAlreadyLive = errors.New("slot already live")
+
+// ErrResumeWorktreeGone is returned by CreatePaneWith when a Claude session's
+// transcript lives under a git worktree that no longer exists, so its real
+// runtime cwd can't be recovered. Resuming in the project root would make
+// Claude fork a fresh transcript (issue #56), so the resume is refused instead.
+// The session stays visible and read-only (its transcript is intact); the
+// restore path clears was_live so it stops trying to auto-respawn. The HTTP
+// layer maps this to 409 Conflict. Exported so callers can match with errors.Is.
+var ErrResumeWorktreeGone = errors.New("cannot resume: session's git worktree no longer exists")
 
 // ManagerConfig bundles the daemon-wide spawn defaults the Manager needs
 // for argv construction. Introduced alongside the an earlier release binary-resolution
@@ -255,6 +270,7 @@ func NewManagerFromConfig(cfg ManagerConfig) *Manager {
 		defaultShell:           append([]string(nil), cfg.DefaultShell...),
 		configPath:             cfg.ConfigPath,
 		sessions:               cfg.Sessions,
+		claudeProjectsDir:      cfg.ClaudeProjectsDir,
 		adapters:               agent.NewRegistry(ValidateClaudeExtraArgs, cfg.CodexCmd),
 		preambleDefaults:       resolvePreambleDefaults(cfg.Mode),
 		autoNames:              agent.NewAutoNameCache(cfg.ClaudeProjectsDir),
@@ -1139,7 +1155,7 @@ func (m *Manager) UnarchiveProject(id string, cols, rows int) error {
 
 	res := m.RestoreProjectOrphans(id, p.Cwd, cols, rows)
 	slog.Info("unarchive project restore", "id", id,
-		"restored", res.Restored, "skipped", res.Skipped, "failed", res.Failed)
+		"restored", res.Restored, "skipped", res.Skipped, "failed", res.Failed, "read_only", res.ReadOnly)
 	m.notifyStateChange()
 	return nil
 }
@@ -1358,6 +1374,19 @@ func (m *Manager) CreatePaneWith(projectID string, kind proto.PaneKind, cols, ro
 		if e.Kind != proto.PaneKindClaude {
 			return nil, errors.New("resume_session_id refers to a non-claude entry")
 		}
+		// #56: recover the directory the transcript actually lives in so
+		// `claude --resume` rehydrates the existing session instead of
+		// forking a fresh transcript. For a worktree session e.Cwd is the
+		// (mis-recorded) project root; resolveResumeCwd finds the worktree
+		// and we self-heal e.Cwd here — the adapter reads it for plan.Cwd
+		// and the post-spawn Upsert (below) persists the correction. If the
+		// worktree is gone the transcript can't be located; refuse rather
+		// than resume in the wrong cwd.
+		realCwd, ok := m.resolveResumeCwd(proj.Cwd, e.Cwd, e.SessionID)
+		if !ok {
+			return nil, fmt.Errorf("%w: session %s", ErrResumeWorktreeGone, shortSessionID(e.SessionID))
+		}
+		e.Cwd = realCwd
 		resumeEntry = &e
 	}
 
@@ -1667,6 +1696,30 @@ type RestoreOrphansResult struct {
 	Restored int
 	Skipped  int
 	Failed   int
+	// ReadOnly counts Claude sessions kept but not respawned because their
+	// git worktree is gone (issue #56): the transcript is intact and stays
+	// viewable, but resuming in the wrong cwd would fork a fresh one, so
+	// was_live is cleared and the session is left read-only. Distinct from
+	// Failed (an actual respawn error) so the boot summary is honest.
+	ReadOnly int
+}
+
+// isWithinProject reports whether cwd is the project root itself or a directory
+// nested under it — the test the restore guard uses to tell a legitimate
+// worktree/subdir cwd (allow) from a foreign path left by a reused project ID
+// (skip). Uses filepath.Rel so ".." traversal and shared-prefix siblings
+// (/a/projX vs /a/proj) are correctly rejected.
+func isWithinProject(cwd, projectRoot string) bool {
+	c := filepath.Clean(cwd)
+	r := filepath.Clean(projectRoot)
+	if c == r {
+		return true
+	}
+	rel, err := filepath.Rel(r, c)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // RestoreOrphans is the daemon-startup auto-restore path for issue
@@ -1722,8 +1775,60 @@ func (m *Manager) RestoreOrphans(cols, rows int) RestoreOrphansResult {
 		total.Restored += r.Restored
 		total.Skipped += r.Skipped
 		total.Failed += r.Failed
+		total.ReadOnly += r.ReadOnly
 	}
 	return total
+}
+
+// resolveResumeCwd returns the directory `claude --resume <sessionID>` must
+// launch in to rehydrate the existing transcript rather than fork a fresh one,
+// and self-heals a mis-recorded worktree cwd along the way (issue #56).
+//
+// recordedCwd is the session entry's stored cwd (the pane's launch cwd). When
+// the transcript is already at its canonical location that cwd is returned
+// unchanged — the fast path for normal sessions, which never shell out to git.
+// Otherwise the session ran in a git worktree, so its transcript lives under a
+// suffixed folder: enumerate the project's live worktrees and return the one
+// whose encoded folder holds the transcript. ok=false means the transcript
+// can't be located under any candidate (the worktree was removed) — the caller
+// must refuse the resume rather than launch Claude in the wrong directory.
+func (m *Manager) resolveResumeCwd(projectRoot, recordedCwd, sessionID string) (string, bool) {
+	dir := m.claudeProjectsDir
+	if dir == "" {
+		d, err := sessions.DefaultClaudeProjectsDir()
+		if err != nil {
+			// Can't check the disk — trust the recorded cwd rather than
+			// block an otherwise-valid resume.
+			return recordedCwd, true
+		}
+		dir = d
+	}
+	// Canonical candidates first (a plain stat) so a normal session pays no
+	// git cost. projectRoot is included in case a row references a subdir
+	// whose transcript actually landed at the root.
+	canonical := []string{recordedCwd}
+	if recordedCwd != projectRoot {
+		canonical = append(canonical, projectRoot)
+	}
+	if cwd, ok := sessions.ResolveTranscriptCwd(dir, sessionID, canonical); ok {
+		return cwd, true
+	}
+	// Miss → the session ran in a git worktree. Recover its real cwd by
+	// matching the transcript against the project's registered worktrees.
+	if cwd, ok := sessions.ResolveTranscriptCwd(dir, sessionID, gitWorktreePaths(projectRoot)); ok {
+		return cwd, true
+	}
+	// Neither the canonical folder nor a live worktree holds it. Two cases:
+	//   - a transcript IS on disk under a worktree-suffixed folder, but the
+	//     worktree was removed so we can't map it to a cwd → refuse, so the
+	//     caller keeps the session read-only instead of forking a fresh
+	//     transcript by resuming in the wrong directory.
+	//   - no transcript anywhere → nothing to orphan; fall back to the
+	//     recorded cwd so a bare/legacy resume still proceeds as before.
+	if sessions.TranscriptExistsUnderProject(dir, recordedCwd, sessionID) {
+		return "", false
+	}
+	return recordedCwd, true
 }
 
 // RestoreProjectOrphans drains the sessions-store orphans for a single
@@ -1790,16 +1895,21 @@ func (m *Manager) restoreProjectOrphans(projectID, projectCwd string, cols, rows
 			continue
 		}
 		// Cwd-mismatch guard (Codex adversarial review finding).
-		// If the stored row references a different cwd than the
-		// project currently registered under this ID, the row
-		// belongs to a prior incarnation of the ID and must NOT
-		// be respawned under the new registration. Clear was_live
-		// so the row stops resurfacing each boot, then skip.
+		// If the stored row references a cwd outside the project
+		// currently registered under this ID, the row belongs to a
+		// prior incarnation of the ID and must NOT be respawned under
+		// the new registration. Clear was_live so the row stops
+		// resurfacing each boot, then skip.
+		//
+		// A cwd *within* the project (the root or a nested git
+		// worktree) is legitimate — #56 self-heals worktree sessions
+		// to their worktree cwd, a descendant of the root — so the
+		// check allows descendants and only rejects foreign paths.
 		// projectCwd == "" disables the check (boot path uses
 		// proj.Cwd from m.Projects() which is always populated;
 		// programmatic callers passing "" opt out deliberately).
 		if wantCwd != "" {
-			if filepath.Clean(e.Cwd) != wantCwd {
+			if !isWithinProject(e.Cwd, wantCwd) {
 				slog.Warn("restore-orphans: cwd mismatch — skipping + clearing was_live",
 					"project", projectID,
 					"kind", e.Kind,
@@ -1844,17 +1954,34 @@ func (m *Manager) restoreProjectOrphans(projectID, projectCwd string, cols, rows
 		}
 		pane, err := m.CreatePaneWith(projectID, e.Kind, cols, rows, opts)
 		if err != nil {
-			slog.Warn("restore-orphans: respawn failed",
-				"err", err,
-				"project", projectID,
-				"kind", e.Kind,
-				"identity", shortSessionID(identity),
-			)
+			// #56: the session's git worktree is gone, so it can't be
+			// resumed in the right cwd. This is expected, not a failure —
+			// keep the transcript viewable read-only and stop retrying by
+			// clearing was_live. Distinguished from a real respawn error
+			// so the boot summary and logs stay honest.
+			readOnly := errors.Is(err, ErrResumeWorktreeGone)
+			if readOnly {
+				slog.Info("restore-orphans: worktree gone — keeping session read-only",
+					"project", projectID,
+					"identity", shortSessionID(identity),
+				)
+			} else {
+				slog.Warn("restore-orphans: respawn failed",
+					"err", err,
+					"project", projectID,
+					"kind", e.Kind,
+					"identity", shortSessionID(identity),
+				)
+			}
 			if cerr := m.sessions.SetLive(projectID, identity, false); cerr != nil {
 				slog.Warn("restore-orphans: clear was_live failed",
 					"err", cerr, "project", projectID, "identity", shortSessionID(identity))
 			}
-			result.Failed++
+			if readOnly {
+				result.ReadOnly++
+			} else {
+				result.Failed++
+			}
 			continue
 		}
 		// Partial-success guard: CreatePaneWith logs-and-continues

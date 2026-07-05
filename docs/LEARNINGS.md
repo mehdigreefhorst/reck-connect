@@ -4,6 +4,64 @@ Append per feature/phase: **What we learned**, **Surprises**, **Decisions**.
 
 ---
 
+## Git-worktree Claude sessions dropped on restore (issue #56, 2026-07-05)
+
+A Claude session run in a git worktree vanished from its project on every daemon
+restart despite an intact transcript. Claude Code keys its transcript folder on
+its **runtime** cwd (`~/.claude/projects/<EncodeCwd(cwd)>/<sid>.jsonl`), but the
+pane recorded its **launch** cwd (the project root). The complete fix recovers
+the real cwd, resumes there, self-heals the record, and keeps deleted-worktree
+sessions read-only. Plan in `.claude/plans/worktree-restore-fix.md`.
+
+**What we learned**
+- A read-side fix *alone* is actively harmful. Making `transcriptExists` glob
+  worktree-suffixed folders keeps the session in `List`, but
+  `restoreProjectOrphans` then auto-resumes it — and the claude adapter
+  **hardcoded `plan.Cwd = req.Project.Cwd`** (`claude.go:84`) even on `--resume`,
+  so it relaunches in the project root. `claude --resume` there can't find the
+  transcript and forks a fresh one. The lookup fix and the resume-cwd fix must
+  ship together.
+- `EncodeCwd` is lossy (`/`, `.`, `-` all → `-`), so a worktree folder name
+  can't be decoded back to a path. The robust recovery is the other direction:
+  enumerate real worktree paths with `git worktree list --porcelain`, re-encode
+  each, and match the one whose folder holds the transcript. No decode, no
+  `/proc`/`lsof`, cross-platform.
+- The cwd-mismatch guard and self-heal fight each other. Once the record's cwd
+  is healed to the worktree (a *descendant* of the project root), the guard's
+  exact-equality check (`e.Cwd != wantCwd`) would flag it as a reused-project-ID
+  mismatch and clear `was_live`. Relaxing the guard to "equal **or** descendant"
+  (`isWithinProject`, via `filepath.Rel`) is what lets the heal survive restarts.
+- Removing a git worktree deletes its working dir but **not** its
+  `~/.claude/projects/` transcript folder — so "worktree gone" means transcript
+  present but cwd unmappable. That's a distinct state (`ErrResumeWorktreeGone` →
+  read-only, `was_live` cleared, 409 on manual resume), separate from "no
+  transcript at all" (legacy resume in the recorded cwd still fine).
+
+**Surprises**
+- Claude's worktree folders encode with a `--` (e.g.
+  `…CyborgStudio--claude-worktrees-feat`) because the `/.` in
+  `<root>/.claude-worktrees/<name>` is two non-alphanumerics in a row.
+- `restoreProjectOrphans` respawns *every* `was_live` orphan through the same
+  `--resume` path, and its cwd-mismatch guard never fired for worktree rows
+  (their recorded cwd *was* the project root), so nothing stopped the wrong-cwd
+  resume — the bug hid behind a guard that looked like it should have caught it.
+- `TestProjectDetail_autoNameCacheShortCircuitsOnRepeatedPoll` fails under
+  `-race` (mtime cache-hit count) on `f29cbe3` too — a pre-existing timing
+  flake, not caused by this change. Passes without `-race`.
+
+**Decisions**
+- **Complete fix, one PR** — supersede the read-side-only PR #57 rather than
+  merge it standalone (it's unsafe alone). Layers: glob keeps it visible →
+  `git worktree list` recovers the cwd → resume there + self-heal → relaxed
+  guard preserves the heal → gone-worktree kept read-only.
+- **Recover via `git worktree list`, not `/proc/<pid>/cwd`.** The process is
+  dead at restore time, and a live one starts in the project root and only
+  enters the worktree later, so a point-in-time cwd read is both unavailable and
+  unreliable. Git enumeration is the durable source of truth.
+- **Auto-resume live worktrees** (matches how normal sessions come back), only
+  paying the `git` cost on a canonical-path miss so normal sessions are
+  unaffected.
+
 ## Transcript view: TTS + Cmd-click + chat-start (follow-up to #51/#52, 2026-07-05)
 
 Bringing the History overlay to feature-parity with the terminal / popout /
