@@ -367,6 +367,20 @@ contextBridge.exposeInMainWorld("reckAPI", {
       }
     },
   },
+  /**
+   * Phase B Task 8 — component-preview capability probe. `detect(cwd)`
+   * asks main whether the project at `cwd` supports the live component
+   * preview (a Vite + React project, read over the sshfs mount). The
+   * viewer uses this to decide whether to offer `component` mode; the
+   * `reason` string feeds a UI hint when it can't.
+   */
+  preview: {
+    detect: (cwd: string) =>
+      ipcRenderer.invoke("preview:detect", cwd) as Promise<{
+        previewable: boolean;
+        reason: string;
+      }>,
+  },
   mount: {
     status: () => ipcRenderer.invoke("mount:status") as Promise<"green" | "yellow" | "gray">,
     forceRemount: () =>

@@ -23,6 +23,8 @@ import { BrowserWindow, dialog, ipcMain, screen, shell } from "electron";
 
 import { resolveInsideAllowedRoots } from "./file-allowlist";
 import { checkExternalUrl } from "./ipc-validation";
+import { detectProjectPreview } from "./project-detect";
+import type { ProjectPreviewInfo } from "./project-detect";
 import { deriveProjectAnchor } from "./project-anchor";
 import { rootRelativeCandidate } from "./root-relative";
 import {
@@ -1487,6 +1489,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
   ipcMain.removeHandler("file:openInViewer");
   ipcMain.removeHandler("file:suffix:cancel");
   ipcMain.removeHandler("file:createStation");
+  ipcMain.removeHandler("preview:detect");
 
   ipcMain.handle("file:read", (_e, p: unknown) => handleFileRead(deps, p));
   // Phase 8 of linkifier-followups: SSH-backed read for station files
@@ -1522,6 +1525,25 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
   ipcMain.handle("file:resolve", (_e, ps: unknown) => handleFileResolve(deps, ps));
   ipcMain.handle("file:create", (_e, p: unknown) => handleFileCreate(deps, p));
   ipcMain.handle("file:write", (_e, req: unknown) => handleFileWrite(deps, req));
+
+  // Phase B Task 8 — component-preview capability probe. Reports whether
+  // the project at `cwd` is a Vite + React project (read over the sshfs
+  // mount by `detectProjectPreview`, which is pure fs and never throws).
+  // The viewer uses this to decide whether to offer `component` mode.
+  // A non-string cwd is rejected at the boundary rather than letting
+  // `path.join` throw across the IPC bridge.
+  ipcMain.handle(
+    "preview:detect",
+    (_e, cwd: unknown): Promise<ProjectPreviewInfo> => {
+      if (typeof cwd !== "string") {
+        return Promise.resolve({
+          previewable: false,
+          reason: "cwd must be a string",
+        });
+      }
+      return detectProjectPreview(cwd);
+    },
+  );
 
   ipcMain.handle("file:watch:subscribe", (e, rawPath: unknown) => {
     if (typeof rawPath !== "string") {
