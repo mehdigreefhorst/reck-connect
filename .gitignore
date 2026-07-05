@@ -1,4 +1,7 @@
 node_modules/
+# Installed deps for the preview-runner integration-test fixture (real Vite
+# app installed on first test run; never committed).
+daemon/internal/preview/runner/__fixtures__/**/node_modules/
 dist/
 .wrangler/
 *.log
