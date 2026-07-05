@@ -455,7 +455,10 @@ html, body, #app {
 
 .rail-archive-list {
   padding: 0 0.5rem 0.35rem;
-  max-height: 40vh;
+  /* Cap at ~4.5 rail rows then scroll — the half row makes it obvious there
+     is more below. A rail row is ~2.95rem tall (0.85rem padding × 2 plus a
+     0.95rem / 1.3 line). */
+  max-height: calc(2.95rem * 4.5);
   overflow-y: auto;
 }
 
