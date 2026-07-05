@@ -1175,7 +1175,7 @@ export async function boot(splash?: StartupSplashController) {
               sourceHost: host,
               originalText: filePath,
               projectCwd: projectCwd ?? undefined,
-              projectId: currentProjectId ?? undefined,
+              projectId: directHost !== null ? (currentProjectId ?? undefined) : undefined,
             })
             .then((r) => {
               if (!r || (r as { ok?: boolean }).ok !== true) {

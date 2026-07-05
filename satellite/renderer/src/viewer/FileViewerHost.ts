@@ -1446,26 +1446,31 @@ async function renderForPath(
   // the project-root-relative target from the canonical Mac-mount path
   // (`result.resolvedPath`) + the sshfs mount root, avoiding any Pi→Mac
   // translation in the viewer. On any failure we degrade to `source`.
-  const settings = await loadSettings();
+  // Only load settings (an IPC that also reads the station token) when the
+  // file is actually a component — a plain `.md`/`.txt` open should not pay
+  // for it. `settings` stays null for non-component files; the `component`
+  // arm below only runs when `mode === "component"`, which implies
+  // `isComponentPath` here ran and set `settings`, so its non-null
+  // assertions remain valid.
+  let settings: Awaited<ReturnType<typeof loadSettings>> = null;
   let componentTarget: ReturnType<typeof deriveComponentTarget> = null;
   let componentPreviewAvailable = false;
-  if (
-    isComponentPath(filePath) &&
-    renderOpts.projectId &&
-    settings?.station?.url
-  ) {
-    try {
-      const mount = await window.reckAPI.paths.localMountPoint();
-      componentTarget = deriveComponentTarget(result.resolvedPath, mount);
-      if (componentTarget) {
-        const det = await window.reckAPI.preview.detect(
-          componentTarget.projectRootMac,
-        );
-        componentPreviewAvailable = det.previewable;
+  if (isComponentPath(filePath)) {
+    settings = await loadSettings();
+    if (renderOpts.projectId && settings?.station?.url) {
+      try {
+        const mount = await window.reckAPI.paths.localMountPoint();
+        componentTarget = deriveComponentTarget(result.resolvedPath, mount);
+        if (componentTarget) {
+          const det = await window.reckAPI.preview.detect(
+            componentTarget.projectRootMac,
+          );
+          componentPreviewAvailable = det.previewable;
+        }
+      } catch (e) {
+        console.warn("[file-viewer] component-preview detect failed", e);
+        componentPreviewAvailable = false;
       }
-    } catch (e) {
-      console.warn("[file-viewer] component-preview detect failed", e);
-      componentPreviewAvailable = false;
     }
   }
 
