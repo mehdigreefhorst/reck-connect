@@ -342,6 +342,21 @@ type PutProjectsResponse struct {
 	Count int  `json:"count"`
 }
 
+// --- Component live preview (Phase B) ---
+
+// PreviewStatus is the state of a project's live component-preview dev server.
+type PreviewStatus struct {
+	Running bool   `json:"running"` // a runner child exists for this project
+	Ready   bool   `json:"ready"`   // the dev server answered readiness
+	Port    int    `json:"port"`    // 0 until ready
+	Error   string `json:"error"`   // "" unless the runner failed to start
+}
+
+// PreviewStartRequest is the POST body for starting a preview.
+type PreviewStartRequest struct {
+	HmrHost string `json:"hmr_host"` // station tailnet host the runner should use for Vite HMR; empty => bind host
+}
+
 // --- Session persistence  ---
 
 // SessionInfo is one row in the per-project session index, surfaced via

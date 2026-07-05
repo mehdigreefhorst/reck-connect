@@ -303,6 +303,25 @@ export interface PutProjectsResponse {
   count: number;
 }
 
+// --- Component live preview (Phase B) ---
+
+/** State of a project's live component-preview dev server. */
+export interface PreviewStatus {
+  running: boolean;
+  ready: boolean;
+  port: number;
+  error: string;
+}
+
+/** POST body for starting a preview. */
+export interface PreviewStartRequest {
+  /**
+   * Station tailnet host the runner should use for Vite HMR; empty/omitted
+   * => bind host.
+   */
+  hmr_host?: string;
+}
+
 // --- Session persistence  ---
 
 export interface SessionInfo {
