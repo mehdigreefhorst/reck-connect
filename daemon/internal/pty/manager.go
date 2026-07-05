@@ -67,6 +67,12 @@ type Manager struct {
 	// index Upsert / Touch on exit. Nil-safe: the Manager falls back to
 	// plain claude invocations without any persistence.
 	sessions *sessions.Store
+	// claudeProjectsDir is the root Claude Code writes per-session JSONL
+	// under (~/.claude/projects by default). Stored so the resume path can
+	// recover a git-worktree session's real runtime cwd (issue #56). Empty
+	// falls back to sessions.DefaultClaudeProjectsDir() lazily; tests set it
+	// to a t.TempDir() via ManagerConfig.ClaudeProjectsDir.
+	claudeProjectsDir string
 	// Adapters is the multi-agent (claude, codex, shell) spawn registry.
 	// Always non-nil once NewManager returns.
 	adapters *agent.Registry
@@ -133,6 +139,15 @@ var defaultRemoveProjectChildWaitTimeout = 5 * time.Second
 // HTTP layer maps this to 409 Conflict. Exported so callers can match
 // against it with errors.Is.
 var ErrSlotAlreadyLive = errors.New("slot already live")
+
+// ErrResumeWorktreeGone is returned by CreatePaneWith when a Claude session's
+// transcript lives under a git worktree that no longer exists, so its real
+// runtime cwd can't be recovered. Resuming in the project root would make
+// Claude fork a fresh transcript (issue #56), so the resume is refused instead.
+// The session stays visible and read-only (its transcript is intact); the
+// restore path clears was_live so it stops trying to auto-respawn. The HTTP
+// layer maps this to 409 Conflict. Exported so callers can match with errors.Is.
+var ErrResumeWorktreeGone = errors.New("cannot resume: session's git worktree no longer exists")
 
 // ManagerConfig bundles the daemon-wide spawn defaults the Manager needs
 // for argv construction. Introduced alongside the an earlier release binary-resolution
@@ -255,6 +270,7 @@ func NewManagerFromConfig(cfg ManagerConfig) *Manager {
 		defaultShell:           append([]string(nil), cfg.DefaultShell...),
 		configPath:             cfg.ConfigPath,
 		sessions:               cfg.Sessions,
+		claudeProjectsDir:      cfg.ClaudeProjectsDir,
 		adapters:               agent.NewRegistry(ValidateClaudeExtraArgs, cfg.CodexCmd),
 		preambleDefaults:       resolvePreambleDefaults(cfg.Mode),
 		autoNames:              agent.NewAutoNameCache(cfg.ClaudeProjectsDir),
@@ -1358,6 +1374,19 @@ func (m *Manager) CreatePaneWith(projectID string, kind proto.PaneKind, cols, ro
 		if e.Kind != proto.PaneKindClaude {
 			return nil, errors.New("resume_session_id refers to a non-claude entry")
 		}
+		// #56: recover the directory the transcript actually lives in so
+		// `claude --resume` rehydrates the existing session instead of
+		// forking a fresh transcript. For a worktree session e.Cwd is the
+		// (mis-recorded) project root; resolveResumeCwd finds the worktree
+		// and we self-heal e.Cwd here — the adapter reads it for plan.Cwd
+		// and the post-spawn Upsert (below) persists the correction. If the
+		// worktree is gone the transcript can't be located; refuse rather
+		// than resume in the wrong cwd.
+		realCwd, ok := m.resolveResumeCwd(proj.Cwd, e.Cwd, e.SessionID)
+		if !ok {
+			return nil, fmt.Errorf("%w: session %s", ErrResumeWorktreeGone, shortSessionID(e.SessionID))
+		}
+		e.Cwd = realCwd
 		resumeEntry = &e
 	}
 
@@ -1724,6 +1753,57 @@ func (m *Manager) RestoreOrphans(cols, rows int) RestoreOrphansResult {
 		total.Failed += r.Failed
 	}
 	return total
+}
+
+// resolveResumeCwd returns the directory `claude --resume <sessionID>` must
+// launch in to rehydrate the existing transcript rather than fork a fresh one,
+// and self-heals a mis-recorded worktree cwd along the way (issue #56).
+//
+// recordedCwd is the session entry's stored cwd (the pane's launch cwd). When
+// the transcript is already at its canonical location that cwd is returned
+// unchanged — the fast path for normal sessions, which never shell out to git.
+// Otherwise the session ran in a git worktree, so its transcript lives under a
+// suffixed folder: enumerate the project's live worktrees and return the one
+// whose encoded folder holds the transcript. ok=false means the transcript
+// can't be located under any candidate (the worktree was removed) — the caller
+// must refuse the resume rather than launch Claude in the wrong directory.
+func (m *Manager) resolveResumeCwd(projectRoot, recordedCwd, sessionID string) (string, bool) {
+	dir := m.claudeProjectsDir
+	if dir == "" {
+		d, err := sessions.DefaultClaudeProjectsDir()
+		if err != nil {
+			// Can't check the disk — trust the recorded cwd rather than
+			// block an otherwise-valid resume.
+			return recordedCwd, true
+		}
+		dir = d
+	}
+	// Canonical candidates first (a plain stat) so a normal session pays no
+	// git cost. projectRoot is included in case a row references a subdir
+	// whose transcript actually landed at the root.
+	canonical := []string{recordedCwd}
+	if recordedCwd != projectRoot {
+		canonical = append(canonical, projectRoot)
+	}
+	if cwd, ok := sessions.ResolveTranscriptCwd(dir, sessionID, canonical); ok {
+		return cwd, true
+	}
+	// Miss → the session ran in a git worktree. Recover its real cwd by
+	// matching the transcript against the project's registered worktrees.
+	if cwd, ok := sessions.ResolveTranscriptCwd(dir, sessionID, gitWorktreePaths(projectRoot)); ok {
+		return cwd, true
+	}
+	// Neither the canonical folder nor a live worktree holds it. Two cases:
+	//   - a transcript IS on disk under a worktree-suffixed folder, but the
+	//     worktree was removed so we can't map it to a cwd → refuse, so the
+	//     caller keeps the session read-only instead of forking a fresh
+	//     transcript by resuming in the wrong directory.
+	//   - no transcript anywhere → nothing to orphan; fall back to the
+	//     recorded cwd so a bare/legacy resume still proceeds as before.
+	if sessions.TranscriptExistsUnderProject(dir, recordedCwd, sessionID) {
+		return "", false
+	}
+	return recordedCwd, true
 }
 
 // RestoreProjectOrphans drains the sessions-store orphans for a single

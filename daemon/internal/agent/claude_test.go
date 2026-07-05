@@ -217,6 +217,43 @@ func TestClaudeAdapter_resumePreservesPreamble(t *testing.T) {
 	}
 }
 
+// TestClaudeAdapter_resumeRunsInEntryCwd — #56: `claude --resume` must run in
+// the directory the transcript was written to, NOT the project root. Claude
+// keys the transcript folder on its runtime cwd, so a session that ran in a git
+// worktree only resumes correctly when the process cwd is that worktree.
+func TestClaudeAdapter_resumeRunsInEntryCwd(t *testing.T) {
+	a := &claudeAdapter{}
+	worktree := "/home/u/proj/.claude-worktrees/feat-x"
+	plan, err := a.BuildSpawn(SpawnRequest{
+		Project:          config.Project{ID: "p", Name: "P", Cwd: "/home/u/proj"},
+		DefaultClaudeCmd: []string{"/opt/homebrew/bin/claude"},
+		ResumeEntry:      &sessions.Entry{SessionID: "11111111-2222-3333-4444-555555555555", Name: "p/x", Cwd: worktree},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Cwd != worktree {
+		t.Errorf("plan.Cwd = %q, want the resume entry's cwd %q", plan.Cwd, worktree)
+	}
+}
+
+// TestClaudeAdapter_resumeEmptyCwdFallsBackToProject — a resume entry with no
+// recorded cwd (older rows) must still spawn somewhere sane: the project root.
+func TestClaudeAdapter_resumeEmptyCwdFallsBackToProject(t *testing.T) {
+	a := &claudeAdapter{}
+	plan, err := a.BuildSpawn(SpawnRequest{
+		Project:          config.Project{ID: "p", Name: "P", Cwd: "/home/u/proj"},
+		DefaultClaudeCmd: []string{"/opt/homebrew/bin/claude"},
+		ResumeEntry:      &sessions.Entry{SessionID: "11111111-2222-3333-4444-555555555555", Name: "p/x"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Cwd != "/home/u/proj" {
+		t.Errorf("plan.Cwd = %q, want project cwd fallback", plan.Cwd)
+	}
+}
+
 // TestClaudeAdapter_globalOnly — only the global layer is set (baseline
 // disabled, no project preamble). Argv carries the global text verbatim
 // as the only preamble content (no separators).
