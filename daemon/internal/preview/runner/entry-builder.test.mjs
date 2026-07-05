@@ -20,11 +20,18 @@ test("entry omits global.css import when none detected", () => {
   const src = buildPreviewEntry({ targetRelPath: "a.tsx", globalCssRelPath: null, hasProviders: false });
   assert.doesNotMatch(src, /index\.css/);
   assert.match(src, /React\.createElement\(Component\)/); // no Providers wrapper
+  // truly pins wrapper-absence: /React\.createElement\(Component\)/ also matches the
+  // wrapped form, so assert the Providers import itself is absent.
+  assert.doesNotMatch(src, /@reck\/providers/);
 });
 
 test("providers module re-exports detected wrap or passes through", () => {
   const wrapped = buildProvidersModule({ providersImportPath: "/src/Providers.tsx", providersExport: "Providers" });
   assert.match(wrapped, /export \{ Providers \}/);
+  // pins the aliased branch — the exact branch detect hits for a *.reck-preview.tsx
+  // override (exportName "wrap"); only "Providers"-named exports were tested before.
+  const aliased = buildProvidersModule({ providersImportPath: "/src/Providers.tsx", providersExport: "wrap" });
+  assert.match(aliased, /export \{ wrap as Providers \}/);
   const bare = buildProvidersModule({ providersImportPath: null, providersExport: null });
   assert.match(bare, /export const Providers = \(\{ children \}\) => children/);
 });

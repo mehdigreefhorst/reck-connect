@@ -68,4 +68,7 @@ test("entry module imports global.css + target + providers", async () => {
   assert.match(src, /src\/components\/Button\.tsx/);
   // providers wrapper is threaded in because the fixture ships src/Providers.tsx
   assert.match(src, /@reck\/providers/);
+  // issue #44 acceptance: auto-wrap reached the entry graph for a themed fixture —
+  // pin the exact import path (leading slash), not just a substring.
+  assert.match(src, /\/@reck\/providers/);
 });
