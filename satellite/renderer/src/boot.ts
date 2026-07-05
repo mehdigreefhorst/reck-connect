@@ -35,6 +35,7 @@ import { effectiveStoplight as filterEffectiveStoplight } from "./ui/effective-s
 import { AppBar, type Theme } from "./ui/app-bar";
 import { PaneLayout } from "./ui/pane-layout";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
+import { ensurePaneControls } from "./ui/paneControls";
 import { resolveActivatePath } from "./viewer/resolveActivatePath";
 import {
   setExtensionlessAllowlist,
@@ -61,11 +62,13 @@ import { initTts } from "./tts/initTts";
 import { TerminalPaneAdapter } from "./tts/TerminalPaneAdapter";
 import { initSearch } from "./search/initSearch";
 import { TerminalSearchAdapter } from "./search/TerminalSearchAdapter";
+import { MarkdownSearchAdapter } from "./search/MarkdownSearchAdapter";
 import {
   createOverlayScrollbar,
   type OverlayScrollbar,
 } from "./search/OverlayScrollbar";
 import { terminalScrollSurface } from "./search/scrollSurfaces";
+import { createTranscriptController } from "./transcript/TranscriptController";
 import type { TerminalPane } from "@client-core/terminal/terminal-pane";
 import {
   addTab,
@@ -1020,6 +1023,60 @@ export async function boot(splash?: StartupSplashController) {
   // GC'd with its pane (the pane drops its scroll listener on dispose).
   const terminalScrollbars = new WeakMap<TerminalPane, OverlayScrollbar>();
 
+  // --- Claude transcript "History" overlays (#51) ---------------------
+  // Owned by the TranscriptController: one overlay per pane, mounted in
+  // the pane's wrapper (the xterm keeps running underneath), tailing the
+  // session transcript from the pane's host daemon. The controller
+  // always shows a visible status (loading/error/no-session) instead of
+  // failing silently, and traces every decision with `[transcript]`
+  // console logs — set localStorage["reck-transcript-debug"]="1" for
+  // per-poll/per-render verbosity.
+  const transcripts = createTranscriptController({
+    resolvePane: (paneId) => {
+      const rec = layout.getTerminalRecordByPane(paneId);
+      if (!rec) return null;
+      return {
+        wrapper: rec.wrapper,
+        kind: rec.tab.kind,
+        host: rec.tab.host,
+        title: rec.tab.title ?? "",
+        sessionId: rec.tab.sessionId,
+      };
+    },
+    projectId: () => currentProjectId,
+    api: (host) => apiForHost(host),
+    // ⌘+click a path in the transcript → open it in the file viewer, reusing
+    // the exact resolve/open pipeline the pane linkifier uses (below). `host`
+    // is the pane's host, so `~/` and station-cwd translation route correctly.
+    // History only opens on a pane in the current layout/project, so the
+    // active project's cwd is the right anchor for relative paths.
+    linkHandlers: (host) => ({
+      onLinkActivate: (href) => {
+        const projectCwd =
+          currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null;
+        const target = resolveActivatePath(href, projectCwd);
+        console.log("[click:transcript] activate -> openInViewer", {
+          host,
+          projectCwd,
+          originalText: href,
+          target,
+        });
+        void window.reckAPI.files
+          .openInViewer(target, {
+            sourceHost: host,
+            originalText: href,
+            projectCwd: projectCwd ?? undefined,
+          })
+          .then((r) => {
+            if (!r || (r as { ok?: boolean }).ok !== true) {
+              console.warn("[click:transcript] openInViewer rejected", { href, target, r });
+            }
+          })
+          .catch((e) => console.warn("[click:transcript] openInViewer error", e));
+      },
+    }),
+  });
+
   const layout: PaneLayout = new PaneLayout({
     root: layoutRoot,
     // Phase 10: route each tab's WS through its own host's ApiClient.
@@ -1554,6 +1611,10 @@ export async function boot(splash?: StartupSplashController) {
       // in-app reattach button take the exact same code path.
       void window.reckAPI.windows.reattachPane(paneId);
     },
+    // "History" (#51): toggle the transcript overlay for a Claude pane.
+    onHistoryPane: (paneId) => {
+      void transcripts.toggle(paneId);
+    },
   });
   layout.setTheme(theme);
 
@@ -1971,6 +2032,11 @@ export async function boot(splash?: StartupSplashController) {
         getActiveSpeakSurface: () => {
           const rec = layout.getActiveTerminalRecord();
           if (!rec) return null;
+          // An open History overlay owns TTS for its pane (#51): speak the
+          // rendered transcript, not the terminal's visible rows — same
+          // switch as ⌘F below. Reuses the file-viewer's MarkdownSurfaceAdapter.
+          const overlay = transcripts.get(rec.tab.paneId);
+          if (overlay) return overlay.view.getSpeakSurface();
           // Wrap the active xterm pane in a TerminalPaneAdapter so the
           // TtsController treats it as a generic SpeakSurfaceAdapter,
           // identical to how the file-viewer popup wraps its markdown /
@@ -1990,7 +2056,7 @@ export async function boot(splash?: StartupSplashController) {
           return new TerminalPaneAdapter({
             term: term as unknown as ConstructorParameters<typeof TerminalPaneAdapter>[0]["term"],
             xtermEl,
-            containerEl: rec.wrapper,
+            containerEl: ensurePaneControls(rec.wrapper),
             cellWidth,
             cellHeight,
           });
@@ -2009,9 +2075,18 @@ export async function boot(splash?: StartupSplashController) {
       getActiveSearchSurface: () => {
         const rec = layout.getActiveTerminalRecord();
         if (!rec) return null;
+        // An open History overlay owns ⌘F for its pane (#51): search
+        // the whole transcript, not the terminal's visible rows.
+        const overlay = transcripts.get(rec.tab.paneId);
+        if (overlay) {
+          return new MarkdownSearchAdapter({
+            container: ensurePaneControls(overlay.view.root),
+            body: overlay.view.body,
+          });
+        }
         const term = rec.term.getXterm();
         return new TerminalSearchAdapter({
-          container: rec.wrapper,
+          container: ensurePaneControls(rec.wrapper),
           term: term as unknown as ConstructorParameters<
             typeof TerminalSearchAdapter
           >[0]["term"],
@@ -2019,7 +2094,13 @@ export async function boot(splash?: StartupSplashController) {
       },
       onMatchesChanged: (fractions) => {
         const rec = layout.getActiveTerminalRecord();
-        if (rec) terminalScrollbars.get(rec.term)?.setMatches(fractions);
+        if (!rec) return;
+        const overlay = transcripts.get(rec.tab.paneId);
+        if (overlay) {
+          overlay.view.setMatches(fractions);
+          return;
+        }
+        terminalScrollbars.get(rec.term)?.setMatches(fractions);
       },
     });
   } catch (e) {

@@ -259,6 +259,26 @@ describe("OverlayScrollbar — mouse-tracking TUI pane (Claude / less / vim)", (
     window.dispatchEvent(new MouseEvent("pointermove", { clientY: 50, bubbles: true }));
     expect(f.surface.scrollToFraction).not.toHaveBeenCalled();
   });
+
+  it("leaves the wheel alone inside a .reck-native-scroll child (transcript overlay)", () => {
+    // The History overlay mounts INSIDE the pane wrapper this capture
+    // listener sits on. Its DOM scrolls natively — remapping its wheel
+    // to PgUp/PgDn would freeze the overlay and page the hidden TUI.
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface });
+    const overlay = document.createElement("div");
+    overlay.className = "reck-native-scroll";
+    const inner = document.createElement("p");
+    overlay.appendChild(inner);
+    host.appendChild(overlay);
+    const e = wheelEvent(-200);
+    const pd = vi.spyOn(e, "preventDefault");
+    const si = vi.spyOn(e, "stopImmediatePropagation");
+    inner.dispatchEvent(e);
+    expect(f.surface.pageScroll).not.toHaveBeenCalled();
+    expect(pd).not.toHaveBeenCalled();
+    expect(si).not.toHaveBeenCalled();
+  });
 });
 
 describe("OverlayScrollbar — truthful (plain shell) wheel is untouched", () => {

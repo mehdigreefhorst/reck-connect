@@ -86,7 +86,7 @@ const PATH_LINK_TOOLTIP = "⌘+click to open";
  * each text fragment separately. Acceptable v1; the markdown source can
  * always use a real markdown link.
  */
-function wrapFreeTextPaths(root: HTMLElement): void {
+export function wrapFreeTextPaths(root: HTMLElement): void {
   const skipAncestor = (node: Node): boolean => {
     let cur: Node | null = node.parentNode;
     while (cur && cur !== root) {

@@ -18,6 +18,7 @@ import { initTts, type TtsHandle } from "../tts/initTts";
 import { MarkdownSurfaceAdapter } from "../tts/MarkdownSurfaceAdapter";
 import { CodeMirrorSurfaceAdapter } from "../tts/CodeMirrorSurfaceAdapter";
 import type { SpeakSurfaceAdapter } from "../tts/SpeakSurfaceAdapter";
+import { ensurePaneControls } from "../ui/paneControls";
 import {
   attachViewerSearch,
   type ViewerSearchHandle,
@@ -1127,11 +1128,11 @@ async function renderStationRemote(
   // popups stay read-only.
   const surface: SpeakSurfaceAdapter = codeEditor
     ? new CodeMirrorSurfaceAdapter({
-        container: root,
+        container: ensurePaneControls(root),
         view: codeEditor.view,
       })
     : new MarkdownSurfaceAdapter({
-        container: root,
+        container: ensurePaneControls(root),
         body: shell.body,
       });
   let ttsHandle: TtsHandle | null = null;
@@ -1461,11 +1462,11 @@ async function renderForPath(
   // path. Disposing this handle tears down the engine + bar + listeners.
   const surface: SpeakSurfaceAdapter = codeEditor
     ? new CodeMirrorSurfaceAdapter({
-        container: root,
+        container: ensurePaneControls(root),
         view: codeEditor.view,
       })
     : new MarkdownSurfaceAdapter({
-        container: root,
+        container: ensurePaneControls(root),
         body: shell.body,
       });
   let ttsHandle: TtsHandle | null = null;

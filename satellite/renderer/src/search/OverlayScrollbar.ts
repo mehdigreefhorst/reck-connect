@@ -140,6 +140,12 @@ export function createOverlayScrollbar(
 
   function onWheel(e: WheelEvent): void {
     if (isTuiPane()) {
+      // Opt-out: overlays mounted INSIDE the pane wrapper (the transcript
+      // "History" view, #51) scroll their own DOM natively. Remapping
+      // their wheel would freeze the overlay and page the hidden TUI
+      // beneath it.
+      const target = e.target as Element | null;
+      if (target?.closest?.(".reck-native-scroll")) return;
       // Claude 2.1.150+ turns the wheel into arrow keys, and the alt-screen has
       // no scrollback to move. Drive the robust keyboard scroll instead: wheel
       // → PgUp/PgDn into the PTY, accumulated so one notch ≈ one page (a
