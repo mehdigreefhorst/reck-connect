@@ -232,6 +232,17 @@ async function bootPopout(): Promise<void> {
     }),
     projectId: () => paneProjectId,
     api: () => api,
+    // ⌘+click a path in the transcript → open it in the file viewer. Mirrors
+    // this popout's pane linkifier (above): pass the raw href + host and let
+    // main resolve it (the detached window has no project cwd to anchor with).
+    linkHandlers: () => ({
+      onLinkActivate: (href) => {
+        void window.reckAPI.files.openInViewer(href, {
+          sourceHost: paneHost,
+          originalText: href,
+        });
+      },
+    }),
   });
 
   void (async () => {

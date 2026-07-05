@@ -1016,6 +1016,36 @@ export async function boot(splash?: StartupSplashController) {
     },
     projectId: () => currentProjectId,
     api: (host) => apiForHost(host),
+    // ⌘+click a path in the transcript → open it in the file viewer, reusing
+    // the exact resolve/open pipeline the pane linkifier uses (below). `host`
+    // is the pane's host, so `~/` and station-cwd translation route correctly.
+    // History only opens on a pane in the current layout/project, so the
+    // active project's cwd is the right anchor for relative paths.
+    linkHandlers: (host) => ({
+      onLinkActivate: (href) => {
+        const projectCwd =
+          currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null;
+        const target = resolveActivatePath(href, projectCwd);
+        console.log("[click:transcript] activate -> openInViewer", {
+          host,
+          projectCwd,
+          originalText: href,
+          target,
+        });
+        void window.reckAPI.files
+          .openInViewer(target, {
+            sourceHost: host,
+            originalText: href,
+            projectCwd: projectCwd ?? undefined,
+          })
+          .then((r) => {
+            if (!r || (r as { ok?: boolean }).ok !== true) {
+              console.warn("[click:transcript] openInViewer rejected", { href, target, r });
+            }
+          })
+          .catch((e) => console.warn("[click:transcript] openInViewer error", e));
+      },
+    }),
   });
 
   const layout: PaneLayout = new PaneLayout({

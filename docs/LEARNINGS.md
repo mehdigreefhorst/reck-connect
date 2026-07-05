@@ -67,6 +67,34 @@ file-viewer by reusing existing components. Plan in
   `--hidden` until the first turn renders (so a loading/empty overlay doesn't
   claim a session began). Shows the short 8-char session id when provided.
 
+### Phase 3 — Cmd+click opens any path
+
+**What we learned**
+- One delegated `click` listener on `.transcript-body` (not per-turn handlers)
+  is the right seam: it survives incremental appends and dodges the
+  `MarkdownRenderer.mount()` detach — a single shared renderer keeps a live
+  listener only on the *last-mounted* turn, so relying on it would make only
+  the newest Claude turn clickable.
+- The handler matches **any** `a[href]`, not just `.reck-internal-link`, and
+  always `preventDefault()`s — otherwise a plain click on a file href would
+  navigate the Electron window. Opening requires ⌘, matching the terminal +
+  file-viewer linkifiers.
+- The controller stays free of reckAPI/cwd knowledge: it takes a
+  `linkHandlers(host)` dep and forwards the result to the view. boot.ts builds
+  the handler from the exact pane-linkifier pipeline (`resolveActivatePath` +
+  `openInViewer` with `sourceHost`/`projectCwd`); popout passes the raw href
+  and lets main resolve (a detached window has no project cwd).
+
+**Surprises**
+- The map agent reported markdown native links carry `reck-internal-link`; in
+  fact the `link_open` override adds the class **only for internal hrefs**
+  (`isInternalLinkHref`). External links are bare `<a>` — hence the broadened
+  `a[href]` selector.
+- There is **no** renderer-side reckAPI bridge to `shell.openExternal`, and the
+  file viewer itself never wires `onExternalActivate`. So external links are
+  preventDefaulted (no navigation) but not opened — consistent with the viewer.
+  `onExternalActivate` is left plumbed for a future preload bridge.
+
 ## Codex preamble via `developer_instructions` (follow-up to #33, 2026-07-01)
 
 Undeferred the #32 preamble for codex after web-researching the actual `codex` CLI.

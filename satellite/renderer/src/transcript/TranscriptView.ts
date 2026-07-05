@@ -32,6 +32,11 @@ export interface TranscriptViewOptions {
   sessionId?: string;
   /** Invoked on the close button or Escape. Owner unmounts via dispose(). */
   onClose(): void;
+  /** ⌘+click on an internal file-path link (relative/absolute/`~`). Same
+   *  contract as the markdown renderer's onLinkActivate: `(href, event)`. */
+  onLinkActivate?(href: string, ev: MouseEvent): void;
+  /** ⌘+click on an external link (http/mailto/…). */
+  onExternalActivate?(href: string, ev: MouseEvent): void;
 }
 
 /** Visible overlay state. The overlay must never look silently dead:
@@ -56,6 +61,13 @@ export interface TranscriptViewHandle {
 
 /** How close to the bottom (px) still counts as "following the tail". */
 const FOLLOW_THRESHOLD_PX = 40;
+
+/** A href with a URL scheme (`https:`, `mailto:`, …) is external; relative,
+ *  absolute (`/x`), and `~/x` paths are internal file references. Mirrors the
+ *  markdown renderer's isInternalLinkHref classification. */
+function isExternalHref(href: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(href);
+}
 
 export function createTranscriptView(opts: TranscriptViewOptions): TranscriptViewHandle {
   // `reck-native-scroll` opts the overlay out of the pane wrapper's
@@ -125,6 +137,29 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     opts.onClose();
   }
   document.addEventListener("keydown", onKeyDown);
+
+  // One delegated ⌘+click handler for EVERY path link in the body — assistant
+  // markdown, user prose, whichever turn. Delegating on `body` (a) survives
+  // incremental appends with no per-turn bookkeeping, and (b) sidesteps the
+  // shared markdown renderer's per-mount handler only surviving on the
+  // last-mounted turn (mount() detaches the previous listener). We always
+  // preventDefault so a file href never navigates the app window; opening
+  // requires ⌘, matching the terminal + file-viewer linkifiers.
+  function onBodyClick(ev: MouseEvent): void {
+    const target = ev.target as HTMLElement | null;
+    // Match ANY anchor, not just `.reck-internal-link`: external links
+    // (http/mailto) render as bare `<a>` with no class, and we must still
+    // preventDefault them so a plain click can't navigate the app window.
+    const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
+    if (!anchor) return;
+    ev.preventDefault();
+    if (!ev.metaKey) return;
+    const href = anchor.getAttribute("href") ?? "";
+    if (href === "" || href.startsWith("#")) return;
+    if (isExternalHref(href)) opts.onExternalActivate?.(href, ev);
+    else opts.onLinkActivate?.(href, ev);
+  }
+  body.addEventListener("click", onBodyClick);
 
   function textBlockEl(role: TranscriptTurn["role"], text: string): HTMLElement {
     if (role === "assistant") {
@@ -260,6 +295,7 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
       if (disposed) return;
       disposed = true;
       document.removeEventListener("keydown", onKeyDown);
+      body.removeEventListener("click", onBodyClick);
       scrollbar.dispose();
       md.dispose();
       root.remove();

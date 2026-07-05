@@ -183,4 +183,39 @@ describe("TranscriptView", () => {
     expect(first.textContent).toContain("abcd1234");
     v.dispose();
   });
+
+  it("opens an internal path on ⌘+click and prevents navigation on plain click", () => {
+    const onLinkActivate = vi.fn();
+    const onExternalActivate = vi.fn();
+    const v = createTranscriptView({ host, title: "p", onClose, onLinkActivate, onExternalActivate });
+    v.render([{ role: "user", blocks: [{ kind: "text", text: "see services/gpu/ovh.py" }] }], 0);
+    const link = v.body.querySelector("a.reck-internal-link") as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+
+    // Plain click never opens, but navigation to the file href is prevented.
+    const plain = new MouseEvent("click", { bubbles: true, cancelable: true });
+    link.dispatchEvent(plain);
+    expect(onLinkActivate).not.toHaveBeenCalled();
+    expect(plain.defaultPrevented).toBe(true);
+
+    // ⌘+click opens the internal path.
+    link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+    expect(onLinkActivate).toHaveBeenCalledWith("services/gpu/ovh.py", expect.any(MouseEvent));
+    expect(onExternalActivate).not.toHaveBeenCalled();
+    v.dispose();
+  });
+
+  it("routes external links to onExternalActivate on ⌘+click", () => {
+    const onLinkActivate = vi.fn();
+    const onExternalActivate = vi.fn();
+    const v = createTranscriptView({ host, title: "p", onClose, onLinkActivate, onExternalActivate });
+    v.render([{ role: "assistant", blocks: [{ kind: "text", text: "[docs](https://example.com/x)" }] }], 0);
+    // External markdown links render as a bare <a> (no reck-internal-link class).
+    const link = v.body.querySelector('a[href="https://example.com/x"]') as HTMLAnchorElement;
+    expect(link?.getAttribute("href")).toBe("https://example.com/x");
+    link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+    expect(onExternalActivate).toHaveBeenCalledWith("https://example.com/x", expect.any(MouseEvent));
+    expect(onLinkActivate).not.toHaveBeenCalled();
+    v.dispose();
+  });
 });

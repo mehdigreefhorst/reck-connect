@@ -34,12 +34,21 @@ export interface TranscriptApi {
   getTranscript(projectId: string, sessionId: string, offset: number): Promise<TranscriptChunk>;
 }
 
+/** ⌘+click handlers for path links inside a transcript, built per host by the
+ *  owner (boot/popout) so this controller stays free of reckAPI + cwd knowledge. */
+export interface TranscriptLinkHandlers {
+  onLinkActivate?(href: string, ev: MouseEvent): void;
+  onExternalActivate?(href: string, ev: MouseEvent): void;
+}
+
 export interface TranscriptControllerDeps {
   /** Resolve a pane's wrapper/kind/host/session by pane id, or null. */
   resolvePane(paneId: string): TranscriptPaneRef | null;
   /** The active project (null when none is selected). */
   projectId(): string | null;
   api(host: HostRef): TranscriptApi;
+  /** ⌘+click path-link handlers for a pane's host (optional). */
+  linkHandlers?(host: HostRef): TranscriptLinkHandlers;
   /** Tail poll interval; default 1500ms. */
   intervalMs?: number;
   /** Log sink; defaults to console.info with a `[transcript]` prefix. */
@@ -118,7 +127,9 @@ export function createTranscriptController(
     const view = createTranscriptView({
       host: pane.wrapper,
       title: pane.title || "Claude",
+      sessionId: pane.sessionId,
       onClose: () => close(paneId, "user"),
+      ...(deps.linkHandlers ? deps.linkHandlers(pane.host) : {}),
     });
     view.setStatus({ kind: "loading", message: "Loading transcript…" });
     const entry: OpenEntry = { view, tail: null };
