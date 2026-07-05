@@ -3942,3 +3942,54 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
 /* Surfaces with a header push the stack below it. */
 .file-viewer-root > .pane-controls { top: 46px; right: 16px; }
 .transcript-view .pane-controls { top: 42px; right: 12px; }
+
+/* ── Phase B: live component preview host ─────────────────────────────────
+   `createComponentPreview` frames a project's cross-origin Vite dev server in
+   a full-bleed iframe. The container positions three mutually-exclusive
+   children: a centered spinner (starting), the iframe (ready), or a degrade
+   panel (failed). */
+.file-viewer-component {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--app-bg);
+}
+/* The framed dev server fills the surface. A light backdrop avoids a dark
+   flash before the previewed app paints its own background. */
+.file-viewer-component-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #ffffff;
+}
+/* Centered loading circle — reuses the shared spinner keyframes so the idiom
+   matches the header spinner, sized up for the empty preview surface. */
+.file-viewer-component-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border-radius: 50%;
+  border: 3px solid var(--app-text-dim);
+  border-top-color: transparent;
+  animation: file-viewer-spinner-spin 0.9s linear infinite;
+}
+/* Degrade panel shown when the preview can't start or the iframe never
+   loads. Centered, quiet, and readable against the surface. */
+.file-viewer-component-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--wes-rose);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
