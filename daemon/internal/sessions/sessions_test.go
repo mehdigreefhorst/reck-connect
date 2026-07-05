@@ -104,6 +104,43 @@ func TestList_filtersWhenTranscriptMissing(t *testing.T) {
 	}
 }
 
+func TestList_keepsWorktreeSessionUnderSuffixedDir(t *testing.T) {
+	// Failsafe for #56: a Claude session run in a git worktree stores its
+	// transcript under <EncodeCwd(cwd)>--claude-worktrees-<name>/, not the
+	// project-root folder. The entry's Cwd is the project root, so the
+	// canonical lookup misses — List must still keep the entry (via the
+	// worktree-suffix glob) instead of dropping the tab on restore.
+	s, dir := newStore(t)
+	cwd := "/a/b/c"
+	claudeDir := filepath.Join(dir, "claude-projects")
+	worktreeDir := filepath.Join(claudeDir, EncodeCwd(cwd)+"--claude-worktrees-fts5")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := NewUUID()
+	if err := os.WriteFile(filepath.Join(worktreeDir, sid+".jsonl"), []byte(`{"type":"user"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Upsert("p1", Entry{
+		SessionID:    sid,
+		Name:         "p1/pane-a",
+		Cwd:          cwd, // recorded as the project root, NOT the worktree
+		CreatedAt:    now,
+		LastActiveAt: now,
+		LastPaneID:   "p_abc",
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, err := s.List("p1", ListOptions{ClaudeProjectsDir: claudeDir})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].SessionID != sid {
+		t.Fatalf("List = %+v, want the worktree session kept", got)
+	}
+}
+
 func TestList_sortsByLastActiveDesc(t *testing.T) {
 	s, dir := newStore(t)
 	cwd := "/x/y"

@@ -427,9 +427,26 @@ func DefaultClaudeProjectsDir() (string, error) {
 
 // transcriptExists reports whether Claude Code's JSONL for (cwd, sessionID)
 // is on disk under claudeProjectsDir.
+//
+// Failsafe for git-worktree sessions (issue #56): Claude Code keys the
+// transcript folder on its *runtime* cwd, so a session run in a worktree lands
+// under <EncodeCwd(cwd)>--claude-worktrees-<name>/, NOT the project-root folder
+// the pane recorded as its launch cwd. Without tolerating that, Store.List's
+// restore gate drops the session on every daemon restart even though its
+// transcript is intact. So when the canonical path misses, also match
+// worktree-suffixed sibling dirs of the encoded cwd.
+//
+// The match is scoped to <EncodeCwd(cwd)>* — the project's own directory
+// subtree — rather than a bare *, so a mis-recorded session can't be adopted
+// into an unrelated project. EncodeCwd's output is [A-Za-z0-9-]*, so the
+// pattern carries no glob metacharacters.
 func transcriptExists(claudeProjectsDir, cwd, sessionID string) bool {
-	st, err := os.Stat(TranscriptPath(claudeProjectsDir, cwd, sessionID))
-	return err == nil && !st.IsDir()
+	if st, err := os.Stat(TranscriptPath(claudeProjectsDir, cwd, sessionID)); err == nil && !st.IsDir() {
+		return true
+	}
+	pattern := filepath.Join(claudeProjectsDir, EncodeCwd(cwd)+"*", sessionID+".jsonl")
+	matches, err := filepath.Glob(pattern)
+	return err == nil && len(matches) > 0
 }
 
 // EncodeCwd mirrors Claude Code's on-disk encoding: every non-alphanumeric
