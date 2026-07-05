@@ -22,6 +22,8 @@ import type {
   MissionControlChatRequest,
   PaneUploadResponse,
   RenameRequest,
+  PreviewStatus,
+  PreviewStartRequest,
 } from "@proto/proto";
 
 export interface ClientConfig {
@@ -387,6 +389,51 @@ export class ApiClient {
     return this.fetch<ArchiveProjectResponse>(
       `/projects/${encodeURIComponent(projectId)}/unarchive`,
       { method: "POST" },
+    );
+  }
+
+  /**
+   * Start (or re-attach to) a project's live component-preview dev server
+   * (Phase B). POST `/projects/:id/preview`. The `hmrHost` opt is the
+   * station tailnet host the Vite runner should advertise for HMR; it is
+   * sent as snake_case `hmr_host` to match `PreviewStartRequest` and
+   * defaults to the empty string (daemon then binds the host itself).
+   * Returns the daemon's current `PreviewStatus`. Throws `HttpError` on
+   * non-2xx via the shared `fetch<T>` convention.
+   */
+  startPreview(
+    projectId: string,
+    opts?: { hmrHost?: string },
+  ): Promise<PreviewStatus> {
+    const body: PreviewStartRequest = { hmr_host: opts?.hmrHost ?? "" };
+    return this.fetch<PreviewStatus>(
+      `/projects/${encodeURIComponent(projectId)}/preview`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+
+  /**
+   * Poll a project's live-preview state (Phase B). GET
+   * `/projects/:id/preview`. The viewer polls this to flip from
+   * "starting" to "ready" and to surface runner errors. Throws
+   * `HttpError` on non-2xx via the shared `fetch<T>` convention.
+   */
+  getPreview(projectId: string): Promise<PreviewStatus> {
+    return this.fetch<PreviewStatus>(
+      `/projects/${encodeURIComponent(projectId)}/preview`,
+    );
+  }
+
+  /**
+   * Stop a project's live-preview dev server (Phase B). DELETE
+   * `/projects/:id/preview`; the daemon replies 204 No Content on
+   * success, so this resolves `undefined`. Throws `HttpError` on non-2xx
+   * via the shared `fetch<T>` convention.
+   */
+  async stopPreview(projectId: string): Promise<void> {
+    await this.fetch<void>(
+      `/projects/${encodeURIComponent(projectId)}/preview`,
+      { method: "DELETE" },
     );
   }
 
