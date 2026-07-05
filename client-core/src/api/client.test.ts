@@ -213,6 +213,32 @@ describe("ApiClient", () => {
     await expect(c.getTranscript("foo", "sid-1")).rejects.toThrow(HttpContentTypeError);
   });
 
+  it("getTranscript uses a generous timeout (not the 5s JSON default) for bulk chunks", async () => {
+    // A 4MB transcript chunk over a station/Tailscale link can't arrive
+    // in the 5s tuned for small JSON calls — that produced
+    // 'TimeoutError: signal timed out' on large transcripts. Bulk
+    // fetches get their own long default, overridable per call.
+    const c = new ApiClient({ baseUrl: "http://x:7315", timeoutMs: 5000 });
+    const spy = vi.spyOn(AbortSignal, "timeout");
+    global.fetch = vi.fn(
+      async () =>
+        new Response("", {
+          status: 200,
+          headers: {
+            "Content-Type": "application/x-ndjson",
+            "X-Reck-Transcript-Offset": "0",
+          },
+        }),
+    ) as unknown as typeof fetch;
+
+    await c.getTranscript("foo", "sid-1");
+    expect(spy).toHaveBeenLastCalledWith(60000);
+
+    await c.getTranscript("foo", "sid-1", 0, 12345);
+    expect(spy).toHaveBeenLastCalledWith(12345);
+    spy.mockRestore();
+  });
+
   it("getTranscript URL-encodes project and session ids", async () => {
     const c = new ApiClient({ baseUrl: "http://x:7315" });
     let captured = { url: "" };

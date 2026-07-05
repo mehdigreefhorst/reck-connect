@@ -221,11 +221,17 @@ export class ApiClient {
    *
    * Callers MUST advance using `nextOffset`, never `chunk.length` —
    * JS string length counts UTF-16 code units, not bytes.
+   *
+   * `timeoutMs` defaults to 60s, NOT the client's 5s JSON default: a
+   * multi-MB transcript chunk over a station/Tailscale link routinely
+   * needs more than 5s, and a too-tight budget aborts mid-download with
+   * 'TimeoutError: signal timed out', stalling the tail on large chats.
    */
   async getTranscript(
     projectId: string,
     sessionId: string,
     offset = 0,
+    timeoutMs = 60000,
   ): Promise<TranscriptChunk> {
     const headers: Record<string, string> = {};
     if (this.config.token) {
@@ -236,7 +242,7 @@ export class ApiClient {
       `/sessions/${encodeURIComponent(sessionId)}/transcript?offset=${offset}`;
     const res = await fetch(this.config.baseUrl + path, {
       headers,
-      signal: AbortSignal.timeout(this.config.timeoutMs ?? 5000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
       throw new HttpError(res.status, res.statusText, await res.text());

@@ -33,8 +33,11 @@ const (
 	// chunk, so a catch-up client keeps fetching without a poll delay.
 	TranscriptMoreHeader = "X-Reck-Transcript-More"
 	// transcriptMaxChunk caps a single response body so a multi-MB
-	// catch-up is paged instead of buffered wholesale.
-	transcriptMaxChunk = 4 << 20
+	// catch-up is paged instead of buffered wholesale. Kept at 1 MiB:
+	// large enough to be few round-trips, small enough that each fetch
+	// finishes well within the client's timeout over a station/Tailscale
+	// link and the satellite renders in smaller, smoother batches.
+	transcriptMaxChunk = 1 << 20
 )
 
 // sessionIDRe matches an RFC 4122 UUID — the only shape Claude Code
