@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -205,4 +206,48 @@ func TestChildExitClearsEntry(t *testing.T) {
 	if s := m.spawns(); s != 2 {
 		t.Fatalf("expected 2 spawns after respawn of a dead child, got %d", s)
 	}
+}
+
+// TestSpawnWindowStopDoesNotOrphan is the FIX-2 regression test. There is a
+// narrow window in spawn between the child's cmd.Start() and the manager
+// publishing proc.cmd. If a Stop/Shutdown/reap lands in that window it deletes
+// the in-flight registry entry, but its terminate no-ops because proc.cmd is
+// still nil — so the just-started child is removed from the registry yet left
+// running (an orphan). The onSpawnStarted seam fires a Stop in exactly that
+// window. After Start returns, the registry must have no entry for the project
+// AND the spawned child must be torn down (its PID gone), never leaked.
+func TestSpawnWindowStopDoesNotOrphan(t *testing.T) {
+	m := newManagerForTest("/bin/sh", writeReadyRunner(t, "46777"))
+	defer m.Shutdown()
+
+	// Fire a Stop inside the spawn window (after cmd.Start(), before proc.cmd is
+	// published) so terminate races a nil cmd — the exact orphan trigger.
+	m.onSpawnStarted = func(id string) { _ = m.Stop(id) }
+
+	// The windowed Stop removes the in-flight entry, so Start is expected to
+	// return an error; what matters is that the child is not left running.
+	_, _ = m.Start(context.Background(), "p", t.TempDir(), "")
+
+	pid := m.spawnedPID()
+	if pid <= 0 {
+		t.Fatalf("expected a spawned child PID to have been recorded, got %d", pid)
+	}
+
+	// The registry must not report the project as running (Stop removed it).
+	if m.Status("p").Running {
+		t.Fatalf("expected no registry entry for p after a windowed Stop")
+	}
+
+	// Critical assertion: the spawned child must be torn down, not orphaned.
+	// Poll until Kill(pid, 0) reports ESRCH (process gone and reaped). Pre-fix
+	// this never happens within the window: terminate no-op'd on the nil cmd, so
+	// the child runs its `sleep 30` untouched and stays alive.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+			return // child is gone — no orphan
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("spawned child pid=%d is still alive after a windowed Stop (orphaned)", pid)
 }

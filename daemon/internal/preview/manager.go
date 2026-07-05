@@ -59,9 +59,10 @@ type Manager struct {
 	nodePath   string
 	runnerPath string
 
-	mu         sync.Mutex
-	procs      map[string]*previewProc
-	spawnCount int
+	mu           sync.Mutex
+	procs        map[string]*previewProc
+	spawnCount   int
+	lastSpawnPID int // PID of the most recently started child (mu-guarded; test aid).
 
 	// Timeouts. Written once at construction (and, for tests, before the first
 	// Start launches any goroutine that reads them — so the go statement in
@@ -70,6 +71,12 @@ type Manager struct {
 	idleTimeout  time.Duration
 	reapInterval time.Duration
 	stopGrace    time.Duration
+
+	// onSpawnStarted, when non-nil, is invoked inside spawn in the narrow window
+	// after the child has started but before proc.cmd is published. Always nil in
+	// production; set by a test (before the first Start) to deterministically race
+	// a Stop/Shutdown against the spawn window.
+	onSpawnStarted func(projectID string)
 
 	reaperOnce sync.Once
 	stopOnce   sync.Once
@@ -273,12 +280,37 @@ func (m *Manager) spawn(projectID, cwd, hmrHost string, proc *previewProc) error
 	}
 	_ = pw.Close() // the child holds its own dup of the write end
 
+	// Test-only seam: fire in the exact spawn window — after the child has
+	// started but before proc.cmd is published — so a test can deterministically
+	// race a Stop/Shutdown here. Always nil in production.
+	if m.onSpawnStarted != nil {
+		m.onSpawnStarted(projectID)
+	}
+
 	m.mu.Lock()
 	m.spawnCount++
 	proc.cmd = cmd
+	m.lastSpawnPID = cmd.Process.Pid
+	// Close the spawn window: a Stop/Shutdown/reap that landed while proc.cmd was
+	// still nil deleted our registry entry AND no-op'd its own terminate (nil
+	// cmd), leaving this child started-but-unreferenced. proc.cmd is published
+	// now, so the child is finally killable — tear it down and wake any waiter.
+	// Do NOT re-insert into the map (respect the Stop).
+	orphaned := m.procs[projectID] != proc
+	if orphaned {
+		proc.errMsg = "stopped"
+		m.closeReadyLocked(proc)
+	}
+	grace := m.stopGrace
 	m.mu.Unlock()
 
+	// Start the supervisor in every case so the child is Wait()ed/reaped and
+	// proc.exited closes (which lets terminate's grace path finish cleanly).
 	go m.supervise(projectID, proc, pr)
+
+	if orphaned {
+		m.terminate(proc, grace)
+	}
 	return nil
 }
 
@@ -458,4 +490,12 @@ func (m *Manager) spawns() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.spawnCount
+}
+
+// spawnedPID reports the OS PID of the most recently started child (0 if none).
+// Used by tests to assert a spawned child is actually torn down.
+func (m *Manager) spawnedPID() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastSpawnPID
 }
