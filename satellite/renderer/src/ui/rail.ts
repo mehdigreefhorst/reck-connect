@@ -194,7 +194,7 @@ export class Rail {
       <div class="rail-header">Projects</div>
       <div class="rail-divider"></div>
       <div class="rail-list"></div>
-      <div class="rail-archive collapsed" id="rail-archive" hidden>
+      <div class="rail-archive collapsed" id="rail-archive">
         <button class="rail-archive-header" id="rail-archive-header" type="button" aria-expanded="false" title="Archived projects — asleep, using no memory. Click a project to restore it.">
           <span class="rail-archive-caret" aria-hidden="true">▸</span>
           <span class="rail-archive-title">Archive</span>
@@ -250,6 +250,9 @@ export class Rail {
     }
 
     this.renderZone(active, this.listEl);
+    // Drop any stale empty-state placeholder before positioning archived
+    // rows (renderZone indexes container.children), then render the rows.
+    this.archiveListEl.querySelector(".rail-archive-empty")?.remove();
     this.renderZone(archived, this.archiveListEl);
 
     // Reorder acts on the whole set (active first, then archived) so an
@@ -259,7 +262,14 @@ export class Rail {
 
     this.archivedCount = archived.length;
     this.archiveCountEl.textContent = String(this.archivedCount);
-    this.archiveSectionEl.hidden = this.archivedCount === 0;
+    // The Archive section is ALWAYS visible so it's a permanent drop target.
+    // When empty, a placeholder inside the (expandable) folder says so.
+    if (this.archivedCount === 0) {
+      const empty = document.createElement("div");
+      empty.className = "rail-archive-empty";
+      empty.textContent = "Nothing in archive";
+      this.archiveListEl.appendChild(empty);
+    }
     this.applyArchiveCollapsed();
 
     const count = active.length;
@@ -422,12 +432,6 @@ export class Rail {
         e.dataTransfer.setData("text/plain", p.id);
       }
       el.classList.add("dragging");
-      // Reveal the (empty) Archive section as a drop target so the very
-      // first project can be dragged into it.
-      if (!this.draggedArchived && this.archivedCount === 0) {
-        this.archiveSectionEl.hidden = false;
-        this.archiveSectionEl.classList.add("drag-reveal");
-      }
     });
     el.addEventListener("dragover", (e) => {
       if (!this.draggedId || this.draggedId === p.id) return;
@@ -463,11 +467,6 @@ export class Rail {
       el.classList.remove("dragging");
       this.listEl.classList.remove("drop-target");
       this.archiveSectionEl.classList.remove("drop-target");
-      // Re-hide the Archive section if it was only revealed for the drag.
-      if (this.archiveSectionEl.classList.contains("drag-reveal")) {
-        this.archiveSectionEl.classList.remove("drag-reveal");
-        if (this.archivedCount === 0) this.archiveSectionEl.hidden = true;
-      }
       for (const row of this.rows.values()) {
         row.el.classList.remove("drop-before", "drop-after");
       }

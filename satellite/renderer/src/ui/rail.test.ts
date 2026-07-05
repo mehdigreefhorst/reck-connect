@@ -467,14 +467,23 @@ describe("Rail", () => {
       expect(archivedRows[0].classList.contains("archived")).toBe(true);
     });
 
-    it("shows the archive section only when there are archived projects", () => {
+    it("always shows the archive section, with an empty-state when there are none", () => {
       const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
       const section = root.querySelector<HTMLElement>("#rail-archive")!;
       r.setProjects([mkProject("a", "Alpha", "gray")]);
-      expect(section.hidden).toBe(true);
-      r.setProjects([{ ...mkProject("a", "Alpha", "gray"), archived: true }]);
+      // Visible even with zero archived, showing a placeholder + count 0.
+      expect(section.hidden).toBe(false);
+      expect(root.querySelector("#rail-archive-count")?.textContent).toBe("0");
+      expect(root.querySelector(".rail-archive-empty")?.textContent).toBe("Nothing in archive");
+      // With an archived project, the placeholder is gone and the row shows.
+      r.setProjects([
+        mkProject("a", "Alpha", "gray"),
+        { ...mkProject("b", "Bravo", "gray"), archived: true },
+      ]);
       expect(section.hidden).toBe(false);
       expect(root.querySelector("#rail-archive-count")?.textContent).toBe("1");
+      expect(root.querySelector(".rail-archive-empty")).toBeNull();
+      expect(root.querySelectorAll(".rail-archive-list > .rail-item").length).toBe(1);
     });
 
     it("moves a row between zones when its archived flag flips", () => {
