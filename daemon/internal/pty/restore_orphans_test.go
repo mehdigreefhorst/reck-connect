@@ -3,6 +3,7 @@ package pty
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -251,6 +252,180 @@ func TestRestoreOrphans_clearsWasLiveOnRespawnFailure(t *testing.T) {
 	if e.WasLive {
 		t.Errorf("WasLive should be cleared after failed respawn; entry=%+v", e)
 	}
+}
+
+func TestIsWithinProject(t *testing.T) {
+	sep := string(filepath.Separator)
+	cases := []struct {
+		cwd, root string
+		want      bool
+	}{
+		{"/home/u/proj", "/home/u/proj", true},                                         // equal
+		{"/home/u/proj" + sep + ".claude-worktrees" + sep + "x", "/home/u/proj", true}, // worktree descendant
+		{"/home/u/proj/sub/deep", "/home/u/proj", true},                                // nested descendant
+		{"/home/u/other", "/home/u/proj", false},                                       // unrelated sibling
+		{"/home/u/projX", "/home/u/proj", false},                                       // shared-prefix, NOT a descendant
+		{"/home/u", "/home/u/proj", false},                                             // parent
+		{"/home/u/proj/", "/home/u/proj", true},                                        // trailing slash normalises
+	}
+	for _, c := range cases {
+		if got := isWithinProject(c.cwd, c.root); got != c.want {
+			t.Errorf("isWithinProject(%q, %q) = %v, want %v", c.cwd, c.root, got, c.want)
+		}
+	}
+}
+
+// TestRestoreProjectOrphans_selfHealedWorktreeCwdSurvivesGuard — #56: after the
+// resume path self-heals a worktree session's cwd to the worktree (a descendant
+// of the project root), a subsequent restore must NOT treat that as a
+// cwd-mismatch. The relaxed guard allows descendants, so the entry is respawned
+// rather than skipped + was_live-cleared.
+func TestRestoreProjectOrphans_selfHealedWorktreeCwdSurvivesGuard(t *testing.T) {
+	mgr, store, projectCwd := newManagerWithStore(t)
+
+	worktreeCwd := filepath.Join(projectCwd, ".claude-worktrees", "feat")
+	if err := os.MkdirAll(worktreeCwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := sessions.NewUUID()
+	writeFakeTranscript(t, worktreeCwd, sid) // transcript at the worktree's canonical folder
+	now := time.Now().UTC()
+	if err := store.Upsert("p1", sessions.Entry{
+		Kind:         proto.PaneKindClaude,
+		SessionID:    sid,
+		Name:         "p1/wt",
+		Cwd:          worktreeCwd, // already self-healed to the worktree
+		CreatedAt:    now,
+		LastActiveAt: now,
+		LastPaneID:   "p_old",
+		WasLive:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := mgr.RestoreProjectOrphans("p1", projectCwd, 80, 24)
+	if r.Restored != 1 || r.Skipped != 0 {
+		t.Fatalf("restore = %+v, want a descendant-cwd worktree session respawned (Restored=1, Skipped=0)", r)
+	}
+}
+
+// TestRestoreProjectOrphans_gitUnconfirmedKeptReadOnly — #56: a worktree
+// session whose transcript is intact but whose worktree set git can't confirm
+// (here the project isn't a git repo, so `git worktree list` fails) must NOT be
+// relocated + respawned — a transient git failure must not strand a live
+// worktree session. Restore keeps it read-only: clears was_live, counts it
+// read-only, leaves the transcript untouched and viewable.
+func TestRestoreProjectOrphans_gitUnconfirmedKeptReadOnly(t *testing.T) {
+	mgr, store, projectCwd := newManagerWithStore(t) // projectCwd is not a git repo → git fails
+
+	// Transcript under a worktree-suffixed folder with no live worktree.
+	home, _ := os.UserHomeDir()
+	gone := filepath.Join(home, ".claude", "projects", sessions.EncodeCwd(projectCwd)+"--claude-worktrees-removed")
+	if err := os.MkdirAll(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := sessions.NewUUID()
+	if err := os.WriteFile(filepath.Join(gone, sid+".jsonl"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.Upsert("p1", sessions.Entry{
+		Kind:         proto.PaneKindClaude,
+		SessionID:    sid,
+		Name:         "p1/gone",
+		Cwd:          projectCwd,
+		CreatedAt:    now,
+		LastActiveAt: now,
+		LastPaneID:   "p_old",
+		WasLive:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := mgr.RestoreProjectOrphans("p1", projectCwd, 80, 24)
+	if r.ReadOnly != 1 || r.Restored != 0 {
+		t.Fatalf("restore = %+v, want deleted-worktree session kept read-only (ReadOnly=1, Restored=0)", r)
+	}
+	if len(mgr.PanesInProject("p1")) != 0 {
+		t.Errorf("expected no pane spawned for a deleted-worktree session")
+	}
+	e, ok, err := store.Get("p1", sid)
+	if err != nil || !ok {
+		t.Fatalf("entry missing post-restore: ok=%v err=%v", ok, err)
+	}
+	if e.WasLive {
+		t.Errorf("WasLive should be cleared for a read-only (deleted-worktree) session; entry=%+v", e)
+	}
+}
+
+// TestRestoreProjectOrphans_goneWorktreeMigratesAndResumes — #56, the "jerry"
+// case at the auto-restore layer: the project is a git repo, the session's
+// worktree was removed (git lists no match), but its transcript survives. On
+// restart the daemon relocates the transcript into the project-root folder and
+// resumes it (Restored, not ReadOnly) — the session comes back live with its
+// history and keeps was_live.
+func TestRestoreProjectOrphans_goneWorktreeMigratesAndResumes(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	root := filepath.Join(dir, "proj")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "init", "-q") // real repo, no matching worktree
+	configPath := filepath.Join(dir, "projects.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sessions.NewStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeDir := filepath.Join(dir, "claude-projects")
+	gone := filepath.Join(claudeDir, sessions.EncodeCwd(root)+"--claude-worktrees-removed")
+	if err := os.MkdirAll(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := sessions.NewUUID()
+	orphan := filepath.Join(gone, sid+".jsonl")
+	if err := os.WriteFile(orphan, []byte(`{"type":"user"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.Upsert("p1", sessions.Entry{
+		Kind: proto.PaneKindClaude, SessionID: sid, Name: "p1/jerry", Cwd: root,
+		CreatedAt: now, LastActiveAt: now, LastPaneID: "p_old", WasLive: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManagerFromConfig(ManagerConfig{
+		Projects:          []config.Project{{ID: "p1", Name: "P1", Cwd: root, Shell: []string{"/bin/sh"}}},
+		ClaudeCmd:         []string{"/bin/echo"},
+		ConfigPath:        configPath,
+		Sessions:          store,
+		ClaudeProjectsDir: claudeDir,
+	})
+
+	r := mgr.RestoreProjectOrphans("p1", root, 80, 24)
+	if r.Restored != 1 || r.ReadOnly != 0 {
+		t.Fatalf("restore = %+v, want gone-worktree session migrated + resumed (Restored=1, ReadOnly=0)", r)
+	}
+	if _, err := os.Stat(sessions.TranscriptPath(claudeDir, root, sid)); err != nil {
+		t.Errorf("transcript not relocated to project root: %v", err)
+	}
+	e, ok, err := store.Get("p1", sid)
+	if err != nil || !ok {
+		t.Fatalf("entry missing post-restore: ok=%v err=%v", ok, err)
+	}
+	if !e.WasLive {
+		t.Errorf("WasLive should remain true for a resumed session; entry=%+v", e)
+	}
+	for _, p := range mgr.PanesInProject("p1") {
+		_ = mgr.DeletePane("p1", p.ID)
+	}
+	time.Sleep(50 * time.Millisecond)
 }
 
 func TestRestoreOrphans_emptyStoreNoop(t *testing.T) {

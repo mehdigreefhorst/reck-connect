@@ -104,6 +104,112 @@ func TestList_filtersWhenTranscriptMissing(t *testing.T) {
 	}
 }
 
+func TestList_keepsWorktreeSessionUnderSuffixedDir(t *testing.T) {
+	// Failsafe for #56: a Claude session run in a git worktree stores its
+	// transcript under <EncodeCwd(cwd)>--claude-worktrees-<name>/, not the
+	// project-root folder. The entry's Cwd is the project root, so the
+	// canonical lookup misses — List must still keep the entry (via the
+	// worktree-suffix glob) instead of dropping the tab on restore.
+	s, dir := newStore(t)
+	cwd := "/a/b/c"
+	claudeDir := filepath.Join(dir, "claude-projects")
+	worktreeDir := filepath.Join(claudeDir, EncodeCwd(cwd)+"--claude-worktrees-fts5")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := NewUUID()
+	if err := os.WriteFile(filepath.Join(worktreeDir, sid+".jsonl"), []byte(`{"type":"user"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Upsert("p1", Entry{
+		SessionID:    sid,
+		Name:         "p1/pane-a",
+		Cwd:          cwd, // recorded as the project root, NOT the worktree
+		CreatedAt:    now,
+		LastActiveAt: now,
+		LastPaneID:   "p_abc",
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, err := s.List("p1", ListOptions{ClaudeProjectsDir: claudeDir})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].SessionID != sid {
+		t.Fatalf("List = %+v, want the worktree session kept", got)
+	}
+}
+
+func TestResolveTranscriptCwd(t *testing.T) {
+	// #56 Layer B: given a set of candidate cwds (project root + its git
+	// worktrees), return the one whose EncodeCwd() folder actually holds the
+	// transcript. This recovers the real runtime cwd WITHOUT lossy-decoding a
+	// folder name, so a mis-recorded worktree session can be resumed in the
+	// directory Claude actually wrote to.
+	claudeDir := t.TempDir()
+	root := "/home/u/proj"
+	worktree := "/home/u/proj/.claude-worktrees/feat-x"
+	sid := NewUUID()
+
+	seed := func(cwd string) {
+		dir := filepath.Join(claudeDir, EncodeCwd(cwd))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, sid+".jsonl"), []byte(`{"type":"user"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("canonical candidate wins", func(t *testing.T) {
+		dir := t.TempDir()
+		encoded := filepath.Join(dir, EncodeCwd(root))
+		if err := os.MkdirAll(encoded, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(encoded, sid+".jsonl"), []byte(`x`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := ResolveTranscriptCwd(dir, sid, []string{root, worktree})
+		if !ok || got != root {
+			t.Fatalf("ResolveTranscriptCwd = (%q, %v), want (%q, true)", got, ok, root)
+		}
+	})
+
+	t.Run("worktree candidate recovered when canonical misses", func(t *testing.T) {
+		seed(worktree)
+		got, ok := ResolveTranscriptCwd(claudeDir, sid, []string{root, worktree})
+		if !ok || got != worktree {
+			t.Fatalf("ResolveTranscriptCwd = (%q, %v), want (%q, true)", got, ok, worktree)
+		}
+	})
+
+	t.Run("no candidate holds the transcript", func(t *testing.T) {
+		got, ok := ResolveTranscriptCwd(t.TempDir(), NewUUID(), []string{root, worktree})
+		if ok || got != "" {
+			t.Fatalf("ResolveTranscriptCwd = (%q, %v), want (\"\", false)", got, ok)
+		}
+	})
+
+	t.Run("first matching candidate wins", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, cwd := range []string{root, worktree} {
+			enc := filepath.Join(dir, EncodeCwd(cwd))
+			if err := os.MkdirAll(enc, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(enc, sid+".jsonl"), []byte(`x`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, _ := ResolveTranscriptCwd(dir, sid, []string{worktree, root})
+		if got != worktree {
+			t.Fatalf("ResolveTranscriptCwd first-match = %q, want %q", got, worktree)
+		}
+	})
+}
+
 func TestList_sortsByLastActiveDesc(t *testing.T) {
 	s, dir := newStore(t)
 	cwd := "/x/y"

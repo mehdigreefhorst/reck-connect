@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -672,6 +673,212 @@ func TestCreatePaneWith_resume_passesResumeFlag(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("expected --resume %s in argv; tail=%q", sid, string(pane.ReplayTail(1024)))
+}
+
+// TestCreatePaneWith_resume_recoversWorktreeCwdAndSelfHeals — #56: a Claude
+// session that ran in a git worktree recorded the project root as its cwd, but
+// its transcript lives under the worktree's encoded folder. On resume the
+// manager must recover the worktree cwd (so `claude --resume` rehydrates the
+// real transcript instead of forking a fresh one) AND self-heal the stored
+// Entry.Cwd so subsequent restores hit the canonical path directly.
+func TestCreatePaneWith_resume_recoversWorktreeCwdAndSelfHeals(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "proj")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "init", "-q")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "add", ".")
+	gitRun(t, root, "commit", "-q", "-m", "init")
+	gitRun(t, root, "worktree", "add", "-q", "-b", "feat-x", filepath.Join(root, ".claude-worktrees", "feat-x"))
+
+	// Match the transcript against the path git actually reports (macOS
+	// resolves /var symlinks) so EncodeCwd lines up with recovery.
+	worktrees, _ := gitWorktreePaths(root)
+	var wtPath string
+	for _, p := range worktrees {
+		if strings.Contains(p, "feat-x") {
+			wtPath = p
+		}
+	}
+	if wtPath == "" {
+		t.Fatalf("worktree not enumerated: %v", worktrees)
+	}
+
+	claudeDir := filepath.Join(dir, "claude-projects")
+	enc := filepath.Join(claudeDir, sessions.EncodeCwd(wtPath))
+	if err := os.MkdirAll(enc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := sessions.NewUUID()
+	if err := os.WriteFile(filepath.Join(enc, sid+".jsonl"), []byte(`{"type":"user"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := sessions.NewStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.Upsert("p1", sessions.Entry{
+		Kind:         proto.PaneKindClaude,
+		SessionID:    sid,
+		Name:         "p1/seed",
+		Cwd:          root, // mis-recorded as the project root
+		CreatedAt:    now,
+		LastActiveAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManagerFromConfig(ManagerConfig{
+		Projects:          []config.Project{{ID: "p1", Name: "P1", Cwd: root, Shell: []string{"/bin/sh"}}},
+		ClaudeCmd:         []string{"/bin/echo"},
+		ConfigPath:        filepath.Join(dir, "projects.toml"),
+		Sessions:          store,
+		ClaudeProjectsDir: claudeDir,
+	})
+	pane, err := mgr.CreatePaneWith("p1", proto.PaneKindClaude, 80, 24, CreatePaneOptions{ResumeSessionID: sid})
+	if err != nil {
+		t.Fatalf("CreatePaneWith resume: %v", err)
+	}
+	defer mgr.DeletePane("p1", pane.ID)
+
+	e, ok, err := store.Get("p1", sid)
+	if err != nil || !ok {
+		t.Fatalf("store.Get(%s) ok=%v err=%v", sid, ok, err)
+	}
+	if e.Cwd != wtPath {
+		t.Errorf("Entry.Cwd not self-healed: got %q, want the worktree %q", e.Cwd, wtPath)
+	}
+}
+
+// TestCreatePaneWith_resume_gitUnavailableRefused — when a worktree session's
+// transcript survives under a suffixed folder but git can't confirm the
+// worktree set (here: the project isn't a git repo, so `git worktree list`
+// fails), resume is refused with ErrResumeWorktreeGone rather than relocating
+// the transcript. Refusing on an unconfirmed worktree set avoids stranding a
+// still-live worktree session on a transient git failure. The session stays
+// viewable read-only; the restore path clears was_live on this error.
+func TestCreatePaneWith_resume_gitUnavailableRefused(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "proj") // deliberately NOT a git repo → git fails
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claudeDir := filepath.Join(dir, "claude-projects")
+	// Transcript exists under a worktree-suffixed folder with no live worktree.
+	gone := filepath.Join(claudeDir, sessions.EncodeCwd(root)+"--claude-worktrees-removed")
+	if err := os.MkdirAll(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := sessions.NewUUID()
+	if err := os.WriteFile(filepath.Join(gone, sid+".jsonl"), []byte(`{"type":"user"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := sessions.NewStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.Upsert("p1", sessions.Entry{
+		Kind: proto.PaneKindClaude, SessionID: sid, Name: "p1/gone", Cwd: root,
+		CreatedAt: now, LastActiveAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManagerFromConfig(ManagerConfig{
+		Projects:          []config.Project{{ID: "p1", Name: "P1", Cwd: root, Shell: []string{"/bin/sh"}}},
+		ClaudeCmd:         []string{"/bin/echo"},
+		ConfigPath:        filepath.Join(dir, "projects.toml"),
+		Sessions:          store,
+		ClaudeProjectsDir: claudeDir,
+	})
+	_, err = mgr.CreatePaneWith("p1", proto.PaneKindClaude, 80, 24, CreatePaneOptions{ResumeSessionID: sid})
+	if !errors.Is(err, ErrResumeWorktreeGone) {
+		t.Fatalf("CreatePaneWith resume err = %v, want ErrResumeWorktreeGone", err)
+	}
+}
+
+// TestCreatePaneWith_resume_goneWorktreeMigratesToProjectRoot — #56, the "jerry"
+// case: the session's git worktree was permanently removed (git runs fine and
+// simply doesn't list it), but its transcript survives under the suffixed
+// folder. Rather than fork a fresh chat, the daemon relocates the transcript
+// into the project-root folder and resumes there — same session id, full
+// history — and self-heals Entry.Cwd to the project root.
+func TestCreatePaneWith_resume_goneWorktreeMigratesToProjectRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "proj")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "init", "-q") // a real repo, but with NO matching worktree
+
+	claudeDir := filepath.Join(dir, "claude-projects")
+	gone := filepath.Join(claudeDir, sessions.EncodeCwd(root)+"--claude-worktrees-removed")
+	if err := os.MkdirAll(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := sessions.NewUUID()
+	orphan := filepath.Join(gone, sid+".jsonl")
+	if err := os.WriteFile(orphan, []byte(`{"type":"user","text":"the real history"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := sessions.NewStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.Upsert("p1", sessions.Entry{
+		Kind: proto.PaneKindClaude, SessionID: sid, Name: "p1/jerry", Cwd: root,
+		CreatedAt: now, LastActiveAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManagerFromConfig(ManagerConfig{
+		Projects:          []config.Project{{ID: "p1", Name: "P1", Cwd: root, Shell: []string{"/bin/sh"}}},
+		ClaudeCmd:         []string{"/bin/echo"},
+		ConfigPath:        filepath.Join(dir, "projects.toml"),
+		Sessions:          store,
+		ClaudeProjectsDir: claudeDir,
+	})
+	pane, err := mgr.CreatePaneWith("p1", proto.PaneKindClaude, 80, 24, CreatePaneOptions{ResumeSessionID: sid})
+	if err != nil {
+		t.Fatalf("CreatePaneWith resume (gone worktree) = %v, want migrate+resume", err)
+	}
+	defer mgr.DeletePane("p1", pane.ID)
+
+	// Same session id — not a fresh spawn.
+	if pane.SessionID != sid {
+		t.Errorf("pane.SessionID = %q, want the original %q", pane.SessionID, sid)
+	}
+	// Transcript relocated into the project-root folder (move, not copy).
+	dest := sessions.TranscriptPath(claudeDir, root, sid)
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("transcript not relocated to project root %q: %v", dest, err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("orphaned transcript should have been moved, still at %q (err=%v)", orphan, err)
+	}
+	// Entry.Cwd self-healed to the project root.
+	e, ok, err := store.Get("p1", sid)
+	if err != nil || !ok {
+		t.Fatalf("store.Get ok=%v err=%v", ok, err)
+	}
+	if e.Cwd != root {
+		t.Errorf("Entry.Cwd = %q, want the project root %q", e.Cwd, root)
+	}
 }
 
 func TestCreatePane_claudeMarksWasLive(t *testing.T) {
