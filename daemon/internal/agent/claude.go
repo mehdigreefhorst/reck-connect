@@ -77,10 +77,15 @@ func (a *claudeAdapter) BuildSpawn(req SpawnRequest) (SpawnPlan, error) {
 		argv = append(argv, "--append-system-prompt", combined)
 	}
 
-	// Cwd always comes from the project itself — Claude's --resume
-	// rehydrates the transcript but the process still runs in the
-	// project's working copy; transcripts can be resumed across cwd
-	// moves without re-anchoring the process.
+	// Cwd defaults to the project root for fresh spawns. On resume it must
+	// instead be the directory the session actually ran in: Claude Code keys
+	// its transcript folder on the process cwd, so `claude --resume <id>` only
+	// rehydrates the right session when launched there. For a session that ran
+	// in a git worktree that's the worktree, not the project root — launching
+	// in the project root makes Claude fork a fresh transcript (issue #56).
+	// ResumeEntry.Cwd is recovered/self-healed to the real runtime cwd by the
+	// manager before BuildSpawn; fall back to the project root when it's empty
+	// (older rows) so we always spawn somewhere valid.
 	plan := SpawnPlan{AgentName: "claude-code", Cwd: req.Project.Cwd}
 
 	switch {
@@ -88,6 +93,9 @@ func (a *claudeAdapter) BuildSpawn(req SpawnRequest) (SpawnPlan, error) {
 		argv = append(argv, "--resume", req.ResumeEntry.SessionID)
 		plan.ResumedSessionID = req.ResumeEntry.SessionID
 		plan.SessionName = req.ResumeEntry.Name
+		if req.ResumeEntry.Cwd != "" {
+			plan.Cwd = req.ResumeEntry.Cwd
+		}
 	case req.Sessions != nil:
 		// Fresh pane + session index available → pre-generate a UUID
 		// so the daemon can record the mapping before the child exits.

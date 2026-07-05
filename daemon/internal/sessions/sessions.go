@@ -364,11 +364,11 @@ func (s *Store) List(projectID string, opts ListOptions) ([]Entry, error) {
 	}
 	claudeDir := opts.ClaudeProjectsDir
 	if claudeDir == "" {
-		home, err := os.UserHomeDir()
+		var err error
+		claudeDir, err = DefaultClaudeProjectsDir()
 		if err != nil {
 			return nil, err
 		}
-		claudeDir = filepath.Join(home, ".claude", "projects")
 	}
 	live := make([]Entry, 0, len(entries))
 	for _, e := range entries {
@@ -389,12 +389,116 @@ func (s *Store) List(projectID string, opts ListOptions) ([]Entry, error) {
 	return live, nil
 }
 
+// TranscriptPath returns Claude Code's on-disk JSONL transcript path for
+// (cwd, sessionID) under claudeProjectsDir. Shared by the liveness gate in
+// List and the HTTP transcript endpoint so the formula lives in one place.
+func TranscriptPath(claudeProjectsDir, cwd, sessionID string) string {
+	return filepath.Join(claudeProjectsDir, EncodeCwd(cwd), sessionID+".jsonl")
+}
+
+// ResolveTranscriptCwd returns the first candidate cwd whose EncodeCwd()
+// folder actually holds sessionID's transcript. It is the read-side recovery
+// primitive for git-worktree sessions (issue #56): the caller passes the
+// project root plus its live git worktrees, and this reports the directory
+// Claude Code actually ran in — WITHOUT lossy-decoding a folder name back to a
+// path (EncodeCwd collapses '/', '.', '-' all to '-', so decode is ambiguous).
+//
+// candidateCwds is tried in order, so put the canonical (recorded) cwd first
+// to prefer it when a transcript exists under more than one candidate. Returns
+// ("", false) when no candidate holds the transcript (e.g. the worktree was
+// removed) — the caller must then NOT resume in the wrong cwd.
+func ResolveTranscriptCwd(claudeProjectsDir, sessionID string, candidateCwds []string) (string, bool) {
+	for _, cwd := range candidateCwds {
+		if st, err := os.Stat(TranscriptPath(claudeProjectsDir, cwd, sessionID)); err == nil && !st.IsDir() {
+			return cwd, true
+		}
+	}
+	return "", false
+}
+
+// FindTranscript locates a session's JSONL. It prefers the canonical path
+// (EncodeCwd(cwd)/<sid>.jsonl) but falls back to a glob across every project
+// dir when that misses: a session that ran in a git worktree or a subdir is
+// stored under the EncodeCwd() of its *actual* cwd, which differs from the
+// project's registered cwd. The session id is a globally-unique UUID, so the
+// glob is unambiguous. Callers MUST validate sessionID as a UUID first (the
+// HTTP handler does) so it can't smuggle glob metacharacters or path parts.
+func FindTranscript(claudeProjectsDir, cwd, sessionID string) (string, bool) {
+	direct := TranscriptPath(claudeProjectsDir, cwd, sessionID)
+	if _, err := os.Stat(direct); err == nil {
+		return direct, true
+	}
+	matches, err := filepath.Glob(filepath.Join(claudeProjectsDir, "*", sessionID+".jsonl"))
+	if err == nil && len(matches) > 0 {
+		return matches[0], true
+	}
+	return "", false
+}
+
+// DefaultClaudeProjectsDir returns the conventional Claude Code transcript
+// root (~/.claude/projects) for the current user.
+func DefaultClaudeProjectsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude", "projects"), nil
+}
+
 // transcriptExists reports whether Claude Code's JSONL for (cwd, sessionID)
 // is on disk under claudeProjectsDir.
+//
+// Failsafe for git-worktree sessions (issue #56): Claude Code keys the
+// transcript folder on its *runtime* cwd, so a session run in a worktree lands
+// under <EncodeCwd(cwd)>--claude-worktrees-<name>/, NOT the project-root folder
+// the pane recorded as its launch cwd. Without tolerating that, Store.List's
+// restore gate drops the session on every daemon restart even though its
+// transcript is intact. So when the canonical path misses, also match
+// worktree-suffixed sibling dirs of the encoded cwd.
+//
+// The match is scoped to <EncodeCwd(cwd)>* — the project's own directory
+// subtree — rather than a bare *, so a mis-recorded session can't be adopted
+// into an unrelated project. EncodeCwd's output is [A-Za-z0-9-]*, so the
+// pattern carries no glob metacharacters.
 func transcriptExists(claudeProjectsDir, cwd, sessionID string) bool {
-	p := filepath.Join(claudeProjectsDir, EncodeCwd(cwd), sessionID+".jsonl")
-	st, err := os.Stat(p)
-	return err == nil && !st.IsDir()
+	if st, err := os.Stat(TranscriptPath(claudeProjectsDir, cwd, sessionID)); err == nil && !st.IsDir() {
+		return true
+	}
+	return TranscriptExistsUnderProject(claudeProjectsDir, cwd, sessionID)
+}
+
+// TranscriptExistsUnderProject reports whether sessionID's transcript is on
+// disk anywhere under cwd's project subtree — the canonical <EncodeCwd(cwd)>
+// folder or a worktree-suffixed sibling (<EncodeCwd(cwd)>--claude-worktrees-*).
+//
+// It's the "is there a transcript to protect?" test the resume path uses to
+// distinguish a git-worktree session whose worktree was removed (transcript
+// still present, unreachable → refuse resume, keep read-only) from a session
+// with no transcript at all (nothing to orphan → legacy resume is fine). The
+// match is scoped to <EncodeCwd(cwd)>* — this project's own subtree — so a
+// mis-recorded session can't be adopted into an unrelated project. EncodeCwd's
+// output is [A-Za-z0-9-]*, so the pattern carries no glob metacharacters;
+// callers still pass UUID sessionIDs.
+func TranscriptExistsUnderProject(claudeProjectsDir, cwd, sessionID string) bool {
+	_, ok := FindTranscriptUnderProject(claudeProjectsDir, cwd, sessionID)
+	return ok
+}
+
+// FindTranscriptUnderProject returns the on-disk path of sessionID's transcript
+// when it lives anywhere under cwd's project subtree — the canonical
+// <EncodeCwd(cwd)> folder or a worktree-suffixed sibling
+// (<EncodeCwd(cwd)>--claude-worktrees-*). It's how the gone-worktree recovery
+// locates a transcript that must be relocated into the project-root folder so
+// `claude --resume` can continue it (issue #56). Same project-scoped,
+// metacharacter-free glob as TranscriptExistsUnderProject; returns the first
+// match (a UUID sessionID is unique, so at most one is expected).
+func FindTranscriptUnderProject(claudeProjectsDir, cwd, sessionID string) (string, bool) {
+	pattern := filepath.Join(claudeProjectsDir, EncodeCwd(cwd)+"*", sessionID+".jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return "", false
+	}
+	return matches[0], true
 }
 
 // EncodeCwd mirrors Claude Code's on-disk encoding: every non-alphanumeric
