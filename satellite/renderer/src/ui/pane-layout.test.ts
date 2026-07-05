@@ -1413,7 +1413,7 @@ describe("PaneLayout history button", () => {
     cb.onHistoryPane = history;
     const layout = new PaneLayout(cb);
     layout.setTree(makeClaudeLeaf("leafA", ["t1"]));
-    const btn = root.querySelector<HTMLButtonElement>('.tab-actions button[data-act="history"]');
+    const btn = root.querySelector<HTMLButtonElement>(".pane-controls-history");
     expect(btn).not.toBeNull();
     btn!.click();
     expect(history).toHaveBeenCalledWith("pane-t1", "leafA");
@@ -1425,14 +1425,14 @@ describe("PaneLayout history button", () => {
     cb.onHistoryPane = vi.fn();
     const layout = new PaneLayout(cb);
     layout.setTree(makeLeaf("leafA", ["t1"])); // makeLeaf builds shell tabs
-    expect(root.querySelector('.tab-actions button[data-act="history"]')).toBeNull();
+    expect(root.querySelector(".pane-controls-history")).toBeNull();
     layout.dispose();
   });
 
   it("is hidden when the onHistoryPane callback is absent", () => {
     const layout = new PaneLayout(makeCallbacks(root, makeController()));
     layout.setTree(makeClaudeLeaf("leafA", ["t1"]));
-    expect(root.querySelector('.tab-actions button[data-act="history"]')).toBeNull();
+    expect(root.querySelector(".pane-controls-history")).toBeNull();
     layout.dispose();
   });
 });
@@ -1481,7 +1481,7 @@ describe("PaneLayout history button focuses its leaf", () => {
     });
     focusSpy.mockClear();
     order.length = 0;
-    const btn = root.querySelector<HTMLButtonElement>('.tab-actions button[data-act="history"]');
+    const btn = root.querySelector<HTMLButtonElement>(".pane-controls-history");
     btn!.click();
     expect(focusSpy).toHaveBeenCalledWith("leafA");
     expect(order).toEqual(["focus", "history"]);

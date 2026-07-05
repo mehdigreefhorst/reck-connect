@@ -35,6 +35,7 @@ import { effectiveStoplight as filterEffectiveStoplight } from "./ui/effective-s
 import { AppBar, type Theme } from "./ui/app-bar";
 import { PaneLayout } from "./ui/pane-layout";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
+import { ensurePaneControls } from "./ui/paneControls";
 import { resolveActivatePath } from "./viewer/resolveActivatePath";
 import {
   setExtensionlessAllowlist,
@@ -2027,7 +2028,7 @@ export async function boot(splash?: StartupSplashController) {
           return new TerminalPaneAdapter({
             term: term as unknown as ConstructorParameters<typeof TerminalPaneAdapter>[0]["term"],
             xtermEl,
-            containerEl: rec.wrapper,
+            containerEl: ensurePaneControls(rec.wrapper),
             cellWidth,
             cellHeight,
           });
@@ -2051,13 +2052,13 @@ export async function boot(splash?: StartupSplashController) {
         const overlay = transcripts.get(rec.tab.paneId);
         if (overlay) {
           return new MarkdownSearchAdapter({
-            container: overlay.view.root,
+            container: ensurePaneControls(overlay.view.root),
             body: overlay.view.body,
           });
         }
         const term = rec.term.getXterm();
         return new TerminalSearchAdapter({
-          container: rec.wrapper,
+          container: ensurePaneControls(rec.wrapper),
           term: term as unknown as ConstructorParameters<
             typeof TerminalSearchAdapter
           >[0]["term"],

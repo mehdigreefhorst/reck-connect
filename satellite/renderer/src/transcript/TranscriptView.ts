@@ -23,6 +23,7 @@ import { createOverlayScrollbar, type OverlayScrollbar } from "../search/Overlay
 import { domScrollSurface } from "../search/scrollSurfaces";
 import { MarkdownSurfaceAdapter } from "../tts/MarkdownSurfaceAdapter";
 import type { SpeakSurfaceAdapter } from "../tts/SpeakSurfaceAdapter";
+import { ensurePaneControls } from "../ui/paneControls";
 import type { TranscriptTurn, TranscriptBlock } from "./parseTranscript";
 
 export interface TranscriptViewOptions {
@@ -414,11 +415,11 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     setStatus,
     setMatches: (fractions) => scrollbar.setMatches(fractions),
     getSpeakSurface(): SpeakSurfaceAdapter {
-      // `root` is the positioned overlay (offset parent for the control bar +
-      // highlight overlay); `body` is the scrollable rendered-markdown root —
-      // exactly the (container, body) split the file viewer speaks with.
+      // The control bar mounts into the overlay's shared top-right stack
+      // (alongside the search bar); `body` is the scrollable markdown root —
+      // the (container, body) split the file viewer speaks with.
       if (!speakSurface) {
-        speakSurface = new MarkdownSurfaceAdapter({ container: root, body });
+        speakSurface = new MarkdownSurfaceAdapter({ container: ensurePaneControls(root), body });
       }
       return speakSurface;
     },

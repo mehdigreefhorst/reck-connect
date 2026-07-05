@@ -174,6 +174,49 @@ for some panes, questions/plans invisible, top-right control layout, styling.
   start-of-session divider is promoted to a real title. Regular tool calls stay
   collapsed-by-default (unchanged) — only plans/questions are surfaced.
 
+#### P4 — clamp long user turns
+
+**What we learned**
+- The clamp must be a CSS `max-height`/`overflow` clip + fade mask, NOT
+  `<details>`/`display:none` — the search subsystem's `TreeWalker` only matches
+  text that's in layout, so `display:none` would hide it from search. The full
+  text stays in the DOM; "Show more" toggles the clip. Threshold is a text proxy
+  (>600 chars or >12 lines) because jsdom has no layout to measure height.
+
+#### P5/P6 — unified top-right control stack
+
+**What we learned**
+- There was no shared controls container: the search bar and TTS bar were each
+  independently `position:absolute` into `getContainerEl()` with hand-tuned
+  offsets (TTS `top:8px`, search `top:48px`), and History was a `.tab-actions`
+  button. New `ui/paneControls.ts` `ensurePaneControls(anchor)` is a find-or-
+  create `.pane-controls` flex column (top-right, `align-items:flex-end`), and
+  every mounter now routes through it: search + TTS pass
+  `ensurePaneControls(anchor)` as their container; History moved into the stack
+  via `ensureHistoryButton`. Order is fixed by CSS `order` (search 1, TTS 2,
+  history 3), so it holds no matter which is present or when it was inserted.
+- The anchor is the same element for all three: `wrapper.appendChild(term.container)`
+  means `pane.container.parentElement === rec.wrapper`, so History (created in
+  PaneLayout's record loop) and search/TTS (from boot's focus closures) resolve
+  the *same* stack. Reused across pane / popout / file-viewer / transcript
+  overlay by pointing `ensurePaneControls` at each surface's positioned root.
+
+**Surprises**
+- Making bars children of `.pane-controls` auto-neutralises the old
+  `.file-viewer-root > .tts-control-bar` overrides (they're no longer *direct*
+  children of the root), so no rules had to be deleted — only in-flow overrides
+  added under `.pane-controls > …`.
+- `getSpeakSurface()`'s container changed from `root` to the stack, breaking a
+  test asserting `getContainerEl() === root`; updated to the `.pane-controls`
+  child. Two pane-layout tests keyed on `.tab-actions [data-act=history]` moved
+  to `.pane-controls-history`.
+
+**Decisions**
+- `.pane-controls` sits at `z-index:31` (above the History overlay's 30) with
+  `pointer-events:none` on the box + `auto` on children, so empty gaps don't eat
+  surface clicks. Surfaces with a header (`.file-viewer-root`, `.transcript-view`)
+  push the stack down via a per-surface `top` override.
+
 ## Codex preamble via `developer_instructions` (follow-up to #33, 2026-07-01)
 
 Undeferred the #32 preamble for codex after web-researching the actual `codex` CLI.

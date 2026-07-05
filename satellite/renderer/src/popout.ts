@@ -33,6 +33,8 @@ import { terminalScrollSurface } from "./search/scrollSurfaces";
 import { ApiClient } from "@client-core/api/client";
 import { createTranscriptController } from "./transcript/TranscriptController";
 import { resolveTranscriptSession } from "./transcript/resolveSession";
+import { ensurePaneControls, ensureHistoryButton } from "./ui/paneControls";
+import { iconHistory } from "./ui/icons";
 
 const DEFAULT_LOCAL_PORT = 7315;
 
@@ -200,7 +202,7 @@ async function bootPopout(): Promise<void> {
           return new TerminalPaneAdapter({
             term: xterm as unknown as ConstructorParameters<typeof TerminalPaneAdapter>[0]["term"],
             xtermEl,
-            containerEl: body,
+            containerEl: ensurePaneControls(body),
             cellWidth,
             cellHeight,
           });
@@ -256,12 +258,12 @@ async function bootPopout(): Promise<void> {
         listSessions: () => api.listSessions(paneProjectId),
       });
       if (!sessionId) return; // not a Claude pane (or no transcript yet)
-      const historyBtn = document.createElement("button");
-      historyBtn.type = "button";
-      historyBtn.title = "Chat history — scroll & search the full transcript";
-      historyBtn.textContent = "History";
-      historyBtn.addEventListener("click", () => void transcripts.toggle(panePaneId));
-      actions.insertBefore(historyBtn, reattachBtn);
+      // History (clock) lives in the top-right control stack, alongside
+      // search + TTS — same component as the main window.
+      ensureHistoryButton(body, {
+        icon: iconHistory,
+        onToggle: () => void transcripts.toggle(panePaneId),
+      });
     } catch (e) {
       console.warn("[popout] history disabled:", e);
     }
@@ -283,12 +285,12 @@ async function bootPopout(): Promise<void> {
         const overlay = transcripts.get(panePaneId);
         if (overlay) {
           return new MarkdownSearchAdapter({
-            container: overlay.view.root,
+            container: ensurePaneControls(overlay.view.root),
             body: overlay.view.body,
           });
         }
         return new TerminalSearchAdapter({
-          container: body,
+          container: ensurePaneControls(body),
           term: term.getXterm() as unknown as ConstructorParameters<
             typeof TerminalSearchAdapter
           >[0]["term"],

@@ -6,6 +6,7 @@ import type { PaneWSCloseInfo } from "@client-core/api/ws";
 import type { Stoplight } from "@proto/proto";
 import type { HostRef } from "../host";
 import { iconClose, iconSplitDown, iconSplitRight, iconDetach, iconHistory } from "./icons";
+import { ensureHistoryButton } from "./paneControls";
 import { computeReorder } from "./reorder";
 import { HoverFocusController } from "./hover-focus-controller";
 
@@ -677,6 +678,18 @@ export class PaneLayout {
       // file paths in scrollback become Cmd+clickable (hover-driven — no
       // cost until the user hovers a line). Optional; a no-op when unset.
       this.cb.onPaneCreated?.(t.paneId, term);
+      // History (clock) toggle for Claude panes lives in the pane's top-right
+      // control stack (alongside search + TTS), not the tab bar. `wrapper` is
+      // the same anchor boot.ts mounts search/TTS into, so they share one stack.
+      if (this.cb.onHistoryPane && t.kind === "claude") {
+        ensureHistoryButton(wrapper, {
+          icon: iconHistory,
+          onToggle: () => {
+            this.focusLeaf(leaf.id);
+            this.cb.onHistoryPane?.(t.paneId, leaf.id);
+          },
+        });
+      }
       view.terminals.set(t.id, {
         kind: "terminal",
         tab: t,
@@ -1011,14 +1024,9 @@ export class PaneLayout {
         : "Detach pane to its own window (⌘⇧O)";
       detachButtonHtml = `<button class="icon-btn" data-act="detach" title="${title}"${disabledAttr}>${iconDetach}</button>`;
     }
-    // "History" (#51) — transcript overlay for the active tab. Claude
-    // panes only: shell/codex panes have no session transcript to show.
-    let historyButtonHtml = "";
-    if (this.cb.onHistoryPane && activeTab && activeTab.kind === "claude") {
-      historyButtonHtml = `<button class="icon-btn" data-act="history" title="Chat history — scroll &amp; search the full transcript">${iconHistory}</button>`;
-    }
+    // "History" (#51) now lives in the pane's top-right control stack (created
+    // per Claude pane above), not the tab bar — see ensureHistoryButton.
     actions.innerHTML = `
-      ${historyButtonHtml}
       ${detachButtonHtml}
       <button class="icon-btn" data-act="split-right" title="Split right (⌘D)">${iconSplitRight}</button>
       <button class="icon-btn" data-act="split-down" title="Split down (⌘⇧D)">${iconSplitDown}</button>
@@ -1031,16 +1039,6 @@ export class PaneLayout {
         if (act === "detach") {
           if (activeTab && !activeIsDetached) {
             this.cb.onDetachPane?.(activeTab.paneId, leaf.id);
-          }
-          return;
-        }
-        if (act === "history") {
-          if (activeTab) {
-            // Focus first: the toolbar swallows mousedown, so without
-            // this the search subsystem keeps resolving the previously
-            // active pane and ⌘F would search the wrong surface.
-            this.focusLeaf(leaf.id);
-            this.cb.onHistoryPane?.(activeTab.paneId, leaf.id);
           }
           return;
         }

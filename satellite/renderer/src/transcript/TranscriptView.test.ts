@@ -283,7 +283,10 @@ describe("TranscriptView", () => {
   it("exposes a cached markdown speak surface over the body, disposed with the view", () => {
     const surface = view.getSpeakSurface();
     expect(surface.kind).toBe("markdown");
-    expect(surface.getContainerEl()).toBe(view.root);
+    // The control bar mounts into the overlay's shared top-right stack.
+    const stack = view.root.querySelector(".pane-controls");
+    expect(stack).not.toBeNull();
+    expect(surface.getContainerEl()).toBe(stack);
     // Same instance on repeat calls (one highlight overlay, not N).
     expect(view.getSpeakSurface()).toBe(surface);
     const disposeSpy = vi.spyOn(surface, "dispose");

@@ -3739,3 +3739,40 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   font-size: 0.76rem;
   color: #3fb950;
 }
+
+/* ── Unified top-right control stack ──────────────────────────────────────
+   The search bar, TTS control bar, and History button all mount into one
+   `.pane-controls` box so they stack vertically and snap to the top-right,
+   never clipping. Whatever is present hugs the corner; History is always last.
+   The fixed order is enforced by CSS `order`, independent of insertion time. */
+.pane-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 31; /* above the History overlay (.transcript-view, z-index 30) */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none; /* the empty gaps must not eat clicks on the surface */
+}
+.pane-controls > * { pointer-events: auto; }
+/* Once a bar is a child of `.pane-controls`, its standalone absolute rules (and
+   the `.file-viewer-root > …` overrides) stop matching, so it lays out in-flow. */
+.pane-controls > .reck-search-bar {
+  position: static;
+  top: auto;
+  right: auto;
+  order: 1;
+}
+.pane-controls > .tts-control-bar {
+  position: static;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  order: 2;
+}
+.pane-controls > .pane-controls-history { order: 3; }
+/* Surfaces with a header push the stack below it. */
+.file-viewer-root > .pane-controls { top: 46px; right: 16px; }
+.transcript-view .pane-controls { top: 42px; right: 12px; }
