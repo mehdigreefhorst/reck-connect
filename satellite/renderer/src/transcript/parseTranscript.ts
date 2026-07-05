@@ -23,7 +23,8 @@ export type TranscriptBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | { kind: "tool_use"; name: string; input: string }
-  | { kind: "tool_result"; text: string };
+  | { kind: "tool_result"; text: string }
+  | { kind: "command"; name: string };
 
 export interface TranscriptTurn {
   role: "user" | "assistant";
@@ -91,7 +92,17 @@ export class TranscriptParser {
       role === "user" && blocks.every((b) => b.kind === "tool_result");
 
     if (role === "user" && !isToolResult) {
-      this.turns.push({ role: "user", blocks, ...(timestamp ? { timestamp } : {}) });
+      // A user message's string content is often not the human speaking: the
+      // harness injects a caveat preamble, background task notifications,
+      // system reminders, and slash-command wrappers. Sanitize string content
+      // down to the real prose + a command chip; array content passes through.
+      const userBlocks =
+        typeof m.content === "string" ? sanitizeUserString(m.content) : blocks;
+      // Pure harness noise (only wrappers, no prose/command) contributes no
+      // turn AND is not a real user boundary, so leave the open assistant turn
+      // intact — otherwise a mid-turn task-notification would split it.
+      if (userBlocks.length === 0) return null;
+      this.turns.push({ role: "user", blocks: userBlocks, ...(timestamp ? { timestamp } : {}) });
       this.openAssistant = null; // the next assistant activity starts fresh
       return this.turns.length - 1;
     }
@@ -151,6 +162,45 @@ function blocksFromContent(content: unknown): TranscriptBlock[] {
     }
   }
   return out;
+}
+
+// Harness-wrapper tags that Claude Code injects into "user" message strings.
+// None of these are the human speaking; a slash command is user-initiated but
+// belongs in a slim chip, not a prose bubble. Order matters only in that the
+// command name is captured before the wrappers are stripped.
+const NOISE_WRAPPERS = [
+  "local-command-caveat",
+  "system-reminder",
+  "task-notification",
+  "local-command-stdout",
+  "command-stdout",
+  "command-message",
+  "command-args",
+] as const;
+
+/** Reduce a user string to its real content: an optional slash command (as a
+ *  `command` block) plus whatever prose survives after the harness wrappers
+ *  are removed. Returns [] when the line was pure noise. */
+function sanitizeUserString(raw: string): TranscriptBlock[] {
+  const nameMatch = raw.match(/<command-name>([\s\S]*?)<\/command-name>/);
+  const command = nameMatch ? nameMatch[1].trim() : "";
+
+  let text = stripWrapper(raw, "command-name");
+  for (const tag of NOISE_WRAPPERS) text = stripWrapper(text, tag);
+  text = text.trim();
+
+  const out: TranscriptBlock[] = [];
+  if (command) out.push({ kind: "command", name: command });
+  if (text) out.push({ kind: "text", text });
+  return out;
+}
+
+/** Remove every `<tag …>…</tag>` block; if a tag is left open (these preambles
+ *  often run to end-of-message with no closing tag), remove from it to the end. */
+function stripWrapper(s: string, tag: string): string {
+  const closed = new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${tag}>`, "g");
+  const openToEnd = new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*$`);
+  return s.replace(closed, "").replace(openToEnd, "");
 }
 
 function stringifyInput(input: unknown): string {

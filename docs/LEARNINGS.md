@@ -4,6 +4,45 @@ Append per feature/phase: **What we learned**, **Surprises**, **Decisions**.
 
 ---
 
+## Transcript view: TTS + Cmd-click + chat-start (follow-up to #51/#52, 2026-07-05)
+
+Bringing the History overlay to feature-parity with the terminal / popout /
+file-viewer by reusing existing components. Plan in
+`.claude/plans/claude-transcript-view-enhancements.md`.
+
+### Phase 1 — parser: harness-wrapper sanitization
+
+**What we learned**
+- A Claude session's opening is not "user prose → Claude reply". Real
+  transcripts inject non-conversational **`role:"user"` strings**: a
+  `<local-command-caveat>` preamble, `<task-notification>` background events,
+  `<system-reminder>` blocks, and slash commands as
+  `<command-name>…</command-name>` (sometimes with `<command-message>` /
+  `<command-args>` / `<local-command-stdout>` siblings). Verified live across 8
+  station transcripts: openings split ~PROSE 60, task-notification 13,
+  local-command-caveat 11, command-name 11, local-command-stdout 10,
+  system-reminder 8.
+- The parser now runs `sanitizeUserString()` on string user content: captures
+  the slash command as a slim `{ kind: "command", name }` block, strips every
+  known wrapper (closed *or* run-to-end-of-message), and keeps whatever prose
+  survives. A line that reduces to nothing is **skipped** — no phantom "You"
+  turn.
+
+**Surprises**
+- Slash commands often arrive **standalone** (`<command-name>/model</command-name>`
+  with no siblings), not as the combined `/clear`+message+args blob — so the
+  sanitizer can't assume the sibling wrappers are present.
+- A skipped noise line must **not** reset the open assistant turn. A mid-turn
+  `<task-notification>` would otherwise split Claude's single turn in two, so
+  the pure-noise path returns `null` *without* clearing `openAssistant`.
+
+**Decisions**
+- New `command` block kind (vs. dropping slash commands) so `/clear`, `/model`,
+  `/compact` stay visible as the "how the chat opens" signal — rendered as a
+  pill in Phase 2, not a prose bubble.
+- Wrapper stripping is deliberately tolerant: unknown tags pass through as text
+  (the JSONL schema is not a public API).
+
 ## Codex preamble via `developer_instructions` (follow-up to #33, 2026-07-01)
 
 Undeferred the #32 preamble for codex after web-researching the actual `codex` CLI.
