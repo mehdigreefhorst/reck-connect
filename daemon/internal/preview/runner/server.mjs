@@ -62,7 +62,13 @@ if (typeof createServer !== "function") {
 const server = await createServer({
   root: cwd,
   configFile: undefined, // auto-load the project's vite.config.*
-  server: { host, port, strictPort: false, hmr: { host: hmrHost } },
+  // allowedHosts:true — the target project's own Vite may be >=5.4.12/>=6.0.9
+  // (the CVE-2025-24010 Host-header patch), which Host-blocks requests whose
+  // Host is a non-local hostname. This dev preview is served on the user's
+  // trusted tailnet, so a hostname-based station URL (e.g. a Tailscale MagicDNS
+  // machine.tailnet.ts.net) must be accepted rather than rejected with
+  // "Blocked request. This host is not allowed."
+  server: { host, port, strictPort: false, hmr: { host: hmrHost }, allowedHosts: true },
   plugins: [reckPreviewPlugin({ cwd })],
   clearScreen: false,
   logLevel: "warn",
