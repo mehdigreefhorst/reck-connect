@@ -98,6 +98,12 @@ type Server struct {
 	// leaves it nil and the handler falls through to macclipboard.
 	ClipboardWriter func(mime string, body []byte) error
 
+	// Preview drives the per-project component-preview dev servers
+	// (Phase B, D1). nil when previews are disabled — the /preview
+	// handlers return 503 in that case. Task 7 wires this to a real
+	// *preview.Manager; handler tests inject a stub.
+	Preview previewController
+
 	// HookNonceStore tracks accepted (paneID, nonce) tuples for replay
 	// defense on /panes/:id/agent-event. Audit fix F4 . Lazily
 	// initialised on first use via hookNonceStore() so existing
@@ -153,6 +159,15 @@ type MissionControlHandler interface {
 	NotifyStateChanged()
 }
 
+// previewController is the narrow surface the /preview handlers depend on
+// so they stay testable with a stub. The real *preview.Manager (Task 5)
+// satisfies it; Task 7 assigns one to Server.Preview.
+type previewController interface {
+	Start(ctx context.Context, projectID, cwd, hmrHost string) (proto.PreviewStatus, error)
+	Status(projectID string) proto.PreviewStatus
+	Stop(projectID string) error
+}
+
 // Router returns the chi mux.
 func (s *Server) Router() *chi.Mux {
 	r := chi.NewRouter()
@@ -177,6 +192,12 @@ func (s *Server) Router() *chi.Mux {
 	r.Post("/projects/{id}/panes", s.handleCreatePane)
 	r.Delete("/projects/{id}/panes/{pane_id}", s.handleDeletePane)
 	r.Post("/projects/{id}/panes/{pane_id}/rename", s.handleRenamePane)
+	// Component live preview (Phase B, D1): start/status/stop the
+	// project's Vite dev server. Same bearer-auth + supervisor-scope
+	// contract as the panes routes above.
+	r.Post("/projects/{id}/preview", s.handleStartPreview)
+	r.Get("/projects/{id}/preview", s.handleGetPreview)
+	r.Delete("/projects/{id}/preview", s.handleStopPreview)
 	r.Get("/projects/{id}/sessions", s.handleListSessions)
 	r.Get("/projects/{id}/sessions/{session_id}/transcript", s.handleTranscript)
 	r.Post("/projects/{id}/sessions/dismiss", s.handleDismissSessions)
@@ -552,6 +573,84 @@ func (s *Server) handleCreatePane(w nethttp.ResponseWriter, r *nethttp.Request) 
 		return
 	}
 	writeJSON(w, proto.CreatePaneResponse{PaneID: pane.ID})
+}
+
+// --- Component live preview (Phase B, D1) ---
+//
+// Three bearer-authed routes wrap the per-project preview.Manager. Each
+// mirrors the panes handlers' project-resolution + supervisor-scope
+// contract. s.Preview is nil when previews are disabled; every handler
+// answers 503 with a PreviewStatus{Error:"preview unavailable"} in that
+// case so the satellite can surface the reason instead of a bare code.
+
+// handleStartPreview starts (or reuses) the project's Vite dev server and
+// returns its PreviewStatus. A Start failure still yields a 200 + the
+// status object (which carries .Error) so the satellite can toast the
+// error — that's the product intent (D1) rather than hiding it behind a 5xx.
+func (s *Server) handleStartPreview(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id := chi.URLParam(r, "id")
+	if s.rejectSupervisorOutOfScope(w, r, id) {
+		return
+	}
+	if s.Preview == nil {
+		writeJSONStatus(w, nethttp.StatusServiceUnavailable, proto.PreviewStatus{Error: "preview unavailable"})
+		return
+	}
+	detail, ok := s.Manager.ProjectDetail(id)
+	if !ok {
+		nethttp.Error(w, "project not found", nethttp.StatusNotFound)
+		return
+	}
+	// Empty body is valid → hmr_host defaults to "". decodeJSONBody treats
+	// an empty body as a decode error (EOF → 400), so only decode when the
+	// client actually sent bytes (mirrors handleAgentEvent's guard).
+	var req proto.PreviewStartRequest
+	if r.ContentLength != 0 && r.Body != nil {
+		if err := decodeJSONBody(w, r, maxJSONBody, &req); err != nil {
+			return
+		}
+	}
+	st, _ := s.Preview.Start(r.Context(), id, detail.Cwd, req.HmrHost)
+	writeJSON(w, st)
+}
+
+// handleGetPreview returns the current PreviewStatus for a project.
+func (s *Server) handleGetPreview(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id := chi.URLParam(r, "id")
+	if s.rejectSupervisorOutOfScope(w, r, id) {
+		return
+	}
+	if s.Preview == nil {
+		writeJSONStatus(w, nethttp.StatusServiceUnavailable, proto.PreviewStatus{Error: "preview unavailable"})
+		return
+	}
+	if !s.Manager.ProjectExists(id) {
+		nethttp.Error(w, "project not found", nethttp.StatusNotFound)
+		return
+	}
+	writeJSON(w, s.Preview.Status(id))
+}
+
+// handleStopPreview tears down a project's dev server. 204 on success;
+// Stop is idempotent so stopping a project with no running preview is fine.
+func (s *Server) handleStopPreview(w nethttp.ResponseWriter, r *nethttp.Request) {
+	id := chi.URLParam(r, "id")
+	if s.rejectSupervisorOutOfScope(w, r, id) {
+		return
+	}
+	if s.Preview == nil {
+		writeJSONStatus(w, nethttp.StatusServiceUnavailable, proto.PreviewStatus{Error: "preview unavailable"})
+		return
+	}
+	if !s.Manager.ProjectExists(id) {
+		nethttp.Error(w, "project not found", nethttp.StatusNotFound)
+		return
+	}
+	if err := s.Preview.Stop(id); err != nil {
+		nethttp.Error(w, err.Error(), nethttp.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(nethttp.StatusNoContent)
 }
 
 // handleListSessions returns the persisted session index for a project,
@@ -1094,6 +1193,16 @@ func (s *Server) handleMCWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 
 func writeJSON(w nethttp.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONStatus writes v as a JSON body under an explicit status code.
+// Unlike writeJSON (which lets Encode default the status to 200), the
+// status is set first so error envelopes — e.g. the preview 503 —
+// carry both the code and a decodable JSON body.
+func writeJSONStatus(w nethttp.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
