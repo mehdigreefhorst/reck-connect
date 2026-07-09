@@ -91,6 +91,20 @@ export function createSpeakControlBar(
   stopBtn.type = "button";
   stopBtn.innerHTML = SVG_STOP;
 
+  const minusBtn = document.createElement("button");
+  minusBtn.className = "tts-btn tts-rate-step tts-rate-minus";
+  minusBtn.setAttribute("aria-label", "Slower");
+  minusBtn.title = "Slower (−0.05)";
+  minusBtn.type = "button";
+  minusBtn.textContent = "−";
+
+  const plusBtn = document.createElement("button");
+  plusBtn.className = "tts-btn tts-rate-step tts-rate-plus";
+  plusBtn.setAttribute("aria-label", "Faster");
+  plusBtn.title = "Faster (+0.05)";
+  plusBtn.type = "button";
+  plusBtn.textContent = "+";
+
   const slider = document.createElement("input");
   slider.className = "tts-rate-slider";
   slider.type = "range";
@@ -101,9 +115,20 @@ export function createSpeakControlBar(
   slider.setAttribute("aria-label", "Speech rate");
   slider.title = "Speech rate — drag, or ⌘⇧+ / ⌘⇧- in steps of 0.05";
 
-  const rateLabel = document.createElement("span");
+  // The rate readout doubles as a button: click → type an exact rate.
+  const rateLabel = document.createElement("button");
   rateLabel.className = "tts-rate-label";
+  rateLabel.type = "button";
+  rateLabel.title = "Click to type a speed";
+  rateLabel.setAttribute("aria-label", "Speech rate — click to type a value");
   rateLabel.textContent = `${slider.value}×`;
+
+  const rateInput = document.createElement("input");
+  rateInput.className = "tts-rate-input";
+  rateInput.type = "text";
+  rateInput.inputMode = "decimal";
+  rateInput.setAttribute("aria-label", "Speech rate value");
+  rateInput.hidden = true;
 
   const voiceBtn = document.createElement("button");
   voiceBtn.className = "tts-voice-label";
@@ -123,12 +148,67 @@ export function createSpeakControlBar(
   root.appendChild(playBtn);
   root.appendChild(pauseBtn);
   root.appendChild(stopBtn);
+  root.appendChild(minusBtn);
   root.appendChild(slider);
+  root.appendChild(plusBtn);
   root.appendChild(rateLabel);
+  root.appendChild(rateInput);
   root.appendChild(voiceBtn);
 
   let state: SpeakState = "idle";
   let suppressInput = false;
+  let currentRate = snapRate(opts.initialRate ?? 1.0);
+  let editingRate = false;
+
+  // Reflect a rate everywhere it shows. `animate` gives the readout a
+  // slight, mellow pulse — used for discrete changes (± steps, typed
+  // values), not for continuous slider drags where it would flicker.
+  const updateRateUI = (r: number, animate: boolean) => {
+    currentRate = r;
+    suppressInput = true;
+    slider.value = String(r);
+    suppressInput = false;
+    rateLabel.textContent = `${r}×`;
+    if (animate) {
+      rateLabel.classList.remove("tts-rate-pulse");
+      // Force a reflow so re-adding the class restarts the animation.
+      void rateLabel.offsetWidth;
+      rateLabel.classList.add("tts-rate-pulse");
+    }
+  };
+
+  const applyRate = (raw: number) => {
+    const snapped = snapRate(raw);
+    updateRateUI(snapped, true);
+    opts.callbacks.onRateChange(snapped);
+  };
+
+  // ── Type-a-speed editing ──────────────────────────────────────────
+  const startEditRate = () => {
+    editingRate = true;
+    rateInput.value = String(currentRate);
+    rateLabel.hidden = true;
+    rateInput.hidden = false;
+    rateInput.focus();
+    rateInput.select();
+  };
+
+  const endEditRate = () => {
+    editingRate = false;
+    rateInput.hidden = true;
+    rateLabel.hidden = false;
+  };
+
+  const commitEditRate = () => {
+    if (!editingRate) return;
+    const raw = rateInput.value.trim().replace(",", ".");
+    const num = raw === "" ? NaN : Number(raw);
+    endEditRate();
+    // Reject empty / non-numeric / non-positive input — keep the old
+    // rate. Valid values are clamped to [0.5, 6] and snapped by applyRate.
+    if (!Number.isFinite(num) || num <= 0) return;
+    applyRate(num);
+  };
 
   // ── Voice picker (expands below the bar) ─────────────────────────
   let selectedVoice: string | null = opts.selectedVoice ?? null;
@@ -304,18 +384,36 @@ export function createSpeakControlBar(
   });
   pauseBtn.addEventListener("click", () => opts.callbacks.onPause());
   stopBtn.addEventListener("click", () => opts.callbacks.onStop());
+  minusBtn.addEventListener("click", () => applyRate(currentRate - 0.05));
+  plusBtn.addEventListener("click", () => applyRate(currentRate + 0.05));
+  rateLabel.addEventListener("click", startEditRate);
+  rateInput.addEventListener("input", () => {
+    // Digits plus one decimal separator (dot or comma) only. Stripping
+    // everything else also makes negatives untypeable.
+    const cleaned = rateInput.value
+      .replace(/[^0-9.,]/g, "")
+      .replace(/([.,])(?=.*[.,])/g, "");
+    if (cleaned !== rateInput.value) rateInput.value = cleaned;
+  });
+  rateInput.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      commitEditRate();
+    } else if (ev.key === "Escape") {
+      // Cancel the edit without stopping playback (Esc is also the
+      // global stop-TTS shortcut).
+      ev.stopPropagation();
+      endEditRate();
+    }
+  });
+  rateInput.addEventListener("blur", () => commitEditRate());
   voiceBtn.addEventListener("click", () => {
     if (pickerOpen) closePicker();
     else void openPicker();
   });
   slider.addEventListener("input", () => {
     if (suppressInput) return;
-    const raw = Number(slider.value);
-    const snapped = snapRate(raw);
-    if (String(snapped) !== slider.value) {
-      slider.value = String(snapped);
-    }
-    rateLabel.textContent = `${snapped}×`;
+    const snapped = snapRate(Number(slider.value));
+    updateRateUI(snapped, false);
     opts.callbacks.onRateChange(snapped);
   });
 
@@ -334,11 +432,7 @@ export function createSpeakControlBar(
       applyState();
     },
     setRate: (r) => {
-      const snapped = snapRate(r);
-      suppressInput = true;
-      slider.value = String(snapped);
-      rateLabel.textContent = `${snapped}×`;
-      suppressInput = false;
+      updateRateUI(snapRate(r), false);
     },
     setVoiceName: (name) => {
       voiceBtnText.textContent = name;
