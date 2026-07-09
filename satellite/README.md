@@ -34,9 +34,11 @@ pnpm dev
 Without `RECK_STATION_ROOT` the main process crashes at load
 (`Error: RECK_STATION_ROOT is required`); without `VITE_RECK_STATION_ROOT`
 the renderer fails. Putting them in `~/.zshrc` works, but only for
-terminals opened **after** the edit — and note the app does *not* read
-`~/.config/reck/satellite.env` or any other env file; the variables must be
-in the process environment.
+terminals opened **after** the edit. Note that `~/.config/reck/satellite.env`
+is only sourced by the *packaging* wrapper (`ops/build-app.sh`) — nothing
+reads it at runtime or in `pnpm dev`, so having it is not enough; the
+variables must be in the shell's environment (you can `source` it yourself:
+`set -a; . ~/.config/reck/satellite.env; set +a`).
 
 Also quit any installed `/Applications/Reck Connect Satellite.app` before
 running dev: two satellites fight over the local `reck-stationd` — the dev
