@@ -66,6 +66,27 @@ describe("resolveDefaultVoice", () => {
     expect(resolveDefaultVoice(voices, "nl-NL")?.name).toBe("Xander");
   });
 
+  // Real-world regression: with an en-GB system locale the resolver used
+  // to pick plain Daniel (en-GB, exact region) over Zoe (Premium, en-US).
+  // Quality dominates within the same language; exact region only breaks ties.
+  it("prefers a premium voice of the same language over an exact regional match", () => {
+    const voices = [
+      mkVoice("Daniel", "en-GB"),
+      mkVoice("Zoe (Premium)", "en-US"),
+    ];
+    expect(resolveDefaultVoice(voices, "en-GB")?.name).toBe("Zoe (Premium)");
+  });
+
+  it("uses exact region as a tiebreak between equal-quality voices", () => {
+    const voices = [
+      mkVoice("Flo (English (United States))", "en-US"),
+      mkVoice("Flo (English (United Kingdom))", "en-GB"),
+    ];
+    expect(resolveDefaultVoice(voices, "en-GB")?.name).toBe(
+      "Flo (English (United Kingdom))",
+    );
+  });
+
   it("accepts a primary-subtag match when there is no exact regional match", () => {
     const voices = [
       mkVoice("Daniel", "en-GB"),

@@ -76,13 +76,20 @@ export function isNoveltyVoice(v: Pick<VoiceLike, "name">): boolean {
   return NOVELTY_VOICE_NAMES.has(voiceBaseName(v.name));
 }
 
-/** 2 = exact BCP-47 match, 1 = same primary subtag, 0 = no match. */
-function langScore(voiceLang: string, preferred: string): number {
-  const v = voiceLang.toLowerCase().replace(/_/g, "-");
-  const p = preferred.toLowerCase().replace(/_/g, "-");
-  if (v === p) return 2;
-  if (v.split("-")[0] === p.split("-")[0]) return 1;
-  return 0;
+function sameLanguage(voiceLang: string, preferred: string): boolean {
+  return primarySubtag(voiceLang) === primarySubtag(preferred);
+}
+
+function exactLang(voiceLang: string, preferred: string): boolean {
+  return normalizeLang(voiceLang) === normalizeLang(preferred);
+}
+
+function normalizeLang(lang: string): string {
+  return lang.toLowerCase().replace(/_/g, "-");
+}
+
+function primarySubtag(lang: string): string {
+  return normalizeLang(lang).split("-")[0];
 }
 
 function qualityScore(name: string): number {
@@ -115,17 +122,21 @@ export function resolveDefaultVoice<T extends VoiceLike>(
   // the right one — and reading text in a language with zero installed
   // voices, score against English instead of picking by quality alone.
   const lang =
-    preferred && pool.some((v) => langScore(v.lang, preferred) > 0)
+    preferred && pool.some((v) => sameLanguage(v.lang, preferred))
       ? preferred
       : "en-US";
 
   let best: T | null = null;
   let bestScore = -1;
   for (const v of pool) {
+    // Language match is the gate; within a language, QUALITY dominates —
+    // Zoe (Premium) en-US must beat plain Daniel en-GB even when the
+    // system locale is en-GB. Exact region is only a small tiebreak.
     const score =
-      langScore(v.lang, lang) * 100 +
+      (sameLanguage(v.lang, lang) ? 100 : 0) +
       qualityScore(v.name) * 10 +
       (KNOWN_GOOD_NAMES.has(voiceBaseName(v.name)) ? 5 : 0) +
+      (exactLang(v.lang, lang) ? 3 : 0) +
       (v.default ? 2 : 0) +
       (v.localService ? 1 : 0);
     if (score > bestScore) {

@@ -438,6 +438,41 @@ describe("TtsController.start — default voice resolution", () => {
     expect(barFactoryWrap.last?.voices).toContain("EN (Zoe)");
     ctl.dispose();
   });
+
+  it("detects the chunk's language on Automatic and picks a voice for it", async () => {
+    const zoe = mkVoice("Zoe (Premium)");
+    const claire = {
+      name: "Claire (Enhanced)",
+      lang: "nl-NL",
+      default: false,
+      localService: true,
+      voiceURI: "Claire (Enhanced)",
+    } as SpeechSynthesisVoice;
+    const pane = fakePane({
+      bufferLines: [
+        "welke knoppen heb je dat is een gewoon script en de server geeft het resultaat terug",
+      ],
+    });
+    const engine = new StubEngine();
+    const barFactoryWrap = makeBarFactory();
+    const ctl = new TtsController({
+      engine: engine as unknown as ConstructorParameters<typeof TtsController>[0]["engine"],
+      barFactory: barFactoryWrap.factory as unknown as ConstructorParameters<
+        typeof TtsController
+      >[0]["barFactory"],
+      theme: TTS_THEME_LIGHT,
+      settings: DEFAULT_SETTINGS,
+      saveSettings: async () => undefined,
+      getActiveSurface: () => pane,
+      getLastMousePoint: () => ({ pixelX: 0, pixelY: 0 }),
+      voicesProvider: async () => [zoe, claire],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    ctl.start();
+    expect(engine.startCalls[0].voice?.name).toBe("Claire (Enhanced)");
+    expect(barFactoryWrap.last?.voices).toContain("NL (Claire)");
+    ctl.dispose();
+  });
 });
 
 describe("TtsController.start — UI side effects", () => {

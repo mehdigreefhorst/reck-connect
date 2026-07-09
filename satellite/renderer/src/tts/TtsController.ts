@@ -11,6 +11,7 @@ import {
 import type { TtsTheme } from "./ttsTheme";
 import type { TtsSettings } from "./ttsSettings";
 import { resolveDefaultVoice, formatVoiceLabel } from "./defaultVoice";
+import { detectLanguage } from "./languageDetect";
 import type { VoiceOption } from "./SpeakControlBar";
 import type { SpeakSurfaceAdapter } from "./SpeakSurfaceAdapter";
 
@@ -86,9 +87,14 @@ export class TtsController {
     // Chromium's own fallback is unreliable on macOS: with a Siri system
     // voice (not exposed to the Web Speech API) it lands on the novelty
     // voice "Albert" regardless of the `default` flag in getVoices().
+    // On Automatic, detect the chunk's language so Dutch text gets a
+    // Dutch voice; undetectable text falls back to the UI locale.
     const voice =
       this.findVoice(this.settings.voice) ??
-      resolveDefaultVoice(this.voicesCache);
+      resolveDefaultVoice(
+        this.voicesCache,
+        detectLanguage(chunk.text) ?? undefined,
+      );
     this.opts.engine.start(chunk, { voice, rate: this.settings.rate });
     this.state = "playing";
     this.currentSurface = surface;
