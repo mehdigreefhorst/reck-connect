@@ -26,6 +26,7 @@
 // only assert structural behaviour (overlay mounted, removed on clear).
 
 import type { SpokenChunk, TtsBoundary, RangeMapEntry } from "./TtsEngine";
+import { applyHighlightColors } from "./highlightStyle";
 import type {
   SpeakSurfaceAdapter,
   SurfaceHighlightTheme,
@@ -33,9 +34,9 @@ import type {
   SurfacePoint,
 } from "./SpeakSurfaceAdapter";
 
-// Translucency applied to the (solid) configured highlight colour so the
-// prose reads through the tint — matching the terminal overlay's opacity.
-const OVERLAY_OPACITY = "0.5";
+// The highlight's translucent-fill + opaque-ring styling is shared with the
+// terminal highlighter so the reading highlight looks identical on every
+// surface — see ./highlightStyle.
 
 export interface MarkdownSurfaceAdapterOptions {
   /** Where to mount the SpeakControlBar (and the highlight overlay).
@@ -197,9 +198,10 @@ export class MarkdownSurfaceAdapter implements SpeakSurfaceAdapter {
       this.overlayEl.className = "tts-highlight-overlay";
       this.overlayEl.style.position = "absolute";
       this.overlayEl.style.pointerEvents = "none";
-      this.overlayEl.style.background = this.highlightColor;
-      this.overlayEl.style.opacity = OVERLAY_OPACITY;
       this.overlayEl.style.borderRadius = "2px";
+      // Translucent fill + opaque same-colour ring. The element opacity is
+      // NOT set (it would fade the ring too); the fill carries its own alpha.
+      this.applyOverlayColors();
       // Append into the scroll container (body) so
       // scrolling the body translates the overlay with the content.
       // Previously this was `this.container` (#viewer-root) which is the
@@ -276,10 +278,17 @@ export class MarkdownSurfaceAdapter implements SpeakSurfaceAdapter {
     }
   }
 
+  /** Paint the overlay's translucent fill + opaque outline from the current
+   *  highlight colour. Kept in one place so creation and setTheme agree. */
+  private applyOverlayColors(): void {
+    if (!this.overlayEl) return;
+    applyHighlightColors(this.overlayEl, this.highlightColor);
+  }
+
   setTheme(theme: SurfaceHighlightTheme): void {
     if (this.disposed) return;
     this.highlightColor = theme.backgroundColor;
-    if (this.overlayEl) this.overlayEl.style.background = this.highlightColor;
+    this.applyOverlayColors();
   }
 
   dispose(): void {
