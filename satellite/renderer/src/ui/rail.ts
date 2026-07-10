@@ -220,7 +220,10 @@ export class Rail {
   constructor(private props: RailProps) {
     this.props.root.classList.add("rail");
     this.props.root.innerHTML = `
-      <div class="rail-header">Projects</div>
+      <div class="rail-header">
+        <span class="rail-header-text">Projects</span>
+        <span class="rail-header-mark" aria-hidden="true"></span>
+      </div>
       <div class="rail-divider"></div>
       <div class="rail-list-scroll">
         <div class="rail-list"></div>
@@ -336,8 +339,9 @@ export class Rail {
   /**
    * Flip the rail between expanded rows and the 48px mini rail. Purely a
    * class toggle — the boot layer owns the width animation and drives
-   * this alongside it. CSS keyed off .rail-mini swaps names/indicators
-   * for initials avatars and reveals the footer chevron.
+   * this alongside it. Per-element CSS transitions keyed off .rail-mini
+   * crossfade names/indicators with the initials avatars, the "Projects"
+   * text with the brand mark, and reveal the footer chevron.
    */
   setMode(mode: RailMode) {
     this.props.root.classList.toggle("rail-mini", mode === "mini");

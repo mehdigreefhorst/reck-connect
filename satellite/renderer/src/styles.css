@@ -266,12 +266,19 @@ html, body, #app {
 .rail {
   background: var(--app-bg);
   overflow-y: auto;
+  /* Never a horizontal scroller: in mini mode the hidden-but-laid-out
+     content (footer count/Add, archive) is wider than the 48px column
+     and must clip, not scroll (overflow-y: auto alone would force
+     overflow-x to compute as auto too). */
+  overflow-x: hidden;
   padding: 1.25rem 0 0.75rem;
   min-width: 0;
   transition: background 0.25s var(--ease-smooth);
 }
 
 .rail-header {
+  /* Positioning context for .rail-header-mark (the mini-mode brand mark). */
+  position: relative;
   font-family: var(--font-mono);
   font-size: 0.7rem;
   font-weight: 500;
@@ -288,11 +295,16 @@ html, body, #app {
   background: var(--claude-orange);
   opacity: 0.45;
   margin: 0 1.25rem 1rem;
+  /* Morphs to a short centered tick in mini — only width/margins change,
+     never the vertical metrics, so the rows below don't shift. */
+  transition: width 200ms var(--ease-smooth), margin 200ms var(--ease-smooth);
 }
 
 /* (rail-list styles moved below to include flex growth) */
 
 .rail-item {
+  /* Positioning context for the absolutely-pinned .rail-avatar. */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -364,6 +376,10 @@ html, body, #app {
 }
 
 .rail-footer {
+  /* Positioning context for the absolutely-pinned expand chevron; margins
+     and side padding morph between the expanded inset and mini full-bleed. */
+  position: relative;
+  transition: margin 200ms var(--ease-smooth), padding 200ms var(--ease-smooth);
   margin-top: 0.5rem;
   padding: 0.75rem 1.25rem 0.75rem;
   display: flex;
@@ -555,19 +571,102 @@ html, body, #app {
 
 /* === Rail mini mode (48px collapsed state) === */
 
-/* Crossfade the rail content while the width animates between expanded
-   and mini so the stoplight dots never render mid-flight at a wrong
-   offset from the rail edge. The boot layer toggles .rail-switching for
-   the duration of the width animation. */
-.rail > * { transition: opacity 90ms ease; }
-.rail.rail-switching > * { opacity: 0; }
+/* Mode-switch crossfade: every element that changes form between the
+   expanded and mini rail carries its own opacity/visibility transition
+   keyed off .rail-mini, fading in place while the boot layer's rAF
+   animator drives the grid width. The transition on the DESTINATION
+   ruleset governs each direction: outgoing content fades fast (100ms,
+   so the stoplight dots never linger mid-flight at a wrong offset from
+   the rail edge); incoming content fades in once the width is most of
+   the way there (140ms + a short delay). visibility must always ride
+   the same transition list as opacity — its discrete interpolation
+   keeps the element visible for the whole fade, then drops it from
+   hit-testing at the end; splitting them causes a pop. Everything
+   keeps its layout box in both modes (visibility, not display) so the
+   switch has zero vertical motion. */
 
-/* Initials avatar — hidden in expanded mode, the whole row in mini. */
+/* Hidden in mini: names, per-pane dots, header text, Archive, footer
+   count + Add. The shrinking rail clips them while they fade (names
+   are nowrap + overflow hidden, so text shears instead of wrapping). */
+.rail-item .name,
+.rail-item .pane-indicator,
+.rail-header-text,
+.rail-archive,
+.rail-footer #rail-count,
+.rail-add {
+  transition: opacity 140ms var(--ease-smooth) 60ms, visibility 140ms 60ms;
+}
+.rail.rail-mini .rail-item .name,
+.rail.rail-mini .rail-item .pane-indicator,
+.rail.rail-mini .rail-header-text,
+.rail.rail-mini .rail-archive,
+.rail.rail-mini .rail-footer #rail-count,
+.rail.rail-mini .rail-add {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 100ms var(--ease-smooth), visibility 100ms;
+}
+
+/* .rail-add's base "transition: all" is overridden by the group rule
+   above — restate its hover transition alongside the crossfade. */
+.rail-add {
+  transition: opacity 140ms var(--ease-smooth) 60ms, visibility 140ms 60ms,
+              border-color 0.2s var(--ease-smooth), color 0.2s var(--ease-smooth),
+              background 0.2s var(--ease-smooth);
+}
+
+/* Mini header mark — the reck brand mark (orange diamond + punched
+   dot, same language as build/icon.svg and the nav-brand dot), pinned
+   to the centre of the 48px column so it crossfades in place with the
+   "Projects" text instead of sliding while the width animates. */
+.rail-header-mark {
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  background: var(--claude-orange);
+  border-radius: 2px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 100ms var(--ease-smooth), visibility 100ms;
+}
+.rail-header-mark::after {
+  content: "";
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--app-bg);
+}
+.rail.rail-mini .rail-header-mark {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 140ms var(--ease-smooth) 40ms, visibility 140ms 40ms;
+}
+
+/* The divider stays in mini — same vertical metrics as expanded (only
+   width/side-margins morph), so the first row sits at an identical y
+   in both modes. */
+.rail.rail-mini .rail-divider {
+  width: 16px;
+  margin-left: 16px;
+  margin-right: 16px;
+}
+
+/* Initials avatar — absolutely pinned so it takes no flex space in
+   either mode: rows are inset 8px by .rail-list, so left: 1px centres
+   the 30px square in the 48px rail. It fades in/out in place. */
 .rail-avatar {
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 30px;
   height: 30px;
-  flex: none;
-  display: none;
+  display: grid;
   place-items: center;
   border: 1px solid var(--app-border);
   border-radius: var(--radius);
@@ -576,7 +675,16 @@ html, body, #app {
   font-size: 0.62rem;
   letter-spacing: 0.03em;
   color: var(--app-text-dim);
-  position: relative;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 100ms var(--ease-smooth), visibility 100ms,
+              border-color 0.15s var(--ease-smooth), box-shadow 0.2s var(--ease-smooth);
+}
+.rail.rail-mini .rail-item .rail-avatar {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 140ms var(--ease-smooth) 40ms, visibility 140ms 40ms,
+              border-color 0.15s var(--ease-smooth), box-shadow 0.2s var(--ease-smooth);
 }
 
 /* Aggregate stoplight badge pinned to the avatar corner. Mirrors the
@@ -598,10 +706,14 @@ html, body, #app {
 .rail-avatar-badge.orange { background: var(--sl-orange); border-radius: 15%; transform: rotate(45deg) scale(0.9); }
 .rail-avatar-badge.red    { background: var(--sl-red);    border-radius: 1px; }
 
-/* Expand chevron: only exists in the mini state — expanded mode has no
-   collapse arrow (collapse is the nav toggle / ⇧← / divider drag). */
+/* Expand chevron: only interactive in mini — expanded mode has no
+   collapse arrow (collapse is the nav toggle / ⇧← / divider drag).
+   Pinned to the centre of the 48px column like the header mark. */
 .rail-collapse-chip {
-  display: none;
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  transform: translate(-50%, -50%);
   border: none;
   background: transparent;
   color: var(--app-text-muted);
@@ -610,42 +722,50 @@ html, body, #app {
   padding: 2px 4px;
   border-radius: 4px;
   cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 100ms var(--ease-smooth), visibility 100ms;
 }
 .rail-collapse-chip:hover { color: var(--claude-orange); }
-
-.rail.rail-mini .rail-header,
-.rail.rail-mini .rail-divider,
-.rail.rail-mini .rail-item .name,
-.rail.rail-mini .rail-item .pane-indicator,
-.rail.rail-mini .rail-archive,
-.rail.rail-mini .rail-footer #rail-count,
-.rail.rail-mini .rail-add {
-  display: none;
+.rail.rail-mini .rail-collapse-chip {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 140ms var(--ease-smooth) 40ms, visibility 140ms 40ms;
 }
 
-.rail.rail-mini .rail-collapse-chip { display: block; }
-
+/* Mini rows keep the exact expanded box (padding, height) so every
+   avatar sits at the same y as its expanded row — selection and hover
+   move to the avatar itself. */
 .rail.rail-mini .rail-item {
-  padding: 0;
-  margin-bottom: 8px;
-  justify-content: center;
   box-shadow: none;
   background: none;
 }
 
-.rail.rail-mini .rail-item .rail-avatar { display: grid; }
-
+/* Selected avatar: orange ink + the same resting ring the History
+   button's aria-pressed state uses — the state IS the hue. */
 .rail.rail-mini .rail-item.selected .rail-avatar {
   border-color: var(--claude-orange);
   color: var(--claude-orange);
+  box-shadow: 0 0 0 1px rgba(212, 104, 58, 0.7), 0 0 10px 2px rgba(232, 135, 92, 0.35);
 }
 
-.rail.rail-mini .rail-item:hover .rail-avatar {
+/* Hover on a non-selected avatar: subtle border lift only. Scoped with
+   :not(.selected) so it can never stomp the selected treatment. */
+.rail.rail-mini .rail-item:not(.selected):hover .rail-avatar {
   border-color: var(--app-border-strong);
 }
 
+/* Hovering the SELECTED avatar strengthens the orange — mirror of the
+   History button's hover bloom (ring holds, halo grows). */
+.rail.rail-mini .rail-item.selected:hover .rail-avatar {
+  box-shadow: 0 0 0 1px rgba(212, 104, 58, 0.7), 0 0 14px 3px rgba(232, 135, 92, 0.5);
+}
+
+/* Mini footer goes full-bleed so its border-top spans the 48px rail;
+   the chevron is pinned absolutely, so no flex re-centering needed.
+   Side padding drops too so the invisible count/Add boxes stay close
+   to the column (the .rail overflow-x clip catches the remainder). */
 .rail.rail-mini .rail-footer {
-  justify-content: center;
   margin-left: 0;
   margin-right: 0;
   padding-left: 0;
@@ -653,7 +773,22 @@ html, body, #app {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rail > * { transition: none; }
+  /* !important so this beats the higher-specificity .rail.rail-mini
+     destination rules above — the width animator already jumps
+     instantly under reduced motion, so the fades must snap too. */
+  .rail-item .name,
+  .rail-item .pane-indicator,
+  .rail-header-text,
+  .rail-header-mark,
+  .rail-divider,
+  .rail-archive,
+  .rail-footer,
+  .rail-footer #rail-count,
+  .rail-add,
+  .rail-avatar,
+  .rail-collapse-chip {
+    transition: none !important;
+  }
 }
 
 /* === Stoplight dots === */
