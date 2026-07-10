@@ -253,6 +253,14 @@ export class Rail {
       "click",
       () => this.props.onExpand?.(),
     );
+    // In mini mode the whole rail is a big expand target: clicking any
+    // empty (non-row, non-button) area springs it open. Rows and buttons
+    // keep their own handlers.
+    this.props.root.addEventListener("click", (e) => {
+      if (!this.props.root.classList.contains("rail-mini")) return;
+      if ((e.target as HTMLElement).closest(".rail-item, button")) return;
+      this.props.onExpand?.();
+    });
     (this.props.root.querySelector("#rail-archive-header") as HTMLElement).addEventListener(
       "click",
       () => this.toggleArchiveCollapsed(),

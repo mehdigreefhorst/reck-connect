@@ -656,6 +656,20 @@ export class TerminalPane {
   }
 
   /**
+   * A real scroll gesture that lands at the bottom: one line up, then
+   * to the tail. A freshly remounted pane can present an empty viewport
+   * until something scrolls it (the manual fix users reach for after a
+   * project switch); two genuine scroll ops force xterm to repaint the
+   * viewport rows, where a no-op scrollToBottom (already at tail) would
+   * not.
+   */
+  public nudgeScrollToBottom(): void {
+    if (this.disposed) return;
+    if (this.term.buffer.active.baseY > 0) this.term.scrollLines(-1);
+    this.term.scrollToBottom();
+  }
+
+  /**
    * Number of rows the viewport currently sits *above* the live tail
    * (`baseY - viewportY`). 0 when pinned to the tail; positive when the
    * user has scrolled up to read history. Used by the layout code on the

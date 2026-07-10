@@ -560,6 +560,53 @@ describe("Rail", () => {
       expect(expanded).toBe(1);
     });
 
+    it("clicking empty rail area in mini mode fires onExpand", () => {
+      let expanded = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onExpand: () => expanded++,
+      });
+      r.setProjects([mkProject("a", "Alpha", "gray")]);
+      r.setMode("mini");
+      (root.querySelector(".rail-list") as HTMLElement).click();
+      expect(expanded).toBe(1);
+      (root.querySelector(".rail-header") as HTMLElement).click();
+      expect(expanded).toBe(2);
+    });
+
+    it("empty-area click does nothing while expanded", () => {
+      let expanded = 0;
+      new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onExpand: () => expanded++,
+      });
+      (root.querySelector(".rail-list") as HTMLElement).click();
+      expect(expanded).toBe(0);
+    });
+
+    it("row and button clicks in mini mode do not also fire onExpand", () => {
+      let expanded = 0;
+      let selected = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => selected++,
+        onAddProject: () => {},
+        onExpand: () => expanded++,
+      });
+      r.setProjects([mkProject("a", "Alpha", "gray")]);
+      r.setMode("mini");
+      (root.querySelector(".rail-item") as HTMLElement).click();
+      expect(selected).toBe(1);
+      const chip = root.querySelector<HTMLElement>(".rail-collapse-chip")!;
+      chip.click();
+      // Only the chevron's own handler fired — not the delegated one too.
+      expect(expanded).toBe(1);
+    });
+
     it("rows still fire onSelect in mini mode (avatar click selects)", () => {
       let got: string | null = null;
       const r = new Rail({ root, onSelect: (id) => (got = id), onAddProject: () => {} });

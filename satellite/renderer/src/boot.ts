@@ -125,10 +125,12 @@ import {
   type RailMode,
 } from "./config";
 import {
+  RAIL_COLLAPSE_AT,
   RAIL_MAX,
   RAIL_MINI,
   createWidthAnimator,
   railDragDecision,
+  railDragRelease,
 } from "./ui/rail-collapse";
 import type { PaneKind, Project, Stoplight } from "@proto/proto";
 import { mergeHybridProjects } from "./hybrid-merge";
@@ -353,7 +355,6 @@ export async function boot(splash?: StartupSplashController) {
     reducedMotion: () => reducedMotionQuery?.matches === true,
   });
 
-  const RAIL_TOGGLE_MS = 160;
   const RAIL_SNAP_MS = 200;
 
   // Late-bound: `layout` is constructed further down, but the nav
@@ -362,7 +363,7 @@ export async function boot(splash?: StartupSplashController) {
   // on the const). Rebound to the real refit once PaneLayout is up.
   let refitActiveTerminals: () => void = () => {};
 
-  function setRailMode(mode: RailMode, opts: { spring?: boolean } = {}) {
+  function setRailMode(mode: RailMode) {
     if (railMode === mode) return;
     // The pointer owns the width while a divider drag is live — a
     // keyboard toggle mid-drag would race the mousemove writes.
@@ -378,9 +379,11 @@ export async function boot(splash?: StartupSplashController) {
     // from the rail edge.
     railEl.classList.add("rail-switching");
     rail.setMode(mode);
+    // Spring both directions — collapse and expand share the same
+    // bouncy pop, whichever trigger (button, chevron, keys, click).
     railAnimator.animateTo(mode === "mini" ? RAIL_MINI : railExpandedWidth, {
-      durationMs: opts.spring ? RAIL_SNAP_MS : RAIL_TOGGLE_MS,
-      easing: opts.spring ? "spring" : "easeOut",
+      durationMs: RAIL_SNAP_MS,
+      easing: "spring",
       onDone: () => {
         railEl.classList.remove("rail-switching");
         refitActiveTerminals();
@@ -408,10 +411,17 @@ export async function boot(splash?: StartupSplashController) {
       const decision = railDragDecision(startW + (ev.clientX - startX), railMode === "mini");
       switch (decision.kind) {
         case "collapse":
-          // Rows hit their minimum — collapse straight into mini
-          // mid-drag with a spring, ending the drag.
+          // The pointer travelled past the sticky zone — collapse
+          // straight into mini mid-drag with a spring, ending the drag.
           endDrag();
-          setRailMode("mini", { spring: true });
+          setRailMode("mini");
+          break;
+        case "stick":
+          // Accidental-collapse guard: the rail stays pinned at the row
+          // minimum while the pointer crosses the sticky zone.
+          railExpandedWidth = RAIL_COLLAPSE_AT;
+          railWidth = RAIL_COLLAPSE_AT;
+          applyGrid();
           break;
         case "expand":
           // Dragging the handle back out of mini re-expands at the
@@ -429,20 +439,37 @@ export async function boot(splash?: StartupSplashController) {
           railWidth = decision.width;
           applyGrid();
           break;
-        case "none":
+        case "track":
+          // Mini rail follows the pointer live; the release decides
+          // whether the pull committed to an expand.
+          railWidth = decision.width;
+          applyGrid();
           break;
       }
     };
     const onUp = () => {
       endDrag();
-      if (railMode === "expanded") void saveRailWidth(railExpandedWidth);
+      const release = railDragRelease(railWidth, railMode === "mini");
+      switch (release.kind) {
+        case "spring-expand":
+          // A small outward pull means "expand": spring open from the
+          // tracked width to the full expanded width.
+          setRailMode("expanded");
+          break;
+        case "settle-mini":
+          railAnimator.animateTo(RAIL_MINI, { durationMs: RAIL_SNAP_MS, easing: "spring" });
+          break;
+        case "stay":
+          void saveRailWidth(railExpandedWidth);
+          break;
+      }
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   });
 
   railResizeEl.addEventListener("dblclick", () => {
-    setRailMode(railMode === "mini" ? "expanded" : "mini", { spring: true });
+    setRailMode(railMode === "mini" ? "expanded" : "mini");
   });
 
   function toggleRail() {
@@ -2258,9 +2285,11 @@ export async function boot(splash?: StartupSplashController) {
   function scheduleProjectSwitchRefit() {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const allLaidOut = layout.refitActive();
+        // pinToBottom: end the switch with a real scroll that lands at
+        // the tail — a remounted pane can present blank until scrolled.
+        const allLaidOut = layout.refitActive({ pinToBottom: true });
         if (!allLaidOut) {
-          window.setTimeout(() => layout.refitActive(), 100);
+          window.setTimeout(() => layout.refitActive({ pinToBottom: true }), 100);
         }
       });
     });

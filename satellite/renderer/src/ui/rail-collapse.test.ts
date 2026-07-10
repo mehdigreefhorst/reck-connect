@@ -1,12 +1,16 @@
 import { describe, it, expect } from "vitest";
 import {
   RAIL_COLLAPSE_AT,
+  RAIL_EXPAND_COMMIT_PX,
   RAIL_MAX,
   RAIL_MINI,
+  RAIL_STICKY_PX,
   createWidthAnimator,
   projectInitials,
   railDragDecision,
+  railDragRelease,
   type RailDragDecision,
+  type RailDragRelease,
 } from "./rail-collapse";
 
 describe("projectInitials", () => {
@@ -36,29 +40,55 @@ describe("projectInitials", () => {
 });
 
 describe("railDragDecision", () => {
+  const STICK_FLOOR = RAIL_COLLAPSE_AT - RAIL_STICKY_PX;
   const cases: Array<{
     desc: string;
     width: number;
     mini: boolean;
     want: RailDragDecision;
   }> = [
-    // Expanded: live squeeze between the threshold and the max.
+    // Expanded: live squeeze between the row minimum and the max.
     { desc: "expanded at max", width: RAIL_MAX, mini: false, want: { kind: "resize", width: RAIL_MAX } },
     { desc: "expanded above max clamps", width: 999, mini: false, want: { kind: "resize", width: RAIL_MAX } },
     { desc: "expanded mid-squeeze", width: 200, mini: false, want: { kind: "resize", width: 200 } },
-    { desc: "expanded exactly at threshold stays resize", width: RAIL_COLLAPSE_AT, mini: false, want: { kind: "resize", width: RAIL_COLLAPSE_AT } },
-    // Expanded: crossing below the threshold collapses mid-drag.
-    { desc: "expanded one below threshold collapses", width: RAIL_COLLAPSE_AT - 1, mini: false, want: { kind: "collapse" } },
-    { desc: "expanded far below threshold collapses", width: 10, mini: false, want: { kind: "collapse" } },
-    // Mini: nothing happens until the pointer commits past the threshold.
-    { desc: "mini below threshold ignores", width: 100, mini: true, want: { kind: "none" } },
-    { desc: "mini exactly at threshold ignores", width: RAIL_COLLAPSE_AT, mini: true, want: { kind: "none" } },
-    { desc: "mini past threshold re-expands at pointer", width: RAIL_COLLAPSE_AT + 1, mini: true, want: { kind: "expand", width: RAIL_COLLAPSE_AT + 1 } },
+    { desc: "expanded exactly at row minimum stays resize", width: RAIL_COLLAPSE_AT, mini: false, want: { kind: "resize", width: RAIL_COLLAPSE_AT } },
+    // Expanded: the sticky zone pins the rail before the collapse commits.
+    { desc: "expanded one below row minimum sticks", width: RAIL_COLLAPSE_AT - 1, mini: false, want: { kind: "stick" } },
+    { desc: "expanded at sticky floor still sticks", width: STICK_FLOOR, mini: false, want: { kind: "stick" } },
+    { desc: "expanded one below sticky floor collapses", width: STICK_FLOOR - 1, mini: false, want: { kind: "collapse" } },
+    { desc: "expanded far below collapses", width: 10, mini: false, want: { kind: "collapse" } },
+    // Mini: the rail tracks the pointer live until it commits past the row minimum.
+    { desc: "mini inward of RAIL_MINI clamps to RAIL_MINI", width: 10, mini: true, want: { kind: "track", width: RAIL_MINI } },
+    { desc: "mini small pull tracks the pointer", width: 100, mini: true, want: { kind: "track", width: 100 } },
+    { desc: "mini exactly at row minimum still tracks", width: RAIL_COLLAPSE_AT, mini: true, want: { kind: "track", width: RAIL_COLLAPSE_AT } },
+    { desc: "mini past row minimum re-expands at pointer", width: RAIL_COLLAPSE_AT + 1, mini: true, want: { kind: "expand", width: RAIL_COLLAPSE_AT + 1 } },
     { desc: "mini re-expand clamps to max", width: 500, mini: true, want: { kind: "expand", width: RAIL_MAX } },
   ];
   for (const c of cases) {
     it(c.desc, () => {
       expect(railDragDecision(c.width, c.mini)).toEqual(c.want);
+    });
+  }
+});
+
+describe("railDragRelease", () => {
+  const COMMIT = RAIL_MINI + RAIL_EXPAND_COMMIT_PX;
+  const cases: Array<{
+    desc: string;
+    width: number;
+    mini: boolean;
+    want: RailDragRelease;
+  }> = [
+    { desc: "expanded release stays", width: 200, mini: false, want: { kind: "stay" } },
+    { desc: "expanded release inside old sticky zone stays", width: RAIL_COLLAPSE_AT, mini: false, want: { kind: "stay" } },
+    { desc: "mini release with no pull settles back", width: RAIL_MINI, mini: true, want: { kind: "settle-mini" } },
+    { desc: "mini release just under the commit settles back", width: COMMIT - 1, mini: true, want: { kind: "settle-mini" } },
+    { desc: "mini release at the commit springs open", width: COMMIT, mini: true, want: { kind: "spring-expand" } },
+    { desc: "mini release well past the commit springs open", width: 150, mini: true, want: { kind: "spring-expand" } },
+  ];
+  for (const c of cases) {
+    it(c.desc, () => {
+      expect(railDragRelease(c.width, c.mini)).toEqual(c.want);
     });
   }
 });

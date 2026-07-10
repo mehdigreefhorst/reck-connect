@@ -527,7 +527,7 @@ export interface RailWiggleSettings {
 export const DEFAULT_RAIL_WIGGLE: RailWiggleSettings = {
   enabled: true,
   pixels: 12,
-  legMs: 140,
+  legMs: 240,
 };
 
 function positiveOr(fallback: number, raw: unknown): number {

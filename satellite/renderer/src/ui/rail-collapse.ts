@@ -12,6 +12,10 @@
 export const RAIL_MAX = 240;
 export const RAIL_MINI = 48;
 export const RAIL_COLLAPSE_AT = 171;
+/** Hysteresis: dragging inward, the rail stays pinned at RAIL_COLLAPSE_AT for this many extra pixels of pointer travel before the collapse commits — guards against accidental collapses. */
+export const RAIL_STICKY_PX = 50;
+/** Dragging outward from mini, releasing beyond this small pull means "expand" — the rail springs open instead of settling back. */
+export const RAIL_EXPAND_COMMIT_PX = 24;
 
 export type RailMode = "expanded" | "mini";
 
@@ -36,32 +40,54 @@ export function projectInitials(name: string): string {
 
 export type RailDragDecision =
   | { kind: "resize"; width: number }
+  | { kind: "stick" }
   | { kind: "collapse" }
   | { kind: "expand"; width: number }
-  | { kind: "none" };
+  | { kind: "track"; width: number };
 
 /**
- * Classify a divider-drag position. `rawWidth` is the unclamped width
- * the pointer implies (drag start width + pointer delta).
+ * Classify a divider-drag position while the button is held. `rawWidth`
+ * is the unclamped width the pointer implies (drag start width +
+ * pointer delta).
  *
- *  - expanded, above the threshold → live resize (clamped to RAIL_MAX;
- *    rows squeeze between RAIL_MAX and RAIL_COLLAPSE_AT).
- *  - expanded, crossing below the threshold → collapse into mini
- *    mid-drag (the caller ends the drag and springs to RAIL_MINI).
- *  - mini, dragged back out past the threshold → re-expand at the
- *    pointer position.
- *  - mini, still below the threshold → nothing (rail stays at
- *    RAIL_MINI until the pointer commits to expanding).
+ *  - expanded, above the row minimum → live resize (clamped to
+ *    RAIL_MAX; rows squeeze between RAIL_MAX and RAIL_COLLAPSE_AT).
+ *  - expanded, inside the sticky zone → the rail stays pinned at
+ *    RAIL_COLLAPSE_AT until the pointer travels RAIL_STICKY_PX further,
+ *    so a slight overshoot can't collapse it by accident.
+ *  - expanded, past the sticky zone → collapse into mini mid-drag (the
+ *    caller ends the drag and springs to RAIL_MINI).
+ *  - mini, past the row minimum → re-expand live at the pointer.
+ *  - mini, below the row minimum → track the pointer from RAIL_MINI
+ *    outward so the rail reacts immediately instead of popping later.
  */
 export function railDragDecision(rawWidth: number, mini: boolean): RailDragDecision {
   if (mini) {
     if (rawWidth > RAIL_COLLAPSE_AT) {
       return { kind: "expand", width: Math.min(RAIL_MAX, rawWidth) };
     }
-    return { kind: "none" };
+    return { kind: "track", width: Math.max(RAIL_MINI, rawWidth) };
   }
-  if (rawWidth < RAIL_COLLAPSE_AT) return { kind: "collapse" };
+  if (rawWidth < RAIL_COLLAPSE_AT - RAIL_STICKY_PX) return { kind: "collapse" };
+  if (rawWidth < RAIL_COLLAPSE_AT) return { kind: "stick" };
   return { kind: "resize", width: Math.min(RAIL_MAX, rawWidth) };
+}
+
+export type RailDragRelease =
+  | { kind: "spring-expand" }
+  | { kind: "settle-mini" }
+  | { kind: "stay" };
+
+/**
+ * Classify a drag release. Only meaningful while still in mini mode (a
+ * drag that crossed the row minimum already re-expanded live): letting
+ * go after even a small outward pull means "I meant to expand" and the
+ * rail springs open; anything less settles back to RAIL_MINI.
+ */
+export function railDragRelease(width: number, mini: boolean): RailDragRelease {
+  if (!mini) return { kind: "stay" };
+  if (width >= RAIL_MINI + RAIL_EXPAND_COMMIT_PX) return { kind: "spring-expand" };
+  return { kind: "settle-mini" };
 }
 
 export type RailEasing = "easeOut" | "spring";

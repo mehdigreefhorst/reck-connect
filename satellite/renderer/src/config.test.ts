@@ -553,6 +553,8 @@ describe("rail mode + wiggle persistence", () => {
 
   it("rail wiggle defaults on fresh install", async () => {
     expect(await loadRailWiggle()).toEqual(DEFAULT_RAIL_WIGGLE);
+    // Deliberately slow default — a fast wiggle read as jarring in use.
+    expect(DEFAULT_RAIL_WIGGLE.legMs).toBe(240);
   });
 
   it("rail wiggle round-trips all three fields", async () => {
