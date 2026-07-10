@@ -51,9 +51,11 @@ describe("normalizeProjectCwd", () => {
     });
   });
 
-  it("the mount root itself → local + translated station root", () => {
+  it("the mount root ITSELF (projects dir, not a project) → no local form", () => {
+    // `local` is a project-scoped anchor; handing out the bare mount
+    // root would widen mirror/suffix searches to EVERY mounted project.
     expect(normalizeProjectCwd(MOUNT, opts)).toEqual({
-      local: MOUNT,
+      local: undefined,
       station: STATION,
     });
   });

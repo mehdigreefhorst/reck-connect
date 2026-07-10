@@ -62,8 +62,13 @@ export interface NormalizeProjectCwdOpts {
  *   - other absolute path → `{local: raw}` (a Mac-local project)
  *   - relative / empty    → `{}`
  *
- * `raw === stationRoot` (the projects dir itself, not a project) yields
- * `local: undefined` — translateStationCwdToMount refuses the bare root.
+ * A BARE root (the projects dir itself, not a project inside it) never
+ * yields a `local` form: `local` is consumed as a project-scoped anchor
+ * (mirror search, suffix-search roots, root-relative retry), and the
+ * bare mount root would widen those from one project to EVERY mounted
+ * project. The station branch inherits this from
+ * translateStationCwdToMount's bare-root refusal; the mount branch
+ * enforces it explicitly.
  */
 export function normalizeProjectCwd(
   raw: string | null | undefined,
@@ -80,7 +85,7 @@ export function normalizeProjectCwd(
   }
   if (mount && (raw === mount || raw.startsWith(mount + "/"))) {
     return {
-      local: raw,
+      local: raw === mount ? undefined : raw,
       station: root ? translateMountToStationPath(raw, mount, root) : undefined,
     };
   }
