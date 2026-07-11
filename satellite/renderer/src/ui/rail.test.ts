@@ -491,9 +491,10 @@ describe("Rail", () => {
   });
 
   // Rail collapse redesign: 48px mini state with initials avatars.
-  // Visibility of names/indicators/chevron is CSS-driven off .rail-mini,
-  // so these tests assert the class contract + avatar content rather
-  // than computed styles (jsdom doesn't load the stylesheet).
+  // Names/indicators/chevron/header crossfade via per-element
+  // opacity/visibility transitions keyed off .rail-mini, so these tests
+  // assert the class contract + markup rather than computed styles
+  // (jsdom doesn't load the stylesheet).
   describe("mini mode", () => {
     it("setMode toggles the rail-mini class", () => {
       const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
@@ -502,6 +503,28 @@ describe("Rail", () => {
       expect(root.classList.contains("rail-mini")).toBe(true);
       r.setMode("expanded");
       expect(root.classList.contains("rail-mini")).toBe(false);
+    });
+
+    it("header carries the Projects text and the brand mark for the mini crossfade", () => {
+      new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
+      const text = root.querySelector(".rail-header .rail-header-text");
+      const mark = root.querySelector(".rail-header .rail-header-mark");
+      expect(text?.textContent).toBe("Projects");
+      expect(mark).not.toBeNull();
+      expect(mark?.getAttribute("aria-hidden")).toBe("true");
+    });
+
+    it("clicking the header mark in mini mode fires onExpand (not a row/button)", () => {
+      let expanded = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onExpand: () => expanded++,
+      });
+      r.setMode("mini");
+      (root.querySelector(".rail-header-mark") as HTMLElement).click();
+      expect(expanded).toBe(1);
     });
 
     it("every row carries an initials avatar", () => {

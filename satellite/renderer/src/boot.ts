@@ -374,10 +374,10 @@ export async function boot(splash?: StartupSplashController) {
     railMode = mode;
     void saveRailMode(mode);
     appBar.setRailExpanded(mode === "expanded");
-    // Crossfade the rail content while the width animates so the
-    // stoplight indicators never render mid-flight at a wrong offset
-    // from the rail edge.
-    railEl.classList.add("rail-switching");
+    // The crossfade between rows and avatars is pure CSS, keyed off
+    // .rail-mini (per-element opacity/visibility transitions in
+    // styles.css) — outgoing content fades fast so the stoplight dots
+    // never linger mid-flight at a wrong offset from the rail edge.
     rail.setMode(mode);
     // Spring both directions — collapse and expand share the same
     // bouncy pop, whichever trigger (button, chevron, keys, click).
@@ -385,7 +385,6 @@ export async function boot(splash?: StartupSplashController) {
       durationMs: RAIL_SNAP_MS,
       easing: "spring",
       onDone: () => {
-        railEl.classList.remove("rail-switching");
         refitActiveTerminals();
       },
     });
