@@ -16,21 +16,40 @@ export class DeepgramProvider implements Transcriber {
   private unsub: (() => void) | null = null;
   private handlers: TranscriptionHandlers | null = null;
   private onClosed: (() => void) | null = null;
+  // Deepgram streams finalized SEGMENTS plus a rolling interim; the consumer
+  // wants the full running transcript, so accumulate finals and append the
+  // current interim.
+  private finalized = "";
 
   async prepare(): Promise<void> {
     // Streaming provider: the socket opens per-utterance in begin() (it needs
     // the capture sample rate), so there's nothing to warm up ahead of time.
   }
 
+  private join(a: string, b: string): string {
+    const t = b.trim();
+    if (!t) return a;
+    return a ? `${a} ${t}` : t;
+  }
+
   async begin(handlers: TranscriptionHandlers, sampleRate: number): Promise<void> {
     this.handlers = handlers;
-    // Subscribe before starting so no early transcript is missed.
+    this.finalized = "";
+    // Subscribe before starting so no early transcript is missed. Every event
+    // yields the full text-so-far so the controller can type it live.
     this.unsub = window.reckAPI.transcription.onEvent((ev) => {
       if (ev.sessionId !== this.sessionId) return;
-      if (ev.kind === "partial") this.handlers?.onPartial?.(ev.text);
-      else if (ev.kind === "final") this.handlers?.onFinal?.(ev.text);
-      else if (ev.kind === "error") this.handlers?.onError?.(ev.text);
-      else if (ev.kind === "closed") this.onClosed?.();
+      if (ev.kind === "partial") {
+        this.handlers?.onPartial?.(this.join(this.finalized, ev.text));
+      } else if (ev.kind === "final") {
+        this.finalized = this.join(this.finalized, ev.text);
+        this.handlers?.onPartial?.(this.finalized);
+      } else if (ev.kind === "error") {
+        this.handlers?.onError?.(ev.text);
+      } else if (ev.kind === "closed") {
+        this.handlers?.onFinal?.(this.finalized);
+        this.onClosed?.();
+      }
     });
     const res = await window.reckAPI.transcription.deepgramStart(sampleRate || 16000);
     if (!res.ok || res.sessionId === undefined) {

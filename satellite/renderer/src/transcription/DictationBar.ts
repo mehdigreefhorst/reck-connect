@@ -1,8 +1,10 @@
-// Per-pane dictation UI. While the model loads it shows a circular progress
-// ring (filled by download %, with a pulsing glow) next to the model name,
-// which morphs into a checkmark once loaded; while recording it shows a
-// status label + the live interim text. Created for one dictation session
-// and disposed when it ends.
+// Per-pane model-loading UI: a circular progress ring (filled by download %,
+// with a pulsing glow) next to the model name, morphing into a checkmark once
+// loaded. Shown only while the model loads — during recording the transcript
+// is typed straight into the pane and the mic button carries the state, so
+// there's no floating box in the way. Also drives the mic-button state and
+// surfaces errors as a toast. Created for one dictation session, disposed
+// when it ends.
 
 import { setMicButtonState } from "../ui/paneControls";
 import { showToast } from "../viewer/Toast";
@@ -18,9 +20,7 @@ export class DictationBar implements DictationUI {
   private readonly el: HTMLElement;
   private readonly loaderEl: HTMLElement;
   private readonly ringProgress: SVGCircleElement;
-  private readonly loaderLabel: HTMLElement;
-  private readonly statusLabel: HTMLElement;
-  private readonly interimEl: HTMLElement;
+  private readonly label: HTMLElement;
   private state: DictationState = "idle";
   private status: TranscriberStatus | null = null;
   private pct = 0;
@@ -36,9 +36,6 @@ export class DictationBar implements DictationUI {
     this.el.setAttribute("role", "status");
     this.el.setAttribute("aria-live", "polite");
 
-    // Loading component: circular ring (track + progress + checkmark) + label.
-    this.loaderEl = document.createElement("div");
-    this.loaderEl.className = "dictation-loader";
     const svgNs = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(svgNs, "svg");
     svg.setAttribute("class", "dictation-ring");
@@ -60,17 +57,13 @@ export class DictationBar implements DictationUI {
     check.setAttribute("d", "M8.5 14.5 l3 3 l6 -7");
     svg.append(track, this.ringProgress, check);
 
-    this.loaderLabel = document.createElement("span");
-    this.loaderLabel.className = "dictation-loader-label";
-    this.loaderEl.append(svg, this.loaderLabel);
+    this.label = document.createElement("span");
+    this.label.className = "dictation-loader-label";
 
-    // Recording status: a coloured dot + label, plus the live interim text.
-    this.statusLabel = document.createElement("span");
-    this.statusLabel.className = "dictation-bar-label";
-    this.interimEl = document.createElement("span");
-    this.interimEl.className = "dictation-bar-interim";
-
-    this.el.append(this.loaderEl, this.statusLabel, this.interimEl);
+    this.loaderEl = document.createElement("div");
+    this.loaderEl.className = "dictation-loader";
+    this.loaderEl.append(svg, this.label);
+    this.el.append(this.loaderEl);
     this.surface.appendChild(this.el);
     this.render();
   }
@@ -95,12 +88,6 @@ export class DictationBar implements DictationUI {
     this.render();
   }
 
-  setInterim(text: string): void {
-    this.interimEl.textContent = text;
-    // Keep the most-recent words in view as the transcript grows.
-    this.interimEl.scrollLeft = this.interimEl.scrollWidth;
-  }
-
   setError(message: string): void {
     showToast(this.surface, message, { kind: "error", durationMs: 6000 });
   }
@@ -110,32 +97,22 @@ export class DictationBar implements DictationUI {
   }
 
   private render(): void {
-    this.el.dataset.state = this.state;
     const loading = this.isLoading();
-    // The download completed (ring full) OR the model is warm/ready → check.
+    // The floating box only appears while the model loads.
+    this.el.hidden = !loading;
+    if (!loading) return;
     const complete = this.ready || this.pct >= 100;
-    this.loaderEl.hidden = !loading;
     this.loaderEl.dataset.mode = !this.sawProgress && !complete
       ? "indeterminate"
       : complete
         ? "complete"
         : "determinate";
-    if (loading) {
-      const name = this.modelLabel ?? "speech model";
-      this.loaderLabel.textContent = complete
-        ? `${name} ready`
-        : this.sawProgress
-          ? `Loading ${name}… ${this.pct}%`
-          : `Loading ${name}…`;
-    }
-    this.statusLabel.textContent = loading ? "" : this.recordingLabel();
-    this.statusLabel.hidden = loading || this.statusLabel.textContent === "";
-  }
-
-  private recordingLabel(): string {
-    if (this.state === "listening") return "Listening…";
-    if (this.state === "transcribing" || this.status === "transcribing") return "Transcribing…";
-    return "";
+    const name = this.modelLabel ?? "speech model";
+    this.label.textContent = complete
+      ? `${name} ready`
+      : this.sawProgress
+        ? `Loading ${name}… ${this.pct}%`
+        : `Loading ${name}…`;
   }
 
   dispose(): void {

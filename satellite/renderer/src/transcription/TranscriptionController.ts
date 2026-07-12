@@ -1,8 +1,10 @@
 // Orchestrates dictation: builds the provider from settings, owns the
-// engine, and injects finalized transcripts into the pane that was active
-// when dictation started. Interim text and status go to the UI bar only —
-// only finals are typed into the PTY, without a trailing newline (the user
-// presses Enter), unless auto-submit is enabled.
+// engine, and types the transcript LIVE into the pane that was active when
+// dictation started. Each transcription pass (interim or final) is the full
+// text-so-far; we diff it against what's already typed and send just the
+// delta (backspaces + new characters) straight into the PTY, so the words
+// appear in the terminal input as you speak. No trailing newline (the user
+// presses Enter) unless auto-submit is on.
 
 import { TranscriptionEngine, type DictationState } from "./TranscriptionEngine";
 import { DictationBar } from "./DictationBar";
@@ -23,12 +25,21 @@ export interface DictationTarget {
   submit(): void;
 }
 
-/** The floating per-pane UI, implemented by DictationBar. */
+/** The per-pane loading/status UI, implemented by DictationBar. */
 export interface DictationUI {
   setState(state: DictationState): void;
-  setInterim(text: string): void;
   setStatus(status: TranscriberStatus | null): void;
   setError(message: string): void;
+}
+
+// DEL (0x7f) — the Backspace key. Terminal input lines erase the previous
+// character on this, letting us "correct" earlier words when a later
+// transcription pass revises them.
+const DEL = "\x7f";
+
+/** Collapse newlines (would submit the prompt) and trim so passes diff cleanly. */
+function normalizeTranscript(text: string): string {
+  return text.replace(/[\r\n]+/g, " ").trim();
 }
 
 /** Resolved when dictation starts: where text goes and where UI mounts. */
@@ -51,13 +62,14 @@ export class TranscriptionController {
   private settings: TranscriptionSettings;
   private target: DictationTarget | null = null;
   private bar: DictationBar | null = null;
-  private injectedAny = false;
+  // What we've typed into the target this utterance (to diff the next pass).
+  private injectedText = "";
 
   constructor(private readonly deps: TranscriptionControllerDeps) {
     this.settings = deps.settings;
     this.engine = new TranscriptionEngine(this.makeProvider(), {
-      onPartial: (t) => this.bar?.setInterim(t),
-      onFinal: (t) => this.injectFinal(t),
+      onPartial: (t) => this.applyTranscript(t),
+      onFinal: (t) => this.applyTranscript(t),
       onStatus: (s) => this.bar?.setStatus(s),
       onProgress: (p) => this.bar?.setProgress(p),
       onError: (m) => {
@@ -81,22 +93,34 @@ export class TranscriptionController {
     return `Whisper ${short}`;
   }
 
-  private injectFinal(text: string): void {
-    const clean = text.trim();
-    if (!clean || !this.target) return;
-    // Space-join successive final segments (Deepgram streams several).
-    this.target.insert(this.injectedAny ? ` ${clean}` : clean);
-    this.injectedAny = true;
+  /**
+   * Type the full text-so-far into the pane live: diff against what we've
+   * already injected and send just the delta — backspaces to undo any revised
+   * tail, then the new suffix. Never backspaces past our own injected text, so
+   * anything the user typed before dictating is safe.
+   */
+  private applyTranscript(text: string): void {
+    if (!this.target) return;
+    const next = normalizeTranscript(text);
+    const prev = this.injectedText;
+    let common = 0;
+    const max = Math.min(prev.length, next.length);
+    while (common < max && prev[common] === next[common]) common++;
+    const backspaces = prev.length - common;
+    const suffix = next.slice(common);
+    if (backspaces === 0 && suffix.length === 0) return;
+    this.target.insert(DEL.repeat(backspaces) + suffix);
+    this.injectedText = next;
   }
 
   private onStateChange(state: DictationState): void {
     this.bar?.setState(state);
     if (state === "idle") {
-      if (this.injectedAny && this.settings.autoSubmit) this.target?.submit();
+      if (this.injectedText.length > 0 && this.settings.autoSubmit) this.target?.submit();
       this.bar?.dispose();
       this.bar = null;
       this.target = null;
-      this.injectedAny = false;
+      this.injectedText = "";
     }
   }
 
@@ -118,7 +142,7 @@ export class TranscriptionController {
     }
     this.target = session.target;
     this.bar = new DictationBar(session.surface, this.modelLabel());
-    this.injectedAny = false;
+    this.injectedText = "";
     await this.engine.start();
   }
 
@@ -131,7 +155,7 @@ export class TranscriptionController {
     this.bar?.dispose();
     this.bar = null;
     this.target = null;
-    this.injectedAny = false;
+    this.injectedText = "";
   }
 
   isActive(): boolean {

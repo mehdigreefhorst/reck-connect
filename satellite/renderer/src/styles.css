@@ -3934,30 +3934,7 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   pointer-events: none;
 }
-.dictation-bar[data-state="idle"] { display: none; }
-.dictation-bar-label {
-  font-weight: 600;
-  white-space: nowrap;
-}
-.dictation-bar-label::before {
-  content: "";
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: #d4483a;
-  vertical-align: middle;
-}
-.dictation-bar[data-state="transcribing"] .dictation-bar-label::before { background: #c9982e; }
-.dictation-bar-label[hidden] { display: none; }
-.dictation-bar-interim {
-  overflow: hidden;
-  white-space: nowrap;
-  max-width: 46ch;
-  opacity: 0.85;
-}
-.dictation-bar-interim:empty { display: none; }
+.dictation-bar[hidden] { display: none; }
 
 /* Model-loading component: a circular progress ring (filled by download %,
    with a pulsing glow) next to the model name, morphing into a checkmark
