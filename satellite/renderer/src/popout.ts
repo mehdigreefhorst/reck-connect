@@ -17,6 +17,7 @@
 import "@xterm/xterm/css/xterm.css";
 import { TerminalPane } from "@client-core/terminal/terminal-pane";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
+import { installUrlLinkProvider } from "./viewer/UrlLinkProvider";
 import type { HostRef } from "./host";
 // `loadSettings` reads via the same IPC channels the main renderer uses;
 // the popout's preload exposes the same `reckAPI` surface, so this works
@@ -175,6 +176,13 @@ async function bootPopout(): Promise<void> {
       void window.reckAPI.files.openInViewer(filePath, {
         sourceHost: info.host,
       });
+    },
+  });
+  // Clickable http/https URLs in the popout terminal too. ⌘-click →
+  // window.open → main's setWindowOpenHandler → shell.openExternal.
+  installUrlLinkProvider(term.getXterm(), {
+    onActivateUrl: (url) => {
+      window.open(url, "_blank", "noopener");
     },
   });
 

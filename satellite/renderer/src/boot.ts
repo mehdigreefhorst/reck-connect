@@ -35,6 +35,7 @@ import { effectiveStoplight as filterEffectiveStoplight } from "./ui/effective-s
 import { AppBar, type Theme } from "./ui/app-bar";
 import { PaneLayout } from "./ui/pane-layout";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
+import { installUrlLinkProvider } from "./viewer/UrlLinkProvider";
 import { ensurePaneControls } from "./ui/paneControls";
 import { resolveActivatePath } from "./viewer/resolveActivatePath";
 import {
@@ -1306,6 +1307,14 @@ export async function boot(splash?: StartupSplashController) {
                 error: err,
               });
             });
+        },
+      });
+      // Clickable http/https URLs alongside the path linkifier. ⌘-click
+      // opens the OS default browser: window.open is intercepted by main's
+      // setWindowOpenHandler and forwarded to shell.openExternal.
+      installUrlLinkProvider(pane.getXterm(), {
+        onActivateUrl: (url) => {
+          window.open(url, "_blank", "noopener");
         },
       });
     },

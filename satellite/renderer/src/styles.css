@@ -2501,6 +2501,20 @@ html, body, #app {
   text-decoration-color: rgba(96, 165, 250, 1);
 }
 
+/* Clickable http/https URLs (⌘+click → default browser). Applied by
+   CodeMirrorPathLinkifier in the source view; xterm paints its own
+   underline for terminal/popout URLs. Solid underline distinguishes a
+   web URL from the dashed path-link style. */
+.reck-url-link {
+  text-decoration: underline;
+  text-decoration-color: rgba(96, 165, 250, 0.7);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.reck-url-link:hover {
+  text-decoration-color: rgba(96, 165, 250, 1);
+}
+
 /* Static HTML preview: baseline layout for structural/media tags the
    markdown renderer never emits. Keeps pages readable and prevents wide
    media/tables from breaking the popup's horizontal scroll. */
