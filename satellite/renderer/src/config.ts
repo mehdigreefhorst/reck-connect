@@ -15,6 +15,7 @@ declare global {
       transcription: {
         deepgramStart: (
           sampleRate: number,
+          language?: string,
         ) => Promise<{ ok: boolean; sessionId?: number; error?: string }>;
         deepgramFrame: (sessionId: number, bytes: Uint8Array) => void;
         deepgramStop: (sessionId: number) => Promise<boolean>;

@@ -5,6 +5,8 @@
 //
 // See docs/plans/voice-dictation-satellite.md.
 
+import { isDictationLanguage } from "./languages";
+
 export const TRANSCRIPTION_CONFIG_KEY = "transcription";
 export const DEEPGRAM_KEY_CONFIG_KEY = "transcription.deepgramKey";
 
@@ -50,6 +52,8 @@ export interface TranscriptionSettings {
   hotkeyPushToTalk: string;
   /** When true, inject a trailing newline so the prompt sends immediately. */
   autoSubmit: boolean;
+  /** Spoken language: "auto" (detect) or an ISO code from DICTATION_LANGUAGES. */
+  language: string;
 }
 
 export const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettings = {
@@ -59,6 +63,7 @@ export const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettings = {
   hotkeyToggle: "Mod+Shift+V",
   hotkeyPushToTalk: "Alt+Space",
   autoSubmit: false,
+  language: "auto",
 };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -95,6 +100,9 @@ export function coerce(raw: unknown): TranscriptionSettings {
       DEFAULT_TRANSCRIPTION_SETTINGS.hotkeyPushToTalk,
     ),
     autoSubmit: coerceBool(raw.autoSubmit, DEFAULT_TRANSCRIPTION_SETTINGS.autoSubmit),
+    language: isDictationLanguage(raw.language)
+      ? raw.language
+      : DEFAULT_TRANSCRIPTION_SETTINGS.language,
   };
 }
 

@@ -33,9 +33,13 @@ export function registerTranscriptionIpc(getWindow: () => BrowserWindow | null):
 
   ipcMain.handle(
     "transcription:deepgram:start",
-    async (_e, sampleRate: unknown): Promise<DeepgramStartResult> => {
+    async (_e, sampleRate: unknown, language: unknown): Promise<DeepgramStartResult> => {
       const rate =
         typeof sampleRate === "number" && sampleRate > 0 ? Math.round(sampleRate) : 16000;
+      const lang =
+        typeof language === "string" && language !== "auto" && /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(language)
+          ? language
+          : undefined;
       const key = readConfig("transcription.deepgramKey");
       if (typeof key !== "string" || key.length === 0) {
         return {
@@ -46,7 +50,7 @@ export function registerTranscriptionIpc(getWindow: () => BrowserWindow | null):
       const id = nextId++;
       const dg = new DeepgramSession();
       try {
-        await dg.open(key, rate, {
+        await dg.open(key, rate, lang, {
           onPartial: (text) => send({ sessionId: id, kind: "partial", text }),
           onFinal: (text) => send({ sessionId: id, kind: "final", text }),
           onError: (message) => send({ sessionId: id, kind: "error", text: message }),

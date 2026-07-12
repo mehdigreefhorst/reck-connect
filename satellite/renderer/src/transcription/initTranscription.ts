@@ -1,14 +1,18 @@
 // Boot entry for voice dictation (issue #67). Loads settings, wires the
-// controller to the active pane, and installs the toggle hotkey. Invoked
-// non-fatally from boot.ts beside initTts — a failure here must never take
-// down the app.
+// controller to the active pane, installs the toggle hotkey, and attaches
+// the right-click language menu to every mic button. Invoked non-fatally
+// from boot.ts beside initTts — a failure here must never take down the app.
 
 import {
   TranscriptionController,
   type DictationSession,
 } from "./TranscriptionController";
+import { showDictationContextMenu } from "./languageMenu";
 import { installTranscriptionShortcuts } from "./transcriptionShortcuts";
-import { loadTranscriptionSettings } from "./transcriptionSettings";
+import {
+  loadTranscriptionSettings,
+  saveTranscriptionSettings,
+} from "./transcriptionSettings";
 
 export interface InitTranscriptionDeps {
   /** Resolve the target pane + UI surface when dictation starts. */
@@ -45,10 +49,29 @@ export async function initTranscription(
     ? installTranscriptionShortcuts({ onToggle: toggle })
     : () => {};
 
+  // Right-click on any pane's mic button → Language ▸ submenu. Delegated so
+  // mic buttons created later (new panes/splits) are covered automatically.
+  const onMicContextMenu = (e: MouseEvent): void => {
+    const mic = (e.target as HTMLElement | null)?.closest?.(".pane-controls-mic");
+    if (!mic) return;
+    e.preventDefault();
+    e.stopPropagation();
+    showDictationContextMenu(e.clientX, e.clientY, {
+      currentCode: controller.getSettings().language,
+      onPick: (code) => {
+        const next = { ...controller.getSettings(), language: code };
+        controller.updateSettings(next);
+        void saveTranscriptionSettings(next);
+      },
+    });
+  };
+  document.addEventListener("contextmenu", onMicContextMenu, true);
+
   return {
     toggle,
     dispose: () => {
       uninstallShortcut();
+      document.removeEventListener("contextmenu", onMicContextMenu, true);
       controller.dispose();
     },
   };

@@ -17,6 +17,10 @@ class FakeV1Socket {
   sendCloseStream = vi.fn();
   sendKeepAlive = vi.fn();
   close = vi.fn();
+  // The SDK builds the socket startClosed — nothing dials until connect() is
+  // called. The session MUST call this (its omission was the original
+  // silent-Deepgram bug), so it's a spy the connect-args test asserts on.
+  connect = vi.fn();
   private openResolve!: () => void;
   private openReject!: (err: unknown) => void;
   private openPromise: Promise<void>;
@@ -128,7 +132,7 @@ afterEach(() => {
 describe("DeepgramSession.open — connect args", () => {
   it("connects with nova-2 / linear16 / the given rate / interim + reconnectAttempts 0", async () => {
     const session = new DeepgramSession();
-    await session.open("secret-key", 24000, makeHandlers());
+    await session.open("secret-key", 24000, undefined, makeHandlers());
 
     expect(dg.connectArgs).toHaveLength(1);
     const args = dg.connectArgs[0] as Record<string, unknown>;
@@ -138,13 +142,24 @@ describe("DeepgramSession.open — connect args", () => {
     expect(args.interim_results).toBe("true");
     expect(args.reconnectAttempts).toBe(0);
     expect(dg.apiKeys[0]).toBe("secret-key");
+    // No language arg unless one was chosen.
+    expect(args.language).toBeUndefined();
+    // startClosed socket: without this call nothing ever dials.
+    expect(dg.sockets[0].connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a chosen language through to the connect args", async () => {
+    const session = new DeepgramSession();
+    await session.open("k", 16000, "nl", makeHandlers());
+    const args = dg.connectArgs[0] as Record<string, unknown>;
+    expect(args.language).toBe("nl");
   });
 });
 
 describe("DeepgramSession — pre-open queueing / flushing", () => {
   it("queues frames sent before open and flushes them in order on the 'open' event", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
 
     session.sendAudio(frame(1));
@@ -167,7 +182,7 @@ describe("DeepgramSession — pre-open queueing / flushing", () => {
 
   it("flushes the queue when waitForOpen() resolves (no 'open' event needed)", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
 
     session.sendAudio(frame(7));
@@ -182,7 +197,7 @@ describe("DeepgramSession — pre-open queueing / flushing", () => {
 
   it("caps the pre-open queue at 250 frames", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
 
     for (let i = 0; i < 300; i++) session.sendAudio(frame(i % 250));
@@ -195,7 +210,7 @@ describe("DeepgramSession — pre-open queueing / flushing", () => {
 describe("DeepgramSession — KeepAlive", () => {
   it("sends KeepAlive periodically once ready and never after close()", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
     socket.fireOpenEvent(); // ready
 
@@ -212,7 +227,7 @@ describe("DeepgramSession — KeepAlive", () => {
 
   it("does not send KeepAlive before the socket is ready", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
 
     vi.advanceTimersByTime(12000);
@@ -223,7 +238,7 @@ describe("DeepgramSession — KeepAlive", () => {
 describe("DeepgramSession.close", () => {
   it("sends CloseStream synchronously and turns later sendAudio() into a no-op", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
     socket.fireOpenEvent();
 
@@ -242,7 +257,7 @@ describe("DeepgramSession.close", () => {
 
   it("force-closes the socket after the flush timeout when the server never closes", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
     socket.fireOpenEvent();
 
@@ -260,7 +275,7 @@ describe("DeepgramSession.close", () => {
 
   it("does not force-close when the server already closed the socket", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
     socket.fireOpenEvent();
 
@@ -273,7 +288,7 @@ describe("DeepgramSession.close", () => {
 
   it("is idempotent — a second close() does nothing", async () => {
     const session = new DeepgramSession();
-    await session.open("k", 16000, makeHandlers());
+    await session.open("k", 16000, undefined, makeHandlers());
     const socket = dg.sockets[0];
     socket.fireOpenEvent();
 
@@ -288,7 +303,7 @@ describe("DeepgramSession — close events", () => {
   it("an UNREQUESTED close with no results reports onError (with code + frames) and onClosed", async () => {
     const handlers = makeHandlers();
     const session = new DeepgramSession();
-    await session.open("k", 16000, handlers);
+    await session.open("k", 16000, undefined, handlers);
     const socket = dg.sockets[0];
 
     socket.emit("close", { code: 1011, reason: "server error" });
@@ -303,7 +318,7 @@ describe("DeepgramSession — close events", () => {
   it("a REQUESTED close reports onClosed but NOT onError", async () => {
     const handlers = makeHandlers();
     const session = new DeepgramSession();
-    await session.open("k", 16000, handlers);
+    await session.open("k", 16000, undefined, handlers);
     const socket = dg.sockets[0];
     socket.fireOpenEvent();
 
@@ -317,7 +332,7 @@ describe("DeepgramSession — close events", () => {
   it("emits open/close lifecycle strings to onDebug", async () => {
     const handlers = makeHandlers();
     const session = new DeepgramSession();
-    await session.open("k", 16000, handlers);
+    await session.open("k", 16000, undefined, handlers);
     const socket = dg.sockets[0];
 
     socket.fireOpenEvent();
@@ -333,7 +348,7 @@ describe("DeepgramSession — message events", () => {
   it("interim Results → onPartial, final Results → onFinal, empty transcript → neither", async () => {
     const handlers = makeHandlers();
     const session = new DeepgramSession();
-    await session.open("k", 16000, handlers);
+    await session.open("k", 16000, undefined, handlers);
     const socket = dg.sockets[0];
 
     socket.emit("message", {
@@ -365,7 +380,7 @@ describe("DeepgramSession — message events", () => {
   it("ignores non-Results messages", async () => {
     const handlers = makeHandlers();
     const session = new DeepgramSession();
-    await session.open("k", 16000, handlers);
+    await session.open("k", 16000, undefined, handlers);
     const socket = dg.sockets[0];
 
     socket.emit("message", { type: "Metadata" });
@@ -378,7 +393,7 @@ describe("DeepgramSession — socket error", () => {
   it("forwards a socket 'error' event to onError", async () => {
     const handlers = makeHandlers();
     const session = new DeepgramSession();
-    await session.open("k", 16000, handlers);
+    await session.open("k", 16000, undefined, handlers);
     const socket = dg.sockets[0];
 
     socket.emit("error", new Error("boom"));

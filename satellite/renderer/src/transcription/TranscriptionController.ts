@@ -83,8 +83,15 @@ export class TranscriptionController {
   }
 
   private makeProvider(): Transcriber {
-    if (this.settings.provider === "deepgram") return new DeepgramProvider();
-    return new LocalWhisperProvider(embeddedModelRepo(this.settings.localModel));
+    if (this.settings.provider === "deepgram") {
+      return new DeepgramProvider({ language: this.settings.language });
+    }
+    // Live partials run on tiny (fast enough to keep up with speech); the
+    // final pass uses the selected model for quality.
+    return new LocalWhisperProvider(embeddedModelRepo(this.settings.localModel), {
+      partialRepo: embeddedModelRepo("whisper-tiny"),
+      language: this.settings.language,
+    });
   }
 
   /** Short model name for the loading UI (local engine only). */
@@ -171,11 +178,18 @@ export class TranscriptionController {
   /** Apply new settings; swaps the provider if the engine is idle. */
   updateSettings(next: TranscriptionSettings): void {
     const providerChanged =
-      next.provider !== this.settings.provider || next.localModel !== this.settings.localModel;
+      next.provider !== this.settings.provider ||
+      next.localModel !== this.settings.localModel ||
+      next.language !== this.settings.language;
     this.settings = next;
     if (providerChanged && this.engine.getState() === "idle") {
       this.engine.setProvider(this.makeProvider());
     }
+  }
+
+  /** Current settings snapshot (the language menu reads + rewrites these). */
+  getSettings(): TranscriptionSettings {
+    return this.settings;
   }
 
   dispose(): void {

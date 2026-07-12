@@ -26,7 +26,13 @@ import {
 env.allowLocalModels = false;
 
 type InMessage =
-  | { type: "prepare"; repo: string; generation: number }
+  | {
+      type: "prepare";
+      // All repos this session will use — typically [tiny-for-partials,
+      // selected-model-for-finals]. Loaded in order; ready fires when ALL are.
+      repos: string[];
+      generation: number;
+    }
   | {
       type: "transcribe";
       repo: string;
@@ -35,10 +41,13 @@ type InMessage =
       // "partial" = a live snapshot while still recording (shown as interim);
       // "final" = the complete utterance on stop (injected). Default final.
       kind?: "partial" | "final";
+      // ISO language code; omit/"auto" = let Whisper detect.
+      language?: string;
     };
 
-let asr: AutomaticSpeechRecognitionPipeline | null = null;
-let loadedRepo: string | null = null;
+// One pipeline per repo, kept warm for the life of the worker — the partial
+// (tiny) and final (selected) models coexist.
+const pipelines = new Map<string, AutomaticSpeechRecognitionPipeline>();
 
 /**
  * Is WebGPU actually usable for transformers.js here? Its GPU kernels read
@@ -60,12 +69,13 @@ async function webgpuUsable(): Promise<boolean> {
   }
 }
 
-/** Load + warm up the model, choosing a safe device. Cached per repo. */
+/** Load + warm up one model, choosing a safe device. Cached per repo. */
 async function ensureReady(
   repo: string,
   generation: number,
 ): Promise<AutomaticSpeechRecognitionPipeline> {
-  if (asr && loadedRepo === repo) return asr;
+  const cached = pipelines.get(repo);
+  if (cached) return cached;
   post({ type: "status", status: "loading", generation });
 
   // Device + dtype fallbacks. transformers.js is pinned to 3.8.1 because its
@@ -125,16 +135,13 @@ async function ensureReady(
       // above (caught by this loop), and a warm-up on a big model is so slow on
       // CPU it looks hung. Skipping it lets loading finish as soon as the model
       // is in memory.
-      asr = p;
-      loadedRepo = repo;
+      pipelines.set(repo, p);
       return p;
     } catch (err) {
       // Log the full error (with stack) so it's visible in DevTools even
       // though only the message crosses back to the toast.
       console.error(`[whisper-worker] ${repo} on ${cfg.device}/${cfg.dtype} failed:`, err);
       lastErr = err;
-      asr = null;
-      loadedRepo = null;
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error("Failed to load speech model");
@@ -145,16 +152,28 @@ self.onmessage = async (e: MessageEvent<InMessage>) => {
   if (!msg || (msg.type !== "prepare" && msg.type !== "transcribe")) return;
   const gen = msg.generation;
   try {
-    const model = await ensureReady(msg.repo, gen);
     if (msg.type === "prepare") {
+      for (const repo of msg.repos) await ensureReady(repo, gen);
       post({ type: "ready", generation: gen });
       return;
     }
+    const model = await ensureReady(msg.repo, gen);
     const kind = msg.kind ?? "final";
     // Don't flip the UI to "Transcribing…" for the frequent partial passes.
     if (kind === "final") post({ type: "status", status: "transcribing", generation: gen });
-    const output = await model(msg.audio, { chunk_length_s: 30, stride_length_s: 5 });
-    post({ type: "result", kind, text: extractText(output).trim(), generation: gen });
+    const options: Record<string, unknown> = { chunk_length_s: 30, stride_length_s: 5 };
+    if (msg.language && msg.language !== "auto") options.language = msg.language;
+    const t0 = performance.now();
+    const output = await model(msg.audio, options);
+    const text = extractText(output).trim();
+    // Timing lands in the pane's DevTools console — the observability the
+    // "why is it slow" investigations kept needing.
+    console.log(
+      `[whisper-worker] ${kind} ${msg.repo} ${(msg.audio.length / 16000).toFixed(1)}s audio → ` +
+        `${Math.round(performance.now() - t0)}ms:`,
+      JSON.stringify(text),
+    );
+    post({ type: "result", kind, text, generation: gen });
   } catch (err) {
     post({
       type: "error",

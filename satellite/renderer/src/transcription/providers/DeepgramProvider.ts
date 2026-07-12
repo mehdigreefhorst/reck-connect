@@ -15,7 +15,14 @@ import type { Transcriber, TranscriptionHandlers } from "./types";
 const CLOSE_FLUSH_TIMEOUT_MS = 4000;
 
 export class DeepgramProvider implements Transcriber {
+  // "auto" = let the server default; anything else is passed as Deepgram's
+  // `language` query param (e.g. "nl").
+  private readonly language: string;
   private sessionId: number | null = null;
+
+  constructor(opts: { language?: string } = {}) {
+    this.language = opts.language ?? "auto";
+  }
   private unsub: (() => void) | null = null;
   private handlers: TranscriptionHandlers | null = null;
   private onClosed: (() => void) | null = null;
@@ -65,7 +72,10 @@ export class DeepgramProvider implements Transcriber {
         this.onClosed?.();
       }
     });
-    const res = await window.reckAPI.transcription.deepgramStart(sampleRate || 16000);
+    const res = await window.reckAPI.transcription.deepgramStart(
+      sampleRate || 16000,
+      this.language,
+    );
     console.log("[deepgram] start →", res, "@", sampleRate, "Hz");
     if (!res.ok || res.sessionId === undefined) {
       this.unsub?.();

@@ -4,8 +4,13 @@
 // Whisper isn't a streaming model, but to show live text we re-transcribe the
 // audio-so-far every ~1.2s while recording and surface that as interim
 // ("partial") text; on stop we do one final pass over the whole utterance and
-// inject that ("final"). The model is loaded + warmed up in prepare() — before
-// the mic starts — so recording only begins once transcription can run.
+// inject that ("final"). The models are loaded + warmed up in prepare() —
+// before the mic starts — so recording only begins once transcription can run.
+//
+// Two models per session: PARTIAL passes run on a fast small model (tiny by
+// default) so live text keeps up with speech; the FINAL pass runs on the
+// user-selected model for quality. Without this split, live preview on
+// base/small lagged so far behind that dictation felt like transcribe-on-stop.
 
 import { mergeFloat32, resampleLinear, rms, WHISPER_SAMPLE_RATE } from "../pcm";
 import type { Transcriber, TranscriptionHandlers } from "./types";
@@ -62,7 +67,16 @@ export class LocalWhisperProvider implements Transcriber {
   private frozen: string[] = [];
   private windowStart = 0;
 
-  constructor(private readonly repo: string) {}
+  private readonly partialRepo: string;
+  private readonly language: string;
+
+  constructor(
+    private readonly repo: string,
+    opts: { partialRepo?: string; language?: string } = {},
+  ) {
+    this.partialRepo = opts.partialRepo ?? repo;
+    this.language = opts.language ?? "auto";
+  }
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
@@ -134,7 +148,8 @@ export class LocalWhisperProvider implements Transcriber {
     return new Promise<void>((resolve, reject) => {
       this.resolvePrepare = resolve;
       this.rejectPrepare = reject;
-      worker.postMessage({ type: "prepare", repo: this.repo, generation: this.generation });
+      const repos = this.partialRepo === this.repo ? [this.repo] : [this.partialRepo, this.repo];
+      worker.postMessage({ type: "prepare", repos, generation: this.generation });
     });
   }
 
@@ -202,7 +217,14 @@ export class LocalWhisperProvider implements Transcriber {
       WHISPER_SAMPLE_RATE,
     );
     this.worker.postMessage(
-      { type: "transcribe", kind: "partial", audio, repo: this.repo, generation: this.generation },
+      {
+        type: "transcribe",
+        kind: "partial",
+        audio,
+        repo: this.partialRepo,
+        language: this.language,
+        generation: this.generation,
+      },
       [audio.buffer],
     );
   }
@@ -228,7 +250,14 @@ export class LocalWhisperProvider implements Transcriber {
     return new Promise<void>((resolve) => {
       this.resolveEnd = resolve;
       worker.postMessage(
-        { type: "transcribe", kind: "final", audio, repo: this.repo, generation: this.generation },
+        {
+          type: "transcribe",
+          kind: "final",
+          audio,
+          repo: this.repo,
+          language: this.language,
+          generation: this.generation,
+        },
         [audio.buffer],
       );
     });

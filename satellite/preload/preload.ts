@@ -46,8 +46,8 @@ contextBridge.exposeInMainWorld("reckAPI", {
   // key and the websocket; the renderer streams linear16 frames and receives
   // interim/final transcripts back over the event channel (issue #67).
   transcription: {
-    deepgramStart: (sampleRate: number) =>
-      ipcRenderer.invoke("transcription:deepgram:start", sampleRate),
+    deepgramStart: (sampleRate: number, language?: string) =>
+      ipcRenderer.invoke("transcription:deepgram:start", sampleRate, language),
     deepgramFrame: (sessionId: number, bytes: Uint8Array) =>
       ipcRenderer.send("transcription:deepgram:frame", sessionId, bytes),
     deepgramStop: (sessionId: number) =>

@@ -58,6 +58,7 @@ export class DeepgramSession {
   async open(
     apiKey: string,
     sampleRate: number,
+    language: string | undefined,
     handlers: DeepgramSessionHandlers,
   ): Promise<void> {
     const { DeepgramClient } = await import("@deepgram/sdk");
@@ -70,6 +71,9 @@ export class DeepgramSession {
       interim_results: "true",
       punctuate: "true",
       smart_format: "true",
+      // Undefined = Deepgram's default (English); set from the dictation
+      // language menu otherwise.
+      ...(language ? { language } : {}),
       Authorization: `Token ${apiKey}`,
       // The SDK's ReconnectingWebSocket retries 30× by default; a rejected
       // key would silently loop connect/close. Fail once, loudly.
@@ -118,6 +122,12 @@ export class DeepgramSession {
       }
       handlers.onClosed();
     });
+
+    // The SDK builds the socket with startClosed:true — it does NOT dial
+    // until connect() is called ("the returned socket is not connected until
+    // you call socket.connect()"). Missing this call was the original
+    // everything-is-silent bug: no open, no error, every frame queued.
+    socket.connect();
 
     // waitForOpen() resolves whether the socket opens now or already did —
     // no race with the "open" event having fired before our handler attached.

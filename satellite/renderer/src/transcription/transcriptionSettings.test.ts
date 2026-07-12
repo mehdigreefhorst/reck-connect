@@ -28,8 +28,15 @@ describe("transcriptionSettings.coerce", () => {
       hotkeyToggle: "Mod+Shift+D",
       hotkeyPushToTalk: "Ctrl+Space",
       autoSubmit: true,
+      language: "nl",
     };
     expect(coerce(input)).toEqual(input);
+  });
+
+  it("defaults language to auto and rejects unknown codes", () => {
+    expect(coerce({}).language).toBe("auto");
+    expect(coerce({ language: "xx-not-a-language" }).language).toBe("auto");
+    expect(coerce({ language: "nl" }).language).toBe("nl");
   });
 
   it("falls back on an unknown provider", () => {

@@ -2023,6 +2023,56 @@ html, body, #app {
   color: var(--wes-rose);
 }
 
+/* === Dictation context menu (right-click the mic): Language ▸ submenu === */
+.dictation-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  background: var(--app-bg-raised);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  color: var(--app-text);
+}
+.dictation-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: transparent;
+  border: 0;
+  padding: 6px 10px;
+  text-align: left;
+  color: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.dictation-menu-item:hover {
+  background: var(--app-hover);
+}
+.dictation-menu-arrow {
+  opacity: 0.6;
+  font-size: 11px;
+}
+.dictation-menu-check {
+  color: var(--claude-orange);
+}
+.dictation-language-submenu {
+  position: absolute;
+  top: 0;
+  min-width: 170px;
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+  background: var(--app-bg-raised);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
 /* === Startup splash (first paint → first project rendered) ===
    Seeded in index.html so it's on screen before any JS runs. Controlled
    by src/ui/startup-splash.ts as boot milestones complete. */
