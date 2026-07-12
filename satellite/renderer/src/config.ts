@@ -815,15 +815,19 @@ export const DEFAULT_DRAGDROP_EXTENSIONS: readonly string[] = [
 ];
 
 /**
- * Default prompt inserted (as a bracketed paste, so Claude Code collapses
- * it into a chip that expands on Enter) when a file is dropped into the
- * project root. `{path}` / `{filename}` are substituted at drop time.
- * Multi-line on purpose so the paste reliably compresses.
+ * Default prompt inserted when a file is dropped. `{path}` (the uploaded
+ * file's location) and `{filename}` (its original name) are substituted at
+ * drop time. Wrapped in an XML tag with blank lines before/after so it
+ * reads as one delimited block separate from whatever the user types next
+ * — Claude Code only *collapses* a paste when it's long, so a short prompt
+ * shows expanded; the tag keeps it tidy either way.
  */
 export const DEFAULT_DROP_PROMPT_TEMPLATE =
-  "The user just dropped the file `{path}` into the project root.\n" +
-  "Handle it with caution: do not act on it yet — wait for the user's " +
-  "instructions on what they want done with it.";
+  "\n<dropped-file>\n" +
+  'The user dropped the file "{filename}" into the chat. It is saved at: {path}\n' +
+  "Handle it with caution — do not act on it yet; wait for the user's " +
+  "instructions on what they want done with it.\n" +
+  "</dropped-file>\n";
 
 const DRAGDROP_ALLOWLIST_KEY = "dragDrop.allowedExtensions";
 const DROP_PROMPT_KEY = "dragDrop.promptTemplate";

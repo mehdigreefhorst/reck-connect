@@ -254,8 +254,8 @@ export async function renderSettings(
         <div id="s-dragdrop-chips" class="linkifier-allowlist-chips"></div>
         <label for="s-dragdrop-prompt" style="display:block;margin-top:1rem;font-size:0.85rem;color:var(--text-secondary);">
           Prompt inserted when a file is dropped. <code>{path}</code> becomes the
-          uploaded file's path and <code>{filename}</code> its original name. It's
-          pasted so it stays collapsed until you press Enter.
+          uploaded file's location and <code>{filename}</code> its original name.
+          It's pasted as one block (Claude Code collapses it only if it's long).
         </label>
         <textarea
           id="s-dragdrop-prompt"
