@@ -3881,7 +3881,67 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   bottom: auto;
   order: 2;
 }
-.pane-controls > .pane-controls-history { order: 3; }
+.pane-controls > .pane-controls-mic { order: 3; }
+.pane-controls > .pane-controls-history { order: 4; }
+/* Voice-dictation mic button (#67). Idle looks like any icon-btn; while
+   recording it goes solid Reck-red with a soft pulse, and amber while the
+   transcript is being produced. */
+.pane-controls-mic[data-state="listening"] {
+  color: #fff;
+  background: #d4483a;
+  animation: dictation-mic-pulse 1.2s var(--ease-smooth) infinite;
+}
+.pane-controls-mic[data-state="transcribing"] {
+  color: #fff;
+  background: #c9982e;
+}
+@keyframes dictation-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 72, 58, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(212, 72, 58, 0); }
+}
+/* Floating status/interim pill shown for the duration of a dictation
+   session, anchored to the bottom of the pane it's dictating into. */
+.dictation-bar {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 32;
+  max-width: 80%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(20, 20, 19, 0.92);
+  color: #f5f2ea;
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.dictation-bar[data-state="idle"] { display: none; }
+.dictation-bar-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dictation-bar-label::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #d4483a;
+  vertical-align: middle;
+}
+.dictation-bar[data-state="transcribing"] .dictation-bar-label::before { background: #c9982e; }
+.dictation-bar-interim {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.dictation-bar-interim:empty { display: none; }
 /* History (clock) button — the primary per-pane affordance that opens the
    transcript overlay. Unlike the other icon-btns it does NOT shift shade on
    hover; it holds its resting fill/ink and instead blooms a soft orange halo

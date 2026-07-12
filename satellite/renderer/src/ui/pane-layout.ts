@@ -5,8 +5,8 @@ import type { PasteUploadResult } from "@client-core/terminal/terminal-pane";
 import type { PaneWSCloseInfo } from "@client-core/api/ws";
 import type { Stoplight } from "@proto/proto";
 import type { HostRef } from "../host";
-import { iconClose, iconSplitDown, iconSplitRight, iconDetach, iconHistory } from "./icons";
-import { ensureHistoryButton } from "./paneControls";
+import { iconClose, iconSplitDown, iconSplitRight, iconDetach, iconHistory, iconMic } from "./icons";
+import { ensureHistoryButton, ensureMicButton } from "./paneControls";
 import { installVoiceErrorHint } from "../transcription/voiceErrorHint";
 import { computeReorder } from "./reorder";
 import { HoverFocusController } from "./hover-focus-controller";
@@ -147,6 +147,12 @@ export interface PaneLayoutCallbacks {
    * transcript. Optional for the same reason as `onDetachPane`.
    */
   onHistoryPane?: (paneId: string, leafId: string) => void;
+  /**
+   * Toggle voice dictation for a Claude pane (issue #67). When present, a
+   * mic button is mounted in the pane's control stack. Optional — omitted
+   * when the dictation feature isn't wired.
+   */
+  onDictationToggle?: (paneId: string, leafId: string) => void;
 }
 
 /**
@@ -696,6 +702,17 @@ export class PaneLayout {
           onToggle: () => {
             this.focusLeaf(leaf.id);
             this.cb.onHistoryPane?.(t.paneId, leaf.id);
+          },
+        });
+      }
+      // Voice-dictation mic button (issue #67) — Claude panes only, beside
+      // the History clock. Focuses the pane, then toggles dictation there.
+      if (this.cb.onDictationToggle && t.kind === "claude") {
+        ensureMicButton(wrapper, {
+          icon: iconMic,
+          onToggle: () => {
+            this.focusLeaf(leaf.id);
+            this.cb.onDictationToggle?.(t.paneId, leaf.id);
           },
         });
       }

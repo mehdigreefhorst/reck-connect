@@ -58,6 +58,7 @@ import { addProjectFlow } from "./ui/add-project-dialog";
 import { confirmDeleteProject } from "./ui/delete-project-dialog";
 import { confirmRestoreProject } from "./ui/confirm-restore-dialog";
 import { initTts } from "./tts/initTts";
+import { initTranscription, type TranscriptionHandle } from "./transcription/initTranscription";
 import { TerminalPaneAdapter } from "./tts/TerminalPaneAdapter";
 import { initSearch } from "./search/initSearch";
 import { TerminalSearchAdapter } from "./search/TerminalSearchAdapter";
@@ -1199,6 +1200,10 @@ export async function boot(splash?: StartupSplashController) {
     }),
   });
 
+  // Voice dictation handle (#67), assigned by the async initTranscription
+  // below. The layout's mic-button callback and the ⌘⇧V hotkey route here.
+  let dictationHandle: TranscriptionHandle | null = null;
+
   const layout: PaneLayout = new PaneLayout({
     root: layoutRoot,
     // Phase 10: route each tab's WS through its own host's ApiClient.
@@ -1737,6 +1742,11 @@ export async function boot(splash?: StartupSplashController) {
     onHistoryPane: (paneId) => {
       void transcripts.toggle(paneId);
     },
+    // Voice dictation (#67): the mic button focuses the pane (in the layout)
+    // then routes here; the active-pane target is resolved when it starts.
+    onDictationToggle: () => {
+      dictationHandle?.toggle();
+    },
   });
   layout.setTheme(theme);
   // Bind the rail-collapse/wiggle refit hook now that the layout exists.
@@ -2190,6 +2200,31 @@ export async function boot(splash?: StartupSplashController) {
       });
     } catch (e) {
       console.warn("[tts] disabled:", e);
+    }
+  })();
+
+  // Voice dictation (#67): capture the mic on this Mac, transcribe (local
+  // Whisper or Deepgram), and type the text into the active pane's PTY.
+  // Non-fatal like TTS above.
+  void (async () => {
+    try {
+      dictationHandle = await initTranscription({
+        resolveSession: () => {
+          const rec = layout.getActiveTerminalRecord();
+          if (!rec) return null;
+          const encoder = new TextEncoder();
+          return {
+            target: {
+              insert: (text) => rec.term.sendInput(encoder.encode(text)),
+              submit: () => rec.term.sendInput(encoder.encode("\r")),
+            },
+            surface: rec.wrapper,
+          };
+        },
+        onError: (msg) => showToast(document.body, msg, { kind: "error", durationMs: 6000 }),
+      });
+    } catch (e) {
+      console.warn("[dictation] disabled:", e);
     }
   })();
 

@@ -5,6 +5,7 @@
 // presses Enter), unless auto-submit is enabled.
 
 import { TranscriptionEngine, type DictationState } from "./TranscriptionEngine";
+import { DictationBar } from "./DictationBar";
 import { DeepgramProvider } from "./providers/DeepgramProvider";
 import { LocalWhisperProvider } from "./providers/LocalWhisperProvider";
 import type { Transcriber, TranscriberStatus } from "./providers/types";
@@ -18,7 +19,7 @@ export interface DictationTarget {
   submit(): void;
 }
 
-/** The floating per-pane UI (implemented by DictationBar in Task 5). */
+/** The floating per-pane UI, implemented by DictationBar. */
 export interface DictationUI {
   setState(state: DictationState): void;
   setInterim(text: string): void;
@@ -26,12 +27,18 @@ export interface DictationUI {
   setError(message: string): void;
 }
 
+/** Resolved when dictation starts: where text goes and where UI mounts. */
+export interface DictationSession {
+  target: DictationTarget;
+  /** The pane wrapper — anchor for the mic button state + status pill. */
+  surface: HTMLElement;
+}
+
 export interface TranscriptionControllerDeps {
   settings: TranscriptionSettings;
-  /** Resolve the injection target at the moment dictation starts. */
-  resolveTarget: () => DictationTarget | null;
-  ui?: DictationUI;
-  /** Surface an error to the user (e.g. a toast). */
+  /** Resolve the target + UI surface at the moment dictation starts. */
+  resolveSession: () => DictationSession | null;
+  /** Surface an error to the user (e.g. a toast) when no UI bar exists. */
   onError?: (message: string) => void;
 }
 
@@ -39,17 +46,18 @@ export class TranscriptionController {
   private engine: TranscriptionEngine;
   private settings: TranscriptionSettings;
   private target: DictationTarget | null = null;
+  private bar: DictationBar | null = null;
   private injectedAny = false;
 
   constructor(private readonly deps: TranscriptionControllerDeps) {
     this.settings = deps.settings;
     this.engine = new TranscriptionEngine(this.makeProvider(), {
-      onPartial: (t) => this.deps.ui?.setInterim(t),
+      onPartial: (t) => this.bar?.setInterim(t),
       onFinal: (t) => this.injectFinal(t),
-      onStatus: (s) => this.deps.ui?.setStatus(s),
+      onStatus: (s) => this.bar?.setStatus(s),
       onError: (m) => {
-        this.deps.ui?.setError(m);
-        this.deps.onError?.(m);
+        if (this.bar) this.bar.setError(m);
+        else this.deps.onError?.(m);
       },
       onStateChange: (s) => this.onStateChange(s),
     });
@@ -69,10 +77,11 @@ export class TranscriptionController {
   }
 
   private onStateChange(state: DictationState): void {
-    this.deps.ui?.setState(state);
-    this.deps.ui?.setStatus(null);
+    this.bar?.setState(state);
     if (state === "idle") {
       if (this.injectedAny && this.settings.autoSubmit) this.target?.submit();
+      this.bar?.dispose();
+      this.bar = null;
       this.target = null;
       this.injectedAny = false;
     }
@@ -88,13 +97,14 @@ export class TranscriptionController {
 
   async startDictation(): Promise<void> {
     if (this.engine.getState() !== "idle") return;
-    this.target = this.deps.resolveTarget();
-    if (!this.target) {
+    const session = this.deps.resolveSession();
+    if (!session) {
       this.deps.onError?.("No active terminal to dictate into.");
       return;
     }
+    this.target = session.target;
+    this.bar = new DictationBar(session.surface);
     this.injectedAny = false;
-    this.deps.ui?.setInterim("");
     await this.engine.start();
   }
 
@@ -104,6 +114,8 @@ export class TranscriptionController {
 
   async cancel(): Promise<void> {
     await this.engine.cancel();
+    this.bar?.dispose();
+    this.bar = null;
     this.target = null;
     this.injectedAny = false;
   }
