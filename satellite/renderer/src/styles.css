@@ -4108,6 +4108,14 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   align-items: center;
   gap: 8px;
   /* left/bottom come inline from the shared offset (micOverlay.ts). */
+  /* The container (and the pill beside it) must NOT eat clicks/hover meant
+     for the terminal underneath — otherwise the mic blocks pane selection,
+     and dictation ends up targeting the wrong pane. Only the button itself
+     is interactive; same trick as .pane-controls. */
+  pointer-events: none;
+}
+.dictation-fab-btn {
+  pointer-events: auto;
 }
 .dictation-fab-btn {
   width: 36px;
