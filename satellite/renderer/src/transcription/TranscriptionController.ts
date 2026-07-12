@@ -14,6 +14,7 @@ import type { Transcriber, TranscriberStatus } from "./providers/types";
 import {
   EMBEDDED_MODELS,
   embeddedModelRepo,
+  loadTranscriptionSettings,
   type TranscriptionSettings,
 } from "./transcriptionSettings";
 
@@ -144,6 +145,13 @@ export class TranscriptionController {
 
   async startDictation(): Promise<void> {
     if (this.engine.getState() !== "idle") return;
+    // Honor the CURRENT settings page state: engine/model/language edits
+    // apply to the next dictation, not the next app launch.
+    try {
+      this.updateSettings(await loadTranscriptionSettings());
+    } catch {
+      // Config unreadable — dictate with the settings we already have.
+    }
     const session = this.deps.resolveSession();
     if (!session) {
       this.deps.onError?.("No active terminal to dictate into.");

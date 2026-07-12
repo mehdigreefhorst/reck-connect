@@ -28,6 +28,7 @@ import {
   type EmbeddedModelId,
   type TranscriptionProvider,
 } from "../transcription/transcriptionSettings";
+import { DICTATION_LANGUAGES } from "../transcription/languages";
 import { confirmDialog } from "./new-pane-dialog";
 
 function escapeAttr(s: string): string {
@@ -126,6 +127,10 @@ export async function renderSettings(
   const sttModelOptions = EMBEDDED_MODELS.map(
     (m) =>
       `<option value="${m.id}" ${m.id === sttSettings.localModel ? "selected" : ""}>${escapeAttr(m.label)}</option>`,
+  ).join("");
+  const sttLanguageOptions = DICTATION_LANGUAGES.map(
+    (l) =>
+      `<option value="${l.code}" ${l.code === sttSettings.language ? "selected" : ""}>${escapeAttr(l.label)}</option>`,
   ).join("");
   root.innerHTML = `
     <div class="settings-shell">
@@ -226,6 +231,11 @@ export async function renderSettings(
           <label for="s-stt-deepgram-key">Deepgram API key</label>
           <input id="s-stt-deepgram-key" type="password" autocomplete="off" spellcheck="false" placeholder="dg-..." value="${escapeAttr(sttKey)}" />
         </div>
+        <label for="s-stt-language">Language</label>
+        <select id="s-stt-language" class="form-input">${sttLanguageOptions}</select>
+        <p style="margin-top:0.25rem;color:var(--text-secondary);font-size:0.8rem;">
+          "Detect" figures out the spoken language automatically. Also switchable by right-clicking the mic button on a pane.
+        </p>
         <div class="divider" style="margin-top:1.5rem;"></div>
         <h3>Reck Connect prompt</h3>
         <p style="margin-top:0.4rem;color:var(--text-secondary);font-size:0.85rem;">
@@ -393,6 +403,7 @@ export async function renderSettings(
         .value as TranscriptionProvider,
       localModel: (root.querySelector("#s-stt-model") as HTMLSelectElement)
         .value as EmbeddedModelId,
+      language: (root.querySelector("#s-stt-language") as HTMLSelectElement).value,
     });
     await saveDeepgramKey((root.querySelector("#s-stt-deepgram-key") as HTMLInputElement).value);
 
