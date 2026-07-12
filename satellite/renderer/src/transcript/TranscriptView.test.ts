@@ -17,12 +17,12 @@ describe("TranscriptView", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     onClose = vi.fn();
-    view = createTranscriptView({ host, title: "my-pane", onClose });
+    view = createTranscriptView({ host, onClose });
   });
 
-  it("mounts an overlay with header title and scrollable body", () => {
+  it("mounts an overlay with a scrollable body and no header bar", () => {
     expect(host.querySelector(".transcript-view")).toBe(view.root);
-    expect(view.root.querySelector(".transcript-title")?.textContent).toContain("my-pane");
+    expect(view.root.querySelector(".transcript-header")).toBeNull();
     expect(view.body.classList.contains("transcript-body")).toBe(true);
   });
 
@@ -110,11 +110,9 @@ describe("TranscriptView", () => {
     expect(view.body.scrollTop).toBe(100);
   });
 
-  it("closes via the close button and via Escape", () => {
-    (view.root.querySelector(".transcript-close") as HTMLElement).click();
-    expect(onClose).toHaveBeenCalledTimes(1);
+  it("closes via Escape", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("shows search match ticks via setMatches", () => {
@@ -172,7 +170,6 @@ describe("TranscriptView", () => {
   it("shows a start-of-session divider as the first body element with the short session id", () => {
     const v = createTranscriptView({
       host,
-      title: "p",
       onClose,
       sessionId: "abcd1234-5678-90ab-cdef-000000000000",
     });
@@ -187,7 +184,7 @@ describe("TranscriptView", () => {
   it("opens an internal path on ⌘+click and prevents navigation on plain click", () => {
     const onLinkActivate = vi.fn();
     const onExternalActivate = vi.fn();
-    const v = createTranscriptView({ host, title: "p", onClose, onLinkActivate, onExternalActivate });
+    const v = createTranscriptView({ host, onClose, onLinkActivate, onExternalActivate });
     v.render([{ role: "user", blocks: [{ kind: "text", text: "see services/gpu/ovh.py" }] }], 0);
     const link = v.body.querySelector("a.reck-internal-link") as HTMLAnchorElement;
     expect(link).not.toBeNull();
@@ -283,10 +280,15 @@ describe("TranscriptView", () => {
   it("exposes a cached markdown speak surface over the body, disposed with the view", () => {
     const surface = view.getSpeakSurface();
     expect(surface.kind).toBe("markdown");
-    // The control bar mounts into the overlay's shared top-right stack.
-    const stack = view.root.querySelector(".pane-controls");
+    // The control bar mounts into the PANE wrapper's top-right stack — the
+    // same one holding the history clock — so search/TTS/History stay ONE
+    // stack (History at the bottom via CSS order) even in History mode. A
+    // nested stack inside the overlay root would float separately, leaving
+    // the clock stranded on top.
+    const stack = host.querySelector(":scope > .pane-controls");
     expect(stack).not.toBeNull();
     expect(surface.getContainerEl()).toBe(stack);
+    expect(view.root.querySelector(".pane-controls")).toBeNull();
     // Same instance on repeat calls (one highlight overlay, not N).
     expect(view.getSpeakSurface()).toBe(surface);
     const disposeSpy = vi.spyOn(surface, "dispose");
@@ -297,7 +299,7 @@ describe("TranscriptView", () => {
   it("routes external links to onExternalActivate on ⌘+click", () => {
     const onLinkActivate = vi.fn();
     const onExternalActivate = vi.fn();
-    const v = createTranscriptView({ host, title: "p", onClose, onLinkActivate, onExternalActivate });
+    const v = createTranscriptView({ host, onClose, onLinkActivate, onExternalActivate });
     v.render([{ role: "assistant", blocks: [{ kind: "text", text: "[docs](https://example.com/x)" }] }], 0);
     // External markdown links render as a bare <a> (no reck-internal-link class).
     const link = v.body.querySelector('a[href="https://example.com/x"]') as HTMLAnchorElement;

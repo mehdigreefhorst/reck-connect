@@ -119,9 +119,32 @@ export interface PaneLayoutCallbacks {
     host: HostRef,
     blob: Blob,
     mime: string,
+    filename?: string,
   ) => Promise<PasteUploadResult>;
   /** Optional paste-upload error hook; relayed to the TerminalPane. */
   onPasteUploadError?: (paneId: string, err: unknown, mime: string) => void;
+  /**
+   * Current drop prompt template (thunk so freshly-created panes pick up
+   * a Preferences edit without a reload). Relayed to TerminalPane as
+   * `dropPromptTemplate`; when undefined a drop types the raw path.
+   */
+  dropPromptTemplate?: () => string | undefined;
+  /**
+   * Gate a dropped file against the user's allow-list + size cap. Relayed
+   * to TerminalPane as `validateDroppedFile`.
+   */
+  validateDroppedFile?: (file: {
+    name: string;
+    size: number;
+    type: string;
+  }) => { ok: true } | { ok: false; reason: "type" | "size" };
+  /** Surface a rejected drop (e.g. a toast). Relayed as `onDropRejected`. */
+  onDropRejected?: (info: {
+    name: string;
+    reason: "type" | "size";
+    ext: string;
+    sizeBytes: number;
+  }) => void;
   /**
    * Detach `paneId` to its own popout window . Called by the
    * per-pane "Detach" button and the ⌘⇧O shortcut. The callback is
@@ -506,7 +529,7 @@ export class PaneLayout {
       handle.classList.remove("dragging");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      requestAnimationFrame(() => this.refitAllActiveTerminals());
+      requestAnimationFrame(() => this.refitAllActiveTerminals(false));
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -664,11 +687,15 @@ export class PaneLayout {
         // TerminalPane installs no paste handler and pasted images
         // drop as before.
         onPasteUpload: this.cb.onPasteUpload
-          ? (blob, mime) => this.cb.onPasteUpload!(t.paneId, t.host, blob, mime)
+          ? (blob, mime, filename) =>
+              this.cb.onPasteUpload!(t.paneId, t.host, blob, mime, filename)
           : undefined,
         onPasteUploadError: this.cb.onPasteUploadError
           ? (err, mime) => this.cb.onPasteUploadError!(t.paneId, err, mime)
           : undefined,
+        dropPromptTemplate: this.cb.dropPromptTemplate?.(),
+        validateDroppedFile: this.cb.validateDroppedFile,
+        onDropRejected: this.cb.onDropRejected,
         theme: this.currentTheme,
       });
       wrapper.appendChild(term.container);
@@ -1184,8 +1211,9 @@ export class PaneLayout {
     input.addEventListener("blur", onBlur);
   }
 
-  private refitAllActiveTerminals() {
-    if (!this.tree) return;
+  private refitAllActiveTerminals(pinToBottom: boolean): boolean {
+    if (!this.tree) return true;
+    let allLaidOut = true;
     for (const leaf of allLeaves(this.tree)) {
       const view = this.views.get(leaf.id);
       const record = view?.terminals.get(leaf.activeTabId);
@@ -1196,18 +1224,30 @@ export class PaneLayout {
       // so a user who scrolled up to read history isn't yanked
       // back to the tail on Alt-Tab.
       const wasAtBottom = record.term.isAtBottom();
-      record.term.refit();
-      if (wasAtBottom) record.term.scrollToBottom();
+      if (!record.term.refit()) allLaidOut = false;
+      if (pinToBottom) {
+        // Project-switch path: a real scroll gesture that lands at the
+        // tail, repainting a freshly remounted (possibly blank) viewport.
+        record.term.nudgeScrollToBottom();
+      } else if (wasAtBottom) {
+        record.term.scrollToBottom();
+      }
     }
+    return allLaidOut;
   }
 
   /**
    * Re-fit every visible pane and re-send its geometry to the PTY. Used
    * by the boot wiring on window focus: a phone client may have resized
    * the shared PTY while the desktop was in the background, so on refocus
-   * the desktop reasserts its own dimensions.
+   * the desktop reasserts its own dimensions. Returns false when any
+   * pane skipped its fit because the container wasn't laid out yet —
+   * the project-switch path uses that to schedule a one-shot retry (and
+   * passes pinToBottom so remounted panes end scrolled to the tail).
    */
-  refitActive() { this.refitAllActiveTerminals(); }
+  refitActive(opts?: { pinToBottom?: boolean }): boolean {
+    return this.refitAllActiveTerminals(opts?.pinToBottom === true);
+  }
 
   private updateActiveClasses() {
     for (const [leafId, view] of this.views) {
