@@ -6,8 +6,14 @@
 // Uses @deepgram/sdk v5's `listen.v1.connect()` websocket. Transcript
 // results arrive as `{ type: "Results", is_final, channel.alternatives[0]
 // .transcript }`.
+//
+// The SDK (and its `ws` dependency) is imported LAZILY inside open() — a
+// type-only static import for the types, a dynamic import() for the value —
+// so a missing/broken SDK never crashes app startup; it just makes the
+// cloud engine fail gracefully (the router turns the throw into an error
+// the renderer surfaces). The on-device engine is unaffected.
 
-import { DeepgramClient } from "@deepgram/sdk";
+import type { DeepgramClient } from "@deepgram/sdk";
 
 export interface DeepgramSessionHandlers {
   onPartial: (text: string) => void;
@@ -26,6 +32,7 @@ export class DeepgramSession {
     sampleRate: number,
     handlers: DeepgramSessionHandlers,
   ): Promise<void> {
+    const { DeepgramClient } = await import("@deepgram/sdk");
     const client = new DeepgramClient({ apiKey });
     const socket = await client.listen.v1.connect({
       model: "nova-2",
