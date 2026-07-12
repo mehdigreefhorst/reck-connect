@@ -3886,6 +3886,20 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
 /* Voice-dictation mic button (#67). Idle looks like any icon-btn; while
    recording it goes solid Reck-red with a soft pulse, and amber while the
    transcript is being produced. */
+/* Idle hover: hold the resting ink and bloom the same soft orange ring the
+   History clock / projects sidebar use — NOT the default cream shift, which
+   washed the glyph out to near-invisible on the cream surface. */
+.pane-controls-mic[data-state="idle"]:hover,
+.pane-controls-mic:not([data-state]):hover {
+  background: transparent;
+  color: var(--claude-mid);
+  border-color: var(--claude-orange);
+  box-shadow: 0 0 0 1px rgba(212, 104, 58, 0.55), 0 0 14px 3px rgba(232, 135, 92, 0.5);
+}
+.pane-controls-mic {
+  transition: background 0.15s var(--ease-smooth), color 0.15s var(--ease-smooth),
+    border-color 0.15s var(--ease-smooth), box-shadow 0.2s var(--ease-smooth);
+}
 .pane-controls-mic[data-state="listening"] {
   color: #fff;
   background: #d4483a;
