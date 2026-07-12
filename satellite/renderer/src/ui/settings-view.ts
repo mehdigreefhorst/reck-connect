@@ -19,6 +19,15 @@ import {
   setExtensionlessAllowlist,
 } from "../viewer/LinkDetector";
 import { loadTtsSettings, saveTtsSettings } from "../tts/ttsSettings";
+import {
+  EMBEDDED_MODELS,
+  loadDeepgramKey,
+  loadTranscriptionSettings,
+  saveDeepgramKey,
+  saveTranscriptionSettings,
+  type EmbeddedModelId,
+  type TranscriptionProvider,
+} from "../transcription/transcriptionSettings";
 import { confirmDialog } from "./new-pane-dialog";
 
 function escapeAttr(s: string): string {
@@ -112,6 +121,12 @@ export async function renderSettings(
   const savedReckPrompt =
     (await loadReckConnectPrompt()) ?? DEFAULT_RECK_CONNECT_PROMPT;
   const ttsSettings = await loadTtsSettings();
+  const sttSettings = await loadTranscriptionSettings();
+  const sttKey = await loadDeepgramKey();
+  const sttModelOptions = EMBEDDED_MODELS.map(
+    (m) =>
+      `<option value="${m.id}" ${m.id === sttSettings.localModel ? "selected" : ""}>${escapeAttr(m.label)}</option>`,
+  ).join("");
   root.innerHTML = `
     <div class="settings-shell">
       <div class="settings-card">
@@ -186,6 +201,27 @@ export async function renderSettings(
           <label for="s-tts-color-dark">Dark mode</label>
           <input id="s-tts-color-dark" type="color" value="${escapeAttr(ttsSettings.highlightColorDark)}" />
         </div>
+        <div class="divider" style="margin-top:1.5rem;"></div>
+        <h3>Voice dictation</h3>
+        <p style="margin-top:0.4rem;color:var(--text-secondary);font-size:0.85rem;">
+          Speak into a Claude pane and have it typed in for you. Click the mic button on a Claude pane (or press ⌘⇧V), talk, then press Enter to send. Claude Code's own <code>/voice</code> can't run on the station — this captures the mic on your Mac instead.
+        </p>
+        <label style="display:flex;align-items:center;gap:0.5rem;margin-top:1rem;font-family:var(--font-body);text-transform:none;letter-spacing:0;font-size:0.95rem;color:var(--app-text);font-weight:500;">
+          <input id="s-stt-enabled" type="checkbox" ${sttSettings.enabled ? "checked" : ""} style="width:auto;" />
+          Enable voice dictation
+        </label>
+        <label for="s-stt-provider">Engine</label>
+        <select id="s-stt-provider" class="form-input">
+          <option value="local" ${sttSettings.provider === "local" ? "selected" : ""}>On-device Whisper — private, no key needed</option>
+          <option value="deepgram" ${sttSettings.provider === "deepgram" ? "selected" : ""}>Deepgram cloud — fastest, needs an API key</option>
+        </select>
+        <label for="s-stt-model">On-device model</label>
+        <select id="s-stt-model" class="form-input">${sttModelOptions}</select>
+        <p style="margin-top:0.25rem;color:var(--text-secondary);font-size:0.8rem;">
+          Downloaded once on first use. Larger models are more accurate but slower and heavier to fetch.
+        </p>
+        <label for="s-stt-deepgram-key">Deepgram API key</label>
+        <input id="s-stt-deepgram-key" type="password" autocomplete="off" spellcheck="false" placeholder="only needed for the Deepgram engine" value="${escapeAttr(sttKey)}" />
         <div class="divider" style="margin-top:1.5rem;"></div>
         <h3>Reck Connect prompt</h3>
         <p style="margin-top:0.4rem;color:var(--text-secondary);font-size:0.85rem;">
@@ -329,6 +365,20 @@ export async function renderSettings(
       highlightColorLight: ttsLight,
       highlightColorDark: ttsDark,
     });
+
+    // Voice dictation. Reload live settings first so the hotkey/autoSubmit
+    // fields (not surfaced on this page yet) aren't clobbered by the stale
+    // render-time snapshot — same pattern as TTS above.
+    const liveStt = await loadTranscriptionSettings();
+    await saveTranscriptionSettings({
+      ...liveStt,
+      enabled: (root.querySelector("#s-stt-enabled") as HTMLInputElement).checked,
+      provider: (root.querySelector("#s-stt-provider") as HTMLSelectElement)
+        .value as TranscriptionProvider,
+      localModel: (root.querySelector("#s-stt-model") as HTMLSelectElement)
+        .value as EmbeddedModelId,
+    });
+    await saveDeepgramKey((root.querySelector("#s-stt-deepgram-key") as HTMLInputElement).value);
 
     // Bounce the local daemon so a port change (or a fresh-install
     // first-save) picks up immediately rather than waiting for the

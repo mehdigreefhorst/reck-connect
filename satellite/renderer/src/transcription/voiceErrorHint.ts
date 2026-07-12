@@ -8,12 +8,11 @@
 import { showToast, type ToastHandle } from "../viewer/Toast";
 import { createVoiceErrorDetector } from "./voiceErrorDetector";
 
-// Phase 0 wording: honest about the cause and the direction, without
-// naming a trigger that doesn't exist yet. Phase 1 updates this to point at
-// the mic button / ⌘⇧V hotkey once those ship.
+// Claude Code's /voice records on the station (no mic there); point the
+// user at reck's own dictation, which captures the mic on this Mac.
 const HINT_MESSAGE =
-  "Voice input can't run on the station — Claude Code records where it runs, " +
-  "and the station has no microphone. Dictate from your Mac with reck instead.";
+  "Voice input can't run on the station. Use reck dictation instead — " +
+  "click the mic on this pane or press ⌘⇧V.";
 
 // Longer than the default 2s toast: it's an explanatory hint, not a quick ack.
 const HINT_DURATION_MS = 9000;
