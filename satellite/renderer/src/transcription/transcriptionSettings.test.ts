@@ -14,9 +14,9 @@ describe("transcriptionSettings.coerce", () => {
     expect(coerce([])).toEqual(DEFAULT_TRANSCRIPTION_SETTINGS);
   });
 
-  it("defaults to local provider, turbo model, enabled", () => {
+  it("defaults to local provider, base model, enabled", () => {
     expect(DEFAULT_TRANSCRIPTION_SETTINGS.provider).toBe("local");
-    expect(DEFAULT_TRANSCRIPTION_SETTINGS.localModel).toBe("whisper-large-v3-turbo");
+    expect(DEFAULT_TRANSCRIPTION_SETTINGS.localModel).toBe("whisper-base");
     expect(DEFAULT_TRANSCRIPTION_SETTINGS.enabled).toBe(true);
   });
 

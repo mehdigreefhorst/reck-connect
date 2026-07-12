@@ -61,10 +61,14 @@ async function ensureReady(
   post({ type: "status", status: "loading", generation });
 
   // Only attempt WebGPU when the adapter reports the limits its kernels need;
-  // always keep WASM as the fallback.
+  // always keep WASM. Try more than one dtype per device so a broken quant
+  // build (e.g. turbo's q8 WASM weights miss a scale tensor) falls back to an
+  // unquantized one instead of erroring.
   const configs: Array<{ device: "webgpu" | "wasm"; dtype: string }> = [];
-  if (await webgpuUsable()) configs.push({ device: "webgpu", dtype: "fp16" });
-  configs.push({ device: "wasm", dtype: "q8" });
+  if (await webgpuUsable()) {
+    configs.push({ device: "webgpu", dtype: "fp16" }, { device: "webgpu", dtype: "q4" });
+  }
+  configs.push({ device: "wasm", dtype: "q8" }, { device: "wasm", dtype: "fp32" });
 
   // Aggregate per-file download progress into an overall 0-100.
   const files = new Map<string, { loaded: number; total: number }>();
@@ -106,6 +110,9 @@ async function ensureReady(
       loadedRepo = repo;
       return p;
     } catch (err) {
+      // Log the full error (with stack) so it's visible in DevTools even
+      // though only the message crosses back to the toast.
+      console.error(`[whisper-worker] ${repo} on ${cfg.device}/${cfg.dtype} failed:`, err);
       lastErr = err;
       asr = null;
       loadedRepo = null;

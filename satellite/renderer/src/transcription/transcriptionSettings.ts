@@ -12,18 +12,20 @@ export type TranscriptionProvider = "local" | "deepgram";
 
 /**
  * Curated embedded (transformers.js) Whisper models the user can pick in
- * settings. Each maps to its Hugging Face ONNX repo. Ordered best-quality
- * first; `whisper-large-v3-turbo` is the default.
+ * settings. Each maps to its Hugging Face ONNX repo. `whisper-base` is the
+ * default because it loads reliably on CPU/WASM; `whisper-large-v3-turbo`
+ * is best-quality but realistically needs a working WebGPU GPU (its quantized
+ * WASM build is unreliable).
  */
 export const EMBEDDED_MODELS = [
+  { id: "whisper-base", repo: "Xenova/whisper-base", label: "Base — recommended (runs on CPU)" },
+  { id: "whisper-small", repo: "Xenova/whisper-small", label: "Small — more accurate, slower" },
+  { id: "whisper-tiny", repo: "Xenova/whisper-tiny", label: "Tiny — fastest, least accurate" },
   {
     id: "whisper-large-v3-turbo",
     repo: "onnx-community/whisper-large-v3-turbo",
-    label: "Large v3 Turbo — best quality (larger first download)",
+    label: "Large v3 Turbo — best, needs a fast GPU",
   },
-  { id: "whisper-small", repo: "Xenova/whisper-small", label: "Small" },
-  { id: "whisper-base", repo: "Xenova/whisper-base", label: "Base" },
-  { id: "whisper-tiny", repo: "Xenova/whisper-tiny", label: "Tiny — fastest, smallest" },
 ] as const;
 
 export type EmbeddedModelId = (typeof EMBEDDED_MODELS)[number]["id"];
@@ -53,7 +55,7 @@ export interface TranscriptionSettings {
 export const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettings = {
   enabled: true,
   provider: "local",
-  localModel: "whisper-large-v3-turbo",
+  localModel: "whisper-base",
   hotkeyToggle: "Mod+Shift+V",
   hotkeyPushToTalk: "Alt+Space",
   autoSubmit: false,
