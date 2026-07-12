@@ -57,7 +57,7 @@ export class DictationBar implements DictationUI {
   }
 
   private labelText(): string {
-    if (this.status === "loading") return "Loading speech model…";
+    if (this.state === "preparing" || this.status === "loading") return "Loading speech model…";
     if (this.state === "listening") return "Listening…";
     if (this.state === "transcribing" || this.status === "transcribing") return "Transcribing…";
     return "";

@@ -3905,7 +3905,8 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   background: #d4483a;
   animation: dictation-mic-pulse 1.2s var(--ease-smooth) infinite;
 }
-.pane-controls-mic[data-state="transcribing"] {
+.pane-controls-mic[data-state="transcribing"],
+.pane-controls-mic[data-state="preparing"] {
   color: #fff;
   background: #c9982e;
 }

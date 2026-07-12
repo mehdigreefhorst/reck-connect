@@ -92,6 +92,7 @@ export class TranscriptionController {
     const state = this.engine.getState();
     if (state === "idle") await this.startDictation();
     else if (state === "listening") await this.engine.stop();
+    else if (state === "preparing") await this.cancel(); // abort a slow model load
     // "transcribing" → busy; ignore.
   }
 

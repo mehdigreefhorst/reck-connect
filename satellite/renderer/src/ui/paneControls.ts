@@ -103,7 +103,7 @@ export function ensureMicButton(
 /** Reflect the dictation state on `anchor`'s mic button (no-op if absent). */
 export function setMicButtonState(
   anchor: HTMLElement,
-  state: "idle" | "listening" | "transcribing",
+  state: "idle" | "preparing" | "listening" | "transcribing",
 ): void {
   const btn = anchor.querySelector<HTMLButtonElement>(
     ":scope > .pane-controls > .pane-controls-mic",

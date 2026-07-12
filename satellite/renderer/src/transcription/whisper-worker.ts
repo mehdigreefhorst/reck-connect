@@ -3,11 +3,18 @@
 // when the local engine is first used) and fetches the model from the HF
 // hub on first use. Prefers WebGPU, falls back to WASM.
 //
+// The model is loaded AND warmed up (a tiny silent inference) before the
+// caller starts recording — the warm-up validates the compute device end to
+// end, so a WebGPU incompatibility (e.g. an adapter that doesn't expose the
+// subgroup limits transformers.js expects) is caught here and we fall back
+// to WASM, instead of blowing up mid-transcription after the user has spoken.
+//
 // Protocol:
-//   main → worker: { type: "transcribe", audio: Float32Array(16k), repo: string }
-//   worker → main: { type: "status", status: "loading" | "transcribing" }
-//                  { type: "result", text: string }
-//                  { type: "error", message: string }
+//   main → worker: { type: "prepare"|"transcribe", repo, generation, audio? }
+//   worker → main: { type: "status", status: "loading"|"transcribing" }
+//                  { type: "ready" }        (prepare succeeded, model warm)
+//                  { type: "result", text } (transcribe succeeded)
+//                  { type: "error", message }
 
 import {
   pipeline,
@@ -18,50 +25,63 @@ import {
 // Always fetch from the Hugging Face hub (no local model files bundled).
 env.allowLocalModels = false;
 
-type TranscribeMessage = {
-  type: "transcribe";
-  audio: Float32Array;
-  repo: string;
-  /** Echoed back on every reply so the caller can drop cancelled results. */
-  generation: number;
-};
+type InMessage =
+  | { type: "prepare"; repo: string; generation: number }
+  | { type: "transcribe"; repo: string; generation: number; audio: Float32Array };
+
+// Ordered by preference: fast native GPU first, portable WASM second. Each
+// is validated by a warm-up inference before being accepted.
+const DEVICE_CONFIGS: ReadonlyArray<{ device: "webgpu" | "wasm"; dtype: string }> = [
+  { device: "webgpu", dtype: "fp16" },
+  { device: "wasm", dtype: "q8" },
+];
 
 let asr: AutomaticSpeechRecognitionPipeline | null = null;
 let loadedRepo: string | null = null;
 
-async function loadPipeline(
+/** Load + warm up the model, falling back across devices. Cached per repo. */
+async function ensureReady(
   repo: string,
   generation: number,
 ): Promise<AutomaticSpeechRecognitionPipeline> {
   if (asr && loadedRepo === repo) return asr;
   post({ type: "status", status: "loading", generation });
-  // Try WebGPU first (fast on Apple Silicon); fall back to WASM if the
-  // adapter or a fused kernel is unavailable in this Chromium build.
-  try {
-    asr = (await pipeline("automatic-speech-recognition", repo, {
-      device: "webgpu",
-      dtype: "fp16",
-    })) as AutomaticSpeechRecognitionPipeline;
-  } catch {
-    asr = (await pipeline("automatic-speech-recognition", repo, {
-      device: "wasm",
-      dtype: "q8",
-    })) as AutomaticSpeechRecognitionPipeline;
+  let lastErr: unknown;
+  for (const cfg of DEVICE_CONFIGS) {
+    try {
+      const p = (await pipeline("automatic-speech-recognition", repo, {
+        device: cfg.device,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        dtype: cfg.dtype as any,
+      })) as AutomaticSpeechRecognitionPipeline;
+      // Warm-up: one inference over 1s of silence. This is where a broken
+      // WebGPU backend actually throws, so it belongs inside the try.
+      await p(new Float32Array(16000), { chunk_length_s: 30 });
+      asr = p;
+      loadedRepo = repo;
+      return p;
+    } catch (err) {
+      lastErr = err;
+      asr = null;
+      loadedRepo = null;
+    }
   }
-  loadedRepo = repo;
-  return asr;
+  throw lastErr instanceof Error ? lastErr : new Error("Failed to load speech model");
 }
 
-self.onmessage = async (e: MessageEvent<TranscribeMessage>) => {
+self.onmessage = async (e: MessageEvent<InMessage>) => {
   const msg = e.data;
-  if (msg?.type !== "transcribe") return;
+  if (!msg || (msg.type !== "prepare" && msg.type !== "transcribe")) return;
   const gen = msg.generation;
   try {
-    const model = await loadPipeline(msg.repo, gen);
+    const model = await ensureReady(msg.repo, gen);
+    if (msg.type === "prepare") {
+      post({ type: "ready", generation: gen });
+      return;
+    }
     post({ type: "status", status: "transcribing", generation: gen });
     const output = await model(msg.audio, { chunk_length_s: 30, stride_length_s: 5 });
-    const text = extractText(output);
-    post({ type: "result", text: text.trim(), generation: gen });
+    post({ type: "result", text: extractText(output).trim(), generation: gen });
   } catch (err) {
     post({
       type: "error",
@@ -72,9 +92,7 @@ self.onmessage = async (e: MessageEvent<TranscribeMessage>) => {
 };
 
 function extractText(output: unknown): string {
-  if (Array.isArray(output)) {
-    return output.map((o) => extractText(o)).join(" ");
-  }
+  if (Array.isArray(output)) return output.map((o) => extractText(o)).join(" ");
   if (output && typeof output === "object" && "text" in output) {
     const t = (output as { text: unknown }).text;
     return typeof t === "string" ? t : "";
@@ -84,6 +102,7 @@ function extractText(output: unknown): string {
 
 type WorkerOut =
   | { type: "status"; status: "loading" | "transcribing"; generation: number }
+  | { type: "ready"; generation: number }
   | { type: "result"; text: string; generation: number }
   | { type: "error"; message: string; generation: number };
 

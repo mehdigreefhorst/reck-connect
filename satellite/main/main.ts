@@ -33,6 +33,13 @@ import { composeFileViewerRoots } from "./file-roots";
 // here aligns both modes onto the packaged name (a no-op when packaged).
 app.setName("reck-connect-satellite");
 
+// Enable WebGPU for on-device Whisper dictation (issue #67). transformers.js
+// prefers WebGPU (much faster than WASM on Apple Silicon); `allow_unsafe_apis`
+// exposes the experimental subgroup limits its kernels read. Best-effort — if
+// WebGPU still isn't usable, the worker's warm-up falls back to WASM.
+app.commandLine.appendSwitch("enable-unsafe-webgpu");
+app.commandLine.appendSwitch("enable-dawn-features", "allow_unsafe_apis");
+
 let mainWindow: BrowserWindow | null = null;
 
 // Detached pane popouts . Per-pane parent-less BrowserWindows

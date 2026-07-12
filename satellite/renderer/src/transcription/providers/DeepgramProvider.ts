@@ -17,6 +17,11 @@ export class DeepgramProvider implements Transcriber {
   private handlers: TranscriptionHandlers | null = null;
   private onClosed: (() => void) | null = null;
 
+  async prepare(): Promise<void> {
+    // Streaming provider: the socket opens per-utterance in begin() (it needs
+    // the capture sample rate), so there's nothing to warm up ahead of time.
+  }
+
   async begin(handlers: TranscriptionHandlers, sampleRate: number): Promise<void> {
     this.handlers = handlers;
     // Subscribe before starting so no early transcript is missed.

@@ -10,7 +10,7 @@ import type {
   TranscriberStatus,
 } from "./providers/types";
 
-export type DictationState = "idle" | "listening" | "transcribing";
+export type DictationState = "idle" | "preparing" | "listening" | "transcribing";
 
 export interface EngineHandlers {
   onPartial?: (text: string) => void;
@@ -68,7 +68,21 @@ export class TranscriptionEngine {
 
   async start(): Promise<void> {
     if (this.state !== "idle") return;
-    this.setState("listening");
+    // Get the provider ready (load + warm up the local model) BEFORE opening
+    // the mic, so recording only begins once transcription can actually run.
+    this.setState("preparing");
+    try {
+      await this.provider.prepare(this.providerHandlers());
+    } catch (err) {
+      this.handlers.onError?.(errMsg(err));
+      this.setState("idle");
+      return;
+    }
+    // A cancel() during preparation already reset us to idle — don't proceed
+    // to open the mic. (Read via the getter so TS doesn't keep the stale
+    // narrowing from the "idle" guard above.)
+    if (this.getState() !== "preparing") return;
+
     this.pending = [];
     this.ready = false;
     this.capture = new AudioCapture({
@@ -84,6 +98,7 @@ export class TranscriptionEngine {
       this.ready = true;
       for (const { chunk, rate } of this.pending) this.provider.feed(chunk, rate);
       this.pending = [];
+      this.setState("listening");
     } catch (err) {
       this.handlers.onError?.(errMsg(err));
       await this.cancel();

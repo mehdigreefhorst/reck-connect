@@ -22,6 +22,13 @@ export interface TranscriptionHandlers {
 export type TranscriberStatus = "loading" | "transcribing";
 
 export interface Transcriber {
+  /**
+   * Get ready BEFORE the mic starts — e.g. load + warm up the local model —
+   * so recording only begins once transcription can actually happen. Emits
+   * onStatus("loading"). No-op for streaming providers. Rejects if the
+   * engine can't be made ready (surfaced before any audio is captured).
+   */
+  prepare(handlers: TranscriptionHandlers): Promise<void>;
   /** Prepare for one utterance. `sampleRate` is the capture rate. */
   begin(handlers: TranscriptionHandlers, sampleRate: number): Promise<void>;
   /** A live Float32 chunk at `sampleRate` (streaming providers forward it). */
