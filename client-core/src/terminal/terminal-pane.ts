@@ -126,6 +126,14 @@ export interface TerminalPaneProps {
    * surface a toast / log entry. Called once per failed blob.
    */
   onPasteUploadError?: (err: unknown, mime: string) => void;
+  /**
+   * Optional observer of the decoded PTY output stream. Fired with the
+   * raw bytes of every `output` frame, right before they're written to
+   * xterm. Lets a host watch the stream for a trigger phrase (e.g. the
+   * satellite's voice-dictation hint) without re-plumbing the WS. Left
+   * unset by default → zero overhead; the pane still writes normally.
+   */
+  onDecodedOutput?: (bytes: Uint8Array) => void;
 }
 
 function themeFor(t: PaneTheme): ITheme {
@@ -523,7 +531,11 @@ export class TerminalPane {
           nudgedRedraw: !!(m.replay && !widthsMatch),
         });
       },
-      onOutput: (m) => this.term.write(decodeBytes(m.data)),
+      onOutput: (m) => {
+        const bytes = decodeBytes(m.data);
+        this.term.write(bytes);
+        this.props.onDecodedOutput?.(bytes);
+      },
       onStatus: (m) => this.props.onStoplight?.(m.stoplight),
       onExit: (m) => {
         this.term.write(`\r\n\x1b[90m[process exited: ${m.code}]\x1b[0m\r\n`);

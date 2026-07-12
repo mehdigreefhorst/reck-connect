@@ -7,6 +7,7 @@ import type { Stoplight } from "@proto/proto";
 import type { HostRef } from "../host";
 import { iconClose, iconSplitDown, iconSplitRight, iconDetach, iconHistory } from "./icons";
 import { ensureHistoryButton } from "./paneControls";
+import { installVoiceErrorHint } from "../transcription/voiceErrorHint";
 import { computeReorder } from "./reorder";
 import { HoverFocusController } from "./hover-focus-controller";
 
@@ -669,6 +670,14 @@ export class PaneLayout {
         onPasteUploadError: this.cb.onPasteUploadError
           ? (err, mime) => this.cb.onPasteUploadError!(t.paneId, err, mime)
           : undefined,
+        // Voice-dictation hint (Phase 0): only Claude panes run `/voice`,
+        // so watch just those for its station-capture failure and, once,
+        // toast the user. `installVoiceErrorHint` mounts into the pane
+        // wrapper; the sink no-ops after it has fired.
+        onDecodedOutput:
+          t.kind === "claude"
+            ? installVoiceErrorHint(wrapper).onOutput
+            : undefined,
         theme: this.currentTheme,
       });
       wrapper.appendChild(term.container);
