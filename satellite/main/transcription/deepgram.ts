@@ -26,6 +26,7 @@ type DeepgramSocket = Awaited<ReturnType<DeepgramClient["listen"]["v1"]["connect
 
 export class DeepgramSession {
   private socket: DeepgramSocket | null = null;
+  private closed = false;
 
   async open(
     apiKey: string,
@@ -53,28 +54,45 @@ export class DeepgramSession {
       else handlers.onPartial(text);
     });
     socket.on("error", (err: Error) => handlers.onError(err?.message ?? String(err)));
-    socket.on("close", () => handlers.onClosed());
+    socket.on("close", () => {
+      this.closed = true;
+      handlers.onClosed();
+    });
 
     this.socket = socket;
   }
 
   /** Feed a linear16 audio frame (little-endian Int16 bytes). */
   sendAudio(bytes: Uint8Array): void {
-    // Copy into a standalone ArrayBuffer so we never hand the socket a view
-    // over a larger/pooled buffer.
-    const copy = bytes.slice();
-    this.socket?.sendMedia(copy.buffer);
+    if (!this.socket || this.closed) return;
+    try {
+      // Copy into a standalone ArrayBuffer so we never hand the socket a view
+      // over a larger/pooled buffer.
+      const copy = bytes.slice();
+      this.socket.sendMedia(copy.buffer);
+    } catch {
+      // The socket can close between frames (server-side timeout, network
+      // drop). sendMedia throws "Socket is not open" — swallow it rather than
+      // letting it crash the main process; the frame is simply dropped.
+      this.closed = true;
+    }
   }
 
   /** Signal end-of-stream and close. Deepgram flushes any final results. */
   close(): void {
-    if (!this.socket) return;
+    this.closed = true;
+    const socket = this.socket;
+    this.socket = null;
+    if (!socket) return;
     try {
-      this.socket.sendCloseStream({ type: "CloseStream" });
+      socket.sendCloseStream({ type: "CloseStream" });
     } catch {
       // Socket may already be closing.
     }
-    this.socket.close();
-    this.socket = null;
+    try {
+      socket.close();
+    } catch {
+      // Already closed.
+    }
   }
 }

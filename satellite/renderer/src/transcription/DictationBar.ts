@@ -16,11 +16,19 @@ import type { TranscriberStatus } from "./providers/types";
 const RING_R = 10;
 const RING_CIRC = 2 * Math.PI * RING_R;
 
+// Live volume meter: a scrolling row of bars. Speech RMS is small, so scale
+// it up for a lively display.
+const METER_BARS = 16;
+const LEVEL_GAIN = 8;
+
 export class DictationBar implements DictationUI {
   private readonly el: HTMLElement;
   private readonly loaderEl: HTMLElement;
   private readonly ringProgress: SVGCircleElement;
   private readonly label: HTMLElement;
+  private readonly meterEl: HTMLElement;
+  private readonly bars: HTMLElement[] = [];
+  private readonly levels: number[] = new Array(METER_BARS).fill(0);
   private state: DictationState = "idle";
   private status: TranscriberStatus | null = null;
   private pct = 0;
@@ -63,7 +71,19 @@ export class DictationBar implements DictationUI {
     this.loaderEl = document.createElement("div");
     this.loaderEl.className = "dictation-loader";
     this.loaderEl.append(svg, this.label);
-    this.el.append(this.loaderEl);
+
+    // Live volume meter (shown while listening): a scrolling row of bars.
+    this.meterEl = document.createElement("div");
+    this.meterEl.className = "dictation-meter";
+    this.meterEl.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < METER_BARS; i++) {
+      const bar = document.createElement("span");
+      bar.className = "dictation-meter-bar";
+      this.bars.push(bar);
+      this.meterEl.append(bar);
+    }
+
+    this.el.append(this.loaderEl, this.meterEl);
     this.surface.appendChild(this.el);
     this.render();
   }
@@ -88,6 +108,16 @@ export class DictationBar implements DictationUI {
     this.render();
   }
 
+  setLevel(level: number): void {
+    this.levels.shift();
+    this.levels.push(Math.max(0, Math.min(1, level * LEVEL_GAIN)));
+    if (this.state === "listening") {
+      for (let i = 0; i < this.bars.length; i++) {
+        this.bars[i].style.transform = `scaleY(${0.08 + this.levels[i] * 0.92})`;
+      }
+    }
+  }
+
   setError(message: string): void {
     showToast(this.surface, message, { kind: "error", durationMs: 6000 });
   }
@@ -98,8 +128,11 @@ export class DictationBar implements DictationUI {
 
   private render(): void {
     const loading = this.isLoading();
-    // The floating box only appears while the model loads.
-    this.el.hidden = !loading;
+    const listening = this.state === "listening";
+    // The box appears while the model loads (ring) or while listening (meter).
+    this.el.hidden = !(loading || listening);
+    this.loaderEl.hidden = !loading;
+    this.meterEl.hidden = !listening;
     if (!loading) return;
     const complete = this.ready || this.pct >= 100;
     this.loaderEl.dataset.mode = !this.sawProgress && !complete

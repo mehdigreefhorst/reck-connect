@@ -16,6 +16,8 @@ export class DeepgramProvider implements Transcriber {
   private unsub: (() => void) | null = null;
   private handlers: TranscriptionHandlers | null = null;
   private onClosed: (() => void) | null = null;
+  // Set once the socket errors or closes — stop feeding a dead session.
+  private dead = false;
   // Deepgram streams finalized SEGMENTS plus a rolling interim; the consumer
   // wants the full running transcript, so accumulate finals and append the
   // current interim.
@@ -35,6 +37,7 @@ export class DeepgramProvider implements Transcriber {
   async begin(handlers: TranscriptionHandlers, sampleRate: number): Promise<void> {
     this.handlers = handlers;
     this.finalized = "";
+    this.dead = false;
     // Subscribe before starting so no early transcript is missed. Every event
     // yields the full text-so-far so the controller can type it live.
     this.unsub = window.reckAPI.transcription.onEvent((ev) => {
@@ -45,8 +48,10 @@ export class DeepgramProvider implements Transcriber {
         this.finalized = this.join(this.finalized, ev.text);
         this.handlers?.onPartial?.(this.finalized);
       } else if (ev.kind === "error") {
+        this.dead = true;
         this.handlers?.onError?.(ev.text);
       } else if (ev.kind === "closed") {
+        this.dead = true;
         this.handlers?.onFinal?.(this.finalized);
         this.onClosed?.();
       }
@@ -61,7 +66,7 @@ export class DeepgramProvider implements Transcriber {
   }
 
   feed(chunk: Float32Array): void {
-    if (this.sessionId === null || chunk.length === 0) return;
+    if (this.dead || this.sessionId === null || chunk.length === 0) return;
     const pcm = floatToInt16(chunk);
     window.reckAPI.transcription.deepgramFrame(this.sessionId, new Uint8Array(pcm.buffer));
   }

@@ -3945,6 +3945,25 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   gap: 10px;
 }
 .dictation-loader[hidden] { display: none; }
+/* Live volume meter — a scrolling row of bars that jump with your voice, so
+   you get instant feedback that you're being heard (well before Whisper's
+   words arrive). */
+.dictation-meter {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+}
+.dictation-meter[hidden] { display: none; }
+.dictation-meter-bar {
+  width: 3px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--claude-orange-glow, #e8875c);
+  transform: scaleY(0.08);
+  transform-origin: 50% 50%;
+  transition: transform 0.08s linear;
+}
 .dictation-loader-label {
   font-weight: 600;
   white-space: nowrap;

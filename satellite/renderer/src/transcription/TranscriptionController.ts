@@ -25,10 +25,11 @@ export interface DictationTarget {
   submit(): void;
 }
 
-/** The per-pane loading/status UI, implemented by DictationBar. */
+/** The per-pane loading/status/level UI, implemented by DictationBar. */
 export interface DictationUI {
   setState(state: DictationState): void;
   setStatus(status: TranscriberStatus | null): void;
+  setLevel(level: number): void;
   setError(message: string): void;
 }
 
@@ -72,6 +73,7 @@ export class TranscriptionController {
       onFinal: (t) => this.applyTranscript(t),
       onStatus: (s) => this.bar?.setStatus(s),
       onProgress: (p) => this.bar?.setProgress(p),
+      onLevel: (l) => this.bar?.setLevel(l),
       onError: (m) => {
         if (this.bar) this.bar.setError(m);
         else this.deps.onError?.(m);

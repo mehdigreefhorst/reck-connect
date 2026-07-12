@@ -7,11 +7,22 @@
 // inject that ("final"). The model is loaded + warmed up in prepare() — before
 // the mic starts — so recording only begins once transcription can run.
 
-import { mergeFloat32, resampleLinear, WHISPER_SAMPLE_RATE } from "../pcm";
+import { mergeFloat32, resampleLinear, rms, WHISPER_SAMPLE_RATE } from "../pcm";
 import type { Transcriber, TranscriptionHandlers } from "./types";
 
 // How often to re-transcribe the growing buffer for the live preview.
 const PARTIAL_INTERVAL_MS = 1200;
+// RMS above this counts as speech. Below it we don't transcribe at all, so
+// Whisper can't hallucinate words out of silence.
+const VOICE_THRESHOLD = 0.01;
+
+function words(text: string): string[] {
+  return text.trim().split(/\s+/).filter(Boolean);
+}
+
+function normWord(w: string): string {
+  return w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
 
 type WorkerOut =
   | { type: "status"; status: "loading" | "transcribing"; generation: number }
@@ -35,6 +46,11 @@ export class LocalWhisperProvider implements Transcriber {
   private partialTimer: number | null = null;
   private partialBusy = false;
   private lastPartialLen = 0;
+  private hasVoice = false;
+  // Stable-prefix (LocalAgreement) state: words confirmed across two passes
+  // are committed and never rewritten; `prevHyp` is the last full hypothesis.
+  private committed: string[] = [];
+  private prevHyp: string[] = [];
 
   constructor(private readonly repo: string) {}
 
@@ -59,7 +75,7 @@ export class LocalWhisperProvider implements Transcriber {
         case "result":
           if (d.kind === "partial") {
             this.partialBusy = false;
-            if (d.text) this.handlers?.onPartial?.(d.text);
+            this.integratePartial(d.text);
           } else {
             this.handlers?.onFinal?.(d.text);
             this.settleEnd();
@@ -113,10 +129,13 @@ export class LocalWhisperProvider implements Transcriber {
   }
 
   async begin(): Promise<void> {
-    // Fresh utterance: reset the live buffer and start the preview loop.
+    // Fresh utterance: reset the live buffer/preview + stable-prefix state.
     this.liveChunks = [];
     this.lastPartialLen = 0;
     this.partialBusy = false;
+    this.hasVoice = false;
+    this.committed = [];
+    this.prevHyp = [];
     this.stopPartialTimer();
     this.partialTimer = self.setInterval(() => this.runPartial(), PARTIAL_INTERVAL_MS);
   }
@@ -124,10 +143,31 @@ export class LocalWhisperProvider implements Transcriber {
   feed(chunk: Float32Array, sampleRate: number): void {
     this.liveSampleRate = sampleRate;
     this.liveChunks.push(chunk);
+    if (!this.hasVoice && rms(chunk) > VOICE_THRESHOLD) this.hasVoice = true;
+  }
+
+  /**
+   * Commit words that agree between the last two full hypotheses (streaming
+   * "LocalAgreement"): committed words are stable and never rewritten, so the
+   * live text only grows; only the unsettled tail waits. Emits the committed
+   * text as the running transcript.
+   */
+  private integratePartial(text: string): void {
+    const cur = words(text);
+    let agree = 0;
+    const max = Math.min(cur.length, this.prevHyp.length);
+    while (agree < max && normWord(cur[agree]) === normWord(this.prevHyp[agree])) agree++;
+    this.prevHyp = cur;
+    if (agree > this.committed.length) {
+      this.committed = cur.slice(0, agree);
+      this.handlers?.onPartial?.(this.committed.join(" "));
+    }
   }
 
   private runPartial(): void {
-    if (this.partialBusy || !this.worker) return;
+    // No transcription until we've actually heard speech — stops silence
+    // hallucinations from appearing/changing on their own.
+    if (this.partialBusy || !this.worker || !this.hasVoice) return;
     let total = 0;
     for (const c of this.liveChunks) total += c.length;
     // Skip if nothing new since the last partial (avoid redundant work).
@@ -156,7 +196,8 @@ export class LocalWhisperProvider implements Transcriber {
   end(full: Float32Array, sampleRate: number): Promise<void> {
     this.stopPartialTimer();
     this.liveChunks = [];
-    if (full.length === 0) {
+    // Nothing captured, or never any speech → don't transcribe silence.
+    if (full.length === 0 || !this.hasVoice) {
       this.handlers?.onFinal?.("");
       return Promise.resolve();
     }

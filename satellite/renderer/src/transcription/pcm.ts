@@ -44,6 +44,14 @@ export function floatToInt16(input: Float32Array): Int16Array {
   return out;
 }
 
+/** Root-mean-square amplitude of a sample buffer (0 = silence). */
+export function rms(samples: Float32Array): number {
+  if (samples.length === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  return Math.sqrt(sum / samples.length);
+}
+
 /** Concatenate captured Float32 chunks into one contiguous buffer. */
 export function mergeFloat32(chunks: readonly Float32Array[]): Float32Array {
   let total = 0;

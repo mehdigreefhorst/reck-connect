@@ -4,6 +4,7 @@
 // to the UI and to the pane the text is injected into.
 
 import { AudioCapture } from "./AudioCapture";
+import { rms } from "./pcm";
 import type {
   Transcriber,
   TranscriptionHandlers,
@@ -17,6 +18,8 @@ export interface EngineHandlers {
   onFinal?: (text: string) => void;
   onStatus?: (status: TranscriberStatus) => void;
   onProgress?: (pct: number) => void;
+  /** Live mic amplitude (RMS, ~0–1) for the volume meter. */
+  onLevel?: (level: number) => void;
   onError?: (message: string) => void;
   onStateChange?: (state: DictationState) => void;
 }
@@ -89,6 +92,8 @@ export class TranscriptionEngine {
     this.ready = false;
     this.capture = new AudioCapture({
       onChunk: (chunk, rate) => {
+        // Instant volume feedback — independent of the (laggy) transcription.
+        this.handlers.onLevel?.(rms(chunk));
         if (this.ready) this.provider.feed(chunk, rate);
         else this.pending.push({ chunk, rate });
       },
