@@ -256,6 +256,10 @@ async function bootPopout(): Promise<void> {
           originalText: href,
         });
       },
+      // ⌘+click an http/https URL in the transcript → OS default browser.
+      onExternalActivate: (href) => {
+        window.open(href, "_blank", "noopener");
+      },
     }),
   });
 

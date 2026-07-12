@@ -1190,6 +1190,10 @@ export async function boot(splash?: StartupSplashController) {
           })
           .catch((e) => console.warn("[click:transcript] openInViewer error", e));
       },
+      // ⌘+click an http/https URL in the transcript → OS default browser.
+      onExternalActivate: (href) => {
+        window.open(href, "_blank", "noopener");
+      },
     }),
   });
 
