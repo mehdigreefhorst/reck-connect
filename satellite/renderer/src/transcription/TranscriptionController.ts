@@ -84,6 +84,7 @@ export class TranscriptionController {
   // Ghost-placeholder inputs: voiced-time word estimate vs words transcribed.
   private lastTail = "";
   private heardWords = 0;
+  private lastVoiceAt = 0;
 
   constructor(private readonly deps: TranscriptionControllerDeps) {
     this.settings = deps.settings;
@@ -103,7 +104,12 @@ export class TranscriptionController {
       },
       onStatus: (s) => this.bar?.setStatus(s),
       onProgress: (p) => this.bar?.setProgress(p),
-      onLevel: (l) => this.bar?.setLevel(l),
+      onLevel: (l) => {
+        this.bar?.setLevel(l);
+        if (l > 0.01) this.lastVoiceAt = performance.now();
+        // Levels tick ~8×/s, so this also drives the silence decay below.
+        this.syncGhosts();
+      },
       onSpeechMs: (ms) => {
         this.heardWords = Math.round((ms / 1000) * WORDS_PER_VOICED_SECOND);
         this.syncGhosts();
@@ -164,6 +170,13 @@ export class TranscriptionController {
    */
   private syncGhosts(): void {
     const transcribed = wordCount(this.injectedText) + wordCount(this.lastTail);
+    // The voiced-time estimate overcounts in noisy rooms; once the mic has
+    // been quiet a beat, whatever the engine was going to transcribe has
+    // arrived — reconcile the estimate so stale blobs drain instead of
+    // squatting in the pill.
+    if (this.lastVoiceAt > 0 && performance.now() - this.lastVoiceAt > 1500) {
+      this.heardWords = Math.min(this.heardWords, transcribed);
+    }
     const pending = Math.min(MAX_PENDING_BLOBS, Math.max(0, this.heardWords - transcribed));
     this.bar?.setPendingWords(pending);
   }
@@ -187,7 +200,10 @@ export class TranscriptionController {
     if (state === "idle") await this.startDictation();
     else if (state === "listening") await this.engine.stop();
     else if (state === "preparing") await this.cancel(); // abort a slow model load
-    // "transcribing" → busy; ignore.
+    // A slow final pass (big model, long utterance) shouldn't hold the mic
+    // hostage: clicking again abandons the improvement pass. The stable
+    // words already typed into the prompt stay.
+    else if (state === "transcribing") await this.cancel();
   }
 
   async startDictation(): Promise<void> {

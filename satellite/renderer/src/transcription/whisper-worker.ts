@@ -25,6 +25,20 @@ import {
 // Always fetch from the Hugging Face hub (no local model files bundled).
 env.allowLocalModels = false;
 
+// Multithreaded WASM when SharedArrayBuffer is available (main.ts enables the
+// Chromium feature) — the single biggest CPU-inference speedup we control.
+try {
+  if (typeof SharedArrayBuffer !== "undefined" && env.backends.onnx.wasm) {
+    const threads = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
+    env.backends.onnx.wasm.numThreads = threads;
+    console.log(`[whisper-worker] WASM threads: ${threads}`);
+  } else {
+    console.log("[whisper-worker] SharedArrayBuffer unavailable — single-threaded WASM");
+  }
+} catch (err) {
+  console.warn("[whisper-worker] could not configure WASM threads:", err);
+}
+
 type InMessage =
   | {
       type: "prepare";

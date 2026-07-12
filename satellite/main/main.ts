@@ -39,6 +39,10 @@ app.setName("reck-connect-satellite");
 // WebGPU still isn't usable, the worker's warm-up falls back to WASM.
 app.commandLine.appendSwitch("enable-unsafe-webgpu");
 app.commandLine.appendSwitch("enable-dawn-features", "allow_unsafe_apis");
+// SharedArrayBuffer unlocks onnxruntime-web's MULTITHREADED WASM backend —
+// single-threaded WASM Whisper is ~4-8× slower, which is the difference
+// between live dictation keeping up and lagging hopelessly behind.
+app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
 
 let mainWindow: BrowserWindow | null = null;
 

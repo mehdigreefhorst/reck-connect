@@ -118,8 +118,14 @@ export class DictationBar implements DictationUI {
   }
 
   setState(state: DictationState): void {
-    // Leaving "preparing" for real recording means the model is ready.
-    if (state !== "preparing" && this.state === "preparing") this.ready = true;
+    // Leaving "preparing" for real recording means the model is ready — and
+    // the sticky "loading" status must clear with it, or the "<model> ready"
+    // label squats in the pill for the whole session (masking the meter,
+    // ghosts, and the Transcribing… message).
+    if (state !== "preparing" && this.state === "preparing") {
+      this.ready = true;
+      this.status = null;
+    }
     this.state = state;
     setMicButtonState(this.surface, state);
     dictationFabFor(this.surface)?.setState(state);
