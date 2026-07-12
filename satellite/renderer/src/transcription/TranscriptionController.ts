@@ -59,6 +59,31 @@ function normalizeTranscript(text: string): string {
   return text.replace(/[\r\n]+/g, " ").trim();
 }
 
+export interface Injection {
+  /** DEL keystrokes to undo the diverged tail of the previous pass. */
+  backspaces: number;
+  /** New characters to append after the backspaces. */
+  suffix: string;
+  /** The full text now considered injected (diff base for the next pass). */
+  injected: string;
+}
+
+/**
+ * Diff the next full-text pass against what's already typed and return just
+ * the delta. An EMPTY next pass over existing text is a no-op (never erases
+ * what's typed) — a filtered/failed final must not swallow the utterance.
+ */
+export function computeInjection(prev: string, rawNext: string): Injection {
+  const next = normalizeTranscript(rawNext);
+  if (next === "" && prev !== "") {
+    return { backspaces: 0, suffix: "", injected: prev };
+  }
+  let common = 0;
+  const max = Math.min(prev.length, next.length);
+  while (common < max && prev[common] === next[common]) common++;
+  return { backspaces: prev.length - common, suffix: next.slice(common), injected: next };
+}
+
 /** Resolved when dictation starts: where text goes and where UI mounts. */
 export interface DictationSession {
   target: DictationTarget;
@@ -115,8 +140,16 @@ export class TranscriptionController {
         this.syncGhosts();
       },
       onError: (m) => {
+        console.error("[dictation] error:", m);
         if (this.bar) this.bar.setError(m);
         else this.deps.onError?.(m);
+        // A provider error mid-session (Deepgram socket drop, worker crash)
+        // used to leave the engine stuck in listening/transcribing — the mic
+        // frozen amber, the next click trying to stop a dead session. Force
+        // back to idle so the button is always usable again.
+        if (this.engine.isActive() && this.engine.getState() !== "preparing") {
+          void this.engine.cancel();
+        }
       },
       onStateChange: (s) => this.onStateChange(s),
     });
@@ -150,16 +183,11 @@ export class TranscriptionController {
    */
   private applyTranscript(text: string): void {
     if (!this.target) return;
-    const next = normalizeTranscript(text);
-    const prev = this.injectedText;
-    let common = 0;
-    const max = Math.min(prev.length, next.length);
-    while (common < max && prev[common] === next[common]) common++;
-    const backspaces = prev.length - common;
-    const suffix = next.slice(common);
+    const { backspaces, suffix, injected } = computeInjection(this.injectedText, text);
+    this.injectedText = injected;
     if (backspaces === 0 && suffix.length === 0) return;
+    console.log(`[dictation] type: -${backspaces} +${JSON.stringify(suffix)}`);
     this.target.insert(DEL.repeat(backspaces) + suffix);
-    this.injectedText = next;
   }
 
   /**
@@ -182,6 +210,13 @@ export class TranscriptionController {
   }
 
   private onStateChange(state: DictationState): void {
+    // The lifecycle, narrated — when a state looks stuck, the console says
+    // which transition never happened.
+    console.log(
+      `[dictation] state → ${state} (${this.settings.provider}${
+        this.settings.provider === "local" ? `/${this.settings.localModel}` : ""
+      })`,
+    );
     this.bar?.setState(state);
     if (state === "idle") {
       if (this.injectedText.length > 0 && this.settings.autoSubmit) this.target?.submit();

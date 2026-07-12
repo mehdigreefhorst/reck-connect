@@ -21,6 +21,7 @@ import {
   env,
   type AutomaticSpeechRecognitionPipeline,
 } from "@huggingface/transformers";
+import { sanitizeTranscript } from "./transcriptClean";
 
 // Always fetch from the Hugging Face hub (no local model files bundled).
 env.allowLocalModels = false;
@@ -179,7 +180,9 @@ self.onmessage = async (e: MessageEvent<InMessage>) => {
     if (msg.language && msg.language !== "auto") options.language = msg.language;
     const t0 = performance.now();
     const output = await model(msg.audio, options);
-    const text = extractText(output).trim();
+    // Strip Whisper's non-speech annotations / silence hallucinations
+    // ("(applause)", "Thanks for watching") before they reach the prompt.
+    const text = sanitizeTranscript(extractText(output));
     // Timing lands in the pane's DevTools console — the observability the
     // "why is it slow" investigations kept needing.
     console.log(

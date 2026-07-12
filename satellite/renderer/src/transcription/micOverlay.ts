@@ -143,13 +143,24 @@ export class DictationFab {
     this.button.setAttribute("aria-pressed", state === "listening" ? "true" : "false");
   }
 
-  /** Re-apply the shared offset/visibility (clamped inside this pane). */
-  sync(): void {
+  /**
+   * The offset actually rendered in THIS pane — the shared offset clamped so
+   * the button stays fully on-screen. This is the source of truth for what
+   * the user SEES (and therefore what a drag starts from), which can differ
+   * from the shared `offset` when a larger pane placed the mic beyond this
+   * pane's bounds.
+   */
+  renderedOffset(): Offset {
     const w = this.anchor.clientWidth;
     const h = this.anchor.clientHeight;
-    // Panes can be tiny mid-resize; clamp so the button stays reachable.
-    const dx = w > FAB_SIZE ? Math.min(offset.dx, w - FAB_SIZE) : offset.dx;
-    const dy = h > FAB_SIZE ? Math.min(offset.dy, h - FAB_SIZE) : offset.dy;
+    const dx = w > FAB_SIZE ? Math.max(0, Math.min(offset.dx, w - FAB_SIZE)) : offset.dx;
+    const dy = h > FAB_SIZE ? Math.max(0, Math.min(offset.dy, h - FAB_SIZE)) : offset.dy;
+    return { dx, dy };
+  }
+
+  /** Re-apply the shared offset/visibility (clamped inside this pane). */
+  sync(): void {
+    const { dx, dy } = this.renderedOffset();
     this.root.style.left = `${dx}px`;
     this.root.style.bottom = `${dy}px`;
     this.root.style.display = visible ? "" : "none";
@@ -174,7 +185,11 @@ export class DictationFab {
       moved = false;
       startX = e.clientX;
       startY = e.clientY;
-      startOffset = { ...offset };
+      // Drag from what's ON SCREEN, not the raw shared offset — otherwise, on
+      // a pane where the mic was clamped into view, the drag would start from
+      // an off-screen position and the button wouldn't move until you'd
+      // dragged all the way back. "What you see is what you drag."
+      startOffset = this.renderedOffset();
       this.button.setPointerCapture(e.pointerId);
     });
     this.button.addEventListener("pointermove", (e) => {

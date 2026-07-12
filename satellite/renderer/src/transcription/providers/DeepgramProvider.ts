@@ -4,6 +4,7 @@
 // transcripts arrive via the "transcription:event" IPC channel.
 
 import { floatToInt16 } from "../pcm";
+import { sanitizeTranscript } from "../transcriptClean";
 import type { Transcriber, TranscriptionHandlers } from "./types";
 
 // After CloseStream, Deepgram emits any trailing final results before it
@@ -39,7 +40,7 @@ export class DeepgramProvider implements Transcriber {
   }
 
   private join(a: string, b: string): string {
-    const t = b.trim();
+    const t = sanitizeTranscript(b);
     if (!t) return a;
     return a ? `${a} ${t}` : t;
   }
