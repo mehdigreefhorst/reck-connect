@@ -109,6 +109,7 @@ import {
   loadRailMode,
   loadRailWidth,
   loadRailWiggle,
+  loadDropPromptTemplate,
   loadSettings,
   loadTheme,
   resolveActiveUrl,
@@ -328,6 +329,9 @@ export async function boot(splash?: StartupSplashController) {
   const savedRailWidth = await loadRailWidth();
   const savedRailMode = await loadRailMode();
   const railWiggle = await loadRailWiggle();
+  // Drop prompt template (mutable — a Preferences save updates this in
+  // place so newly-created panes pick it up without a reload).
+  let dropPromptTemplate = await loadDropPromptTemplate();
   const railEl = document.getElementById("rail")!;
   // Old configs could persist up to the removed 420px upper clamp; a
   // corrupted value must not feed NaN into the grid template.
@@ -1699,6 +1703,9 @@ export async function boot(splash?: StartupSplashController) {
     onPasteUploadError: (paneId, err, mime) => {
       console.warn("[paste-upload] failed", { paneId, mime, err });
     },
+    // Current drop prompt template, read fresh per pane creation so a
+    // Preferences edit takes effect on the next-created pane.
+    dropPromptTemplate: () => dropPromptTemplate,
     // an earlier release: detach the pane to its own popout window. The flow:
     //   1. ask main for the leaf's screen rect (via getActiveLeafRect)
     //      and translate to absolute screen coords (window.screenX/Y).

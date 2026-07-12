@@ -1239,6 +1239,41 @@ describe("TerminalPane teardown races", () => {
     pane.dispose();
   });
 
+  it("drop with dropPromptTemplate pastes the rendered prompt in bracketed-paste markers (Scope B)", async () => {
+    const wrapper = setupDom();
+    const { sends, openAll } = installCapturingWebSocket();
+    const upload = vi.fn(async (_blob: Blob, _mime: string) => ({
+      kind: "path" as const,
+      path: "/tmp/reck-pane-p_x/uploads/1-a.pdf",
+    }));
+    const pane = new TerminalPane({
+      wsUrl: "ws://x/ws/p/p",
+      wsSubprotocols: [],
+      onPasteUpload: upload,
+      dropPromptTemplate: "Dropped {filename} at {path}. Handle with care.",
+    });
+    wrapper.appendChild(pane.container);
+    pane.mount();
+    openAll();
+
+    const ev = makeDropEvent("drop", [makeImageFile("application/pdf", new Uint8Array([1]), "report.pdf")]);
+    pane.container.dispatchEvent(ev);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const inputFrames = sends
+      .map((raw) => JSON.parse(raw) as { type: string; data?: string })
+      .filter((m) => m.type === "input");
+    expect(inputFrames.length).toBe(1);
+    const text = new TextDecoder().decode(
+      Uint8Array.from(atob(inputFrames[0].data!), (c) => c.charCodeAt(0)),
+    );
+    // Wrapped in bracketed-paste markers, placeholders substituted, no newline.
+    expect(text).toBe(
+      "\x1b[200~Dropped report.pdf at /tmp/reck-pane-p_x/uploads/1-a.pdf. Handle with care.\x1b[201~",
+    );
+    pane.dispose();
+  });
+
   it("drop handler is not installed when onPasteUpload is undefined", () => {
     const wrapper = setupDom();
     const pane = new TerminalPane({ wsUrl: "ws://x/ws/p/p", wsSubprotocols: [] });

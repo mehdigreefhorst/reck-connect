@@ -171,6 +171,15 @@ export interface TerminalPaneProps {
    * surface a toast / log entry. Called once per failed blob.
    */
   onPasteUploadError?: (err: unknown, mime: string) => void;
+  /**
+   * Prompt template inserted (as a bracketed paste, so Claude Code
+   * collapses it into a paste chip that expands on Enter) when a file is
+   * dropped, instead of typing the raw upload path. `{path}` is replaced
+   * with the returned station-side path and `{filename}` with the dropped
+   * file's original name. When unset, a drop types the raw path (the
+   * paste behaviour). Image PASTE always types the path regardless.
+   */
+  dropPromptTemplate?: string;
 }
 
 function themeFor(t: PaneTheme): ITheme {
@@ -925,51 +934,84 @@ export class TerminalPane {
     // text-flavoured fallback (often a file URL or empty string) on
     // top of our path, which the user definitely doesn't want.
     ev.preventDefault();
-    await this.uploadBlobsAndTypePaths(images);
+    // Image paste: type the returned path (unchanged behaviour).
+    await this.uploadBlobs(images, (path) => this.typePathIntoPty(path));
   }
 
   /**
-   * Upload each blob serially and type the returned station-side path
-   * into the PTY (trailing space, no newline — the user decides when to
-   * submit). Shared by the image-paste handler and the file-drop handler.
+   * Upload each blob serially and hand the returned station-side path to
+   * `onPath` for delivery into the PTY. Shared by the image-paste handler
+   * (types the path) and the file-drop handler (pastes a prompt).
    *
-   * Serial so the typed paths arrive in source order (clipboard order for
+   * Serial so deliveries arrive in source order (clipboard order for
    * paste, drop order for drag-drop); parallel would be faster but would
-   * scramble the sequence when several images arrive at once. A failed
+   * scramble the sequence when several blobs arrive at once. A failed
    * upload fires `onPasteUploadError` and is otherwise swallowed so one
    * bad blob doesn't abort the rest.
    */
-  private async uploadBlobsAndTypePaths(blobs: { blob: Blob; mime: string }[]): Promise<void> {
+  private async uploadBlobs(
+    items: { blob: Blob; mime: string; filename?: string }[],
+    onPath: (path: string, filename: string | undefined) => void,
+  ): Promise<void> {
     const upload = this.props.onPasteUpload;
     if (!upload) return;
-    for (const { blob, mime } of blobs) {
+    for (const { blob, mime, filename } of items) {
       try {
         const result = await upload(blob, mime);
         if (result.kind === "path") {
-          // Phase 1 path: type the absolute path into the PTY exactly
-          // like the user typing it. Trailing space so a follow-up
-          // keystroke doesn't merge with the path.
-          //
-          // Before typing, emit a yellow inline breadcrumb when the
-          // host classified *why* we fell off the chip path. Otherwise
-          // the user just sees a path appear in the prompt with no
-          // explanation, which looks identical to a bug. Same shape
-          // as the existing `[process exited]` / `[error]` lines.
+          // Emit a yellow inline breadcrumb when the host classified
+          // *why* we fell off the chip path — otherwise a path/prompt
+          // appears with no explanation, indistinguishable from a bug.
+          // Same shape as the existing `[process exited]` / `[error]`.
           if (result.fallbackReason) {
             const detail = result.fallbackDetail ? ` (${result.fallbackDetail})` : "";
             this.term.write(
               `\r\n\x1b[33m[paste fell back to /uploads — reason: ${result.fallbackReason}${detail}]\x1b[0m\r\n`,
             );
           }
-          const payload = new TextEncoder().encode(result.path + " ");
-          this.ws.send({ type: "input", data: encodeBytes(payload) });
+          onPath(result.path, filename);
         }
         // Phase 2 chip path: daemon already wrote 0x16 into the PTY
-        // after the sidecar ACK; nothing for the renderer to type.
+        // after the sidecar ACK; nothing for the renderer to deliver.
       } catch (err) {
         this.props.onPasteUploadError?.(err, mime);
       }
     }
+  }
+
+  /**
+   * Type an upload path into the PTY exactly like the user typing it.
+   * Trailing space so a follow-up keystroke doesn't merge with the path;
+   * no newline — the user decides when to submit.
+   */
+  private typePathIntoPty(path: string): void {
+    const payload = new TextEncoder().encode(path + " ");
+    this.ws.send({ type: "input", data: encodeBytes(payload) });
+  }
+
+  /**
+   * Deliver a dropped file to the PTY as a configurable prompt referencing
+   * the upload path, sent inside bracketed-paste markers
+   * (`ESC[200~ … ESC[201~`). Claude Code treats that exactly like a user
+   * paste and collapses a large-enough one into a chip that expands on
+   * Enter — so the prompt stays compact until submitted. Falls back to
+   * typing the raw path when no template is configured.
+   */
+  private sendDropPrompt(path: string, filename: string | undefined): void {
+    const template = this.props.dropPromptTemplate;
+    if (!template) {
+      this.typePathIntoPty(path);
+      return;
+    }
+    const text = template
+      .split("{path}")
+      .join(path)
+      .split("{filename}")
+      .join(filename ?? path);
+    // No trailing newline — the user submits. The bracketed-paste wrapper
+    // is what makes Claude Code render it collapsed.
+    const payload = new TextEncoder().encode(`\x1b[200~${text}\x1b[201~`);
+    this.ws.send({ type: "input", data: encodeBytes(payload) });
   }
 
   /**
@@ -1019,13 +1061,13 @@ export class TerminalPane {
     // Accept images + the Scope B document/text allowlist (see
     // resolveDropMime). Files whose type isn't uploadable are surfaced
     // via a breadcrumb rather than silently dropped.
-    const uploads: { blob: Blob; mime: string }[] = [];
+    const uploads: { blob: Blob; mime: string; filename: string }[] = [];
     let skipped = 0;
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const mime = resolveDropMime(file);
       if (mime) {
-        uploads.push({ blob: file, mime });
+        uploads.push({ blob: file, mime, filename: file.name });
       } else {
         skipped++;
       }
@@ -1036,7 +1078,9 @@ export class TerminalPane {
         `\r\n\x1b[33m[drag-drop: skipped ${skipped} unsupported ${plural}]\x1b[0m\r\n`,
       );
     }
-    await this.uploadBlobsAndTypePaths(uploads);
+    // Drop delivery: a configurable prompt (bracketed paste) referencing
+    // the upload, not the raw path.
+    await this.uploadBlobs(uploads, (path, filename) => this.sendDropPrompt(path, filename));
   }
 }
 

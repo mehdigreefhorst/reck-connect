@@ -123,6 +123,12 @@ export interface PaneLayoutCallbacks {
   /** Optional paste-upload error hook; relayed to the TerminalPane. */
   onPasteUploadError?: (paneId: string, err: unknown, mime: string) => void;
   /**
+   * Current drop prompt template (thunk so freshly-created panes pick up
+   * a Preferences edit without a reload). Relayed to TerminalPane as
+   * `dropPromptTemplate`; when undefined a drop types the raw path.
+   */
+  dropPromptTemplate?: () => string | undefined;
+  /**
    * Detach `paneId` to its own popout window . Called by the
    * per-pane "Detach" button and the ⌘⇧O shortcut. The callback is
    * responsible for opening the actual BrowserWindow (via
@@ -669,6 +675,7 @@ export class PaneLayout {
         onPasteUploadError: this.cb.onPasteUploadError
           ? (err, mime) => this.cb.onPasteUploadError!(t.paneId, err, mime)
           : undefined,
+        dropPromptTemplate: this.cb.dropPromptTemplate?.(),
         theme: this.currentTheme,
       });
       wrapper.appendChild(term.container);
