@@ -97,6 +97,19 @@ export interface DictationAppearance {
   pillTheme: "auto" | "dark" | "light";
   /** Draw a contrast outline behind ghost text (legibility over any content). */
   textOutline: boolean;
+  /**
+   * How the leading "words heard but not transcribed" placeholders are sized:
+   * "onset" = one per detected word onset from the audio (instant, accurate);
+   * "estimate" = the older voiced-time word-count guess.
+   */
+  ghostMode: "onset" | "estimate";
+  /** Heavy blur (px) of an unknown-word placeholder — the diffusion-noise look
+   *  it starts from before crystallizing into the real word. */
+  placeholderBlurPx: number;
+  /** Onset detection: RMS to START a word (higher = needs louder speech). */
+  onsetOpen: number;
+  /** Onset detection: RMS to end a word (hysteresis; below onsetOpen). */
+  onsetClose: number;
 }
 
 export const DEFAULT_APPEARANCE: DictationAppearance = {
@@ -107,9 +120,13 @@ export const DEFAULT_APPEARANCE: DictationAppearance = {
   settleMs: 300,
   ghostResetMs: 1200,
   tailFontPx: 13,
-  showBlobs: false,
+  showBlobs: true,
   pillTheme: "auto",
   textOutline: true,
+  ghostMode: "onset",
+  placeholderBlurPx: 7,
+  onsetOpen: 0.02,
+  onsetClose: 0.012,
 };
 
 export const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettings = {
@@ -171,6 +188,10 @@ export function coerceAppearance(raw: unknown): DictationAppearance {
     showBlobs: coerceBool(raw.showBlobs, d.showBlobs),
     pillTheme: coercePillTheme(raw.pillTheme),
     textOutline: coerceBool(raw.textOutline, d.textOutline),
+    ghostMode: raw.ghostMode === "estimate" ? "estimate" : "onset",
+    placeholderBlurPx: coerceNum(raw.placeholderBlurPx, d.placeholderBlurPx, 0, 20),
+    onsetOpen: coerceNum(raw.onsetOpen, d.onsetOpen, 0.001, 0.2),
+    onsetClose: coerceNum(raw.onsetClose, d.onsetClose, 0.001, 0.2),
   };
 }
 

@@ -169,6 +169,14 @@ function createWindow() {
   }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // The dictation tuning lab is a local same-origin page (dev: localhost;
+    // prod: file:// sibling of index.html) — open it in its own window.
+    if (url.includes("dictation-lab.html")) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: { width: 1240, height: 860, title: "Dictation Tuning Lab" },
+      };
+    }
     // Only forward allowlisted schemes (see ipc-validation.ts). A compromised
     // renderer could otherwise call `window.open('mailto:…')` /
     // `x-apple-reminderkit://…` / custom handlers and force the main process

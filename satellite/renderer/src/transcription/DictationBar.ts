@@ -137,6 +137,7 @@ export class DictationBar implements DictationUI {
     s.setProperty("--dict-blur-start", `${a.blurStartPx}px`);
     s.setProperty("--dict-blur-rest", `${a.blurRestPx}px`);
     s.setProperty("--dict-tail-font", `${a.tailFontPx}px`);
+    s.setProperty("--dict-placeholder-blur", `${a.placeholderBlurPx}px`);
     this.el.classList.toggle("outline", a.textOutline);
     this.el.dataset.pill = a.pillTheme;
     // Blob visibility is a hard gate — clear them immediately when turned off.
@@ -232,20 +233,24 @@ export class DictationBar implements DictationUI {
   }
 
   setPendingWords(count: number): void {
-    // The leading "words heard" blobs are opt-in (the crystallizing tail is
-    // usually clearer). When off, never render them.
+    // Placeholders for words HEARD (a word onset was detected) but not yet
+    // transcribed. Rendered as heavily-blurred glyph runs — an even-more-
+    // blurred version of the ghost text, like diffusion noise — that get
+    // replaced + crystallized once the real word arrives.
     if (!this.appearance.showBlobs) count = 0;
     if (count === this.pendingWords) return;
     this.pendingWords = count;
     while (this.blobsEl.children.length > count) this.blobsEl.lastElementChild?.remove();
     while (this.blobsEl.children.length < count) {
-      const blob = document.createElement("span");
-      blob.className = "dictation-blob";
-      // Word-ish width variety so the row reads as language, not UI.
-      blob.style.width = `${16 + ((this.blobsEl.children.length * 7) % 15)}px`;
-      this.blobsEl.appendChild(blob);
+      const ph = document.createElement("span");
+      ph.className = "dictation-blob";
+      // Word-ish blurred glyph run (block chars) with a little length variety,
+      // so the row reads as unresolved text, not UI dots.
+      const len = 3 + ((this.blobsEl.children.length * 2) % 4);
+      ph.textContent = "▓".repeat(len);
+      this.blobsEl.appendChild(ph);
     }
-    // While finishing up, blob changes should re-evaluate pill visibility.
+    // While finishing up, placeholder changes should re-evaluate visibility.
     if (this.state === "transcribing") this.render();
   }
 

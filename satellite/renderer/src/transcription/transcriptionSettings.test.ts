@@ -43,6 +43,10 @@ describe("transcriptionSettings.coerce", () => {
         showBlobs: true,
         pillTheme: "dark" as const,
         textOutline: false,
+        ghostMode: "estimate" as const,
+        placeholderBlurPx: 9,
+        onsetOpen: 0.03,
+        onsetClose: 0.015,
       },
     };
     expect(coerce(input)).toEqual(input);
@@ -56,8 +60,9 @@ describe("transcriptionSettings.coerce", () => {
   it("defaults and clamps the appearance knobs", () => {
     const a = coerce({}).appearance;
     expect(a.crystallizeMs).toBe(260);
-    expect(a.showBlobs).toBe(false);
+    expect(a.showBlobs).toBe(true);
     expect(a.pillTheme).toBe("auto");
+    expect(a.ghostMode).toBe("onset");
     // Out-of-range numbers clamp; bad enums fall back.
     const clamped = coerce({
       appearance: { crystallizeMs: 999999, tailFontPx: -5, pillTheme: "neon", settleMs: 10 },

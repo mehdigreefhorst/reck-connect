@@ -35,13 +35,22 @@ type NumericAppearanceKey =
   | "blurRestPx"
   | "settleMs"
   | "ghostResetMs"
-  | "tailFontPx";
+  | "tailFontPx"
+  | "placeholderBlurPx"
+  | "onsetOpen"
+  | "onsetClose";
 
 const CRYSTALLIZE_FIELDS: readonly RangeFieldSpec[] = [
   { key: "crystallizeMs", label: "Crystallize (ms)", min: 0, max: 2000, step: 1 },
   { key: "charStaggerMs", label: "Char stagger (ms)", min: 0, max: 200, step: 1 },
   { key: "blurStartPx", label: "Blur start (px)", min: 0, max: 20, step: 1 },
   { key: "blurRestPx", label: "Blur rest (px)", min: 0, max: 8, step: 0.1 },
+  { key: "placeholderBlurPx", label: "Placeholder blur (px)", min: 0, max: 20, step: 1 },
+];
+
+const ONSET_FIELDS: readonly RangeFieldSpec[] = [
+  { key: "onsetOpen", label: "Onset open (RMS)", min: 0.002, max: 0.1, step: 0.001 },
+  { key: "onsetClose", label: "Onset close (RMS)", min: 0.002, max: 0.1, step: 0.001 },
 ];
 
 const TIMING_FIELDS: readonly RangeFieldSpec[] = [
@@ -127,7 +136,9 @@ export function showDictationAdvancedPanel(x: number, y: number, opts: AdvancedP
     range.max = String(spec.max);
     range.step = String(spec.step);
 
-    const fmt = (n: number): string => (spec.step < 1 ? n.toFixed(1) : String(Math.round(n)));
+    // Decimals to show = derived from the step (0.001 → 3, 0.1 → 1, 1 → 0).
+    const decimals = spec.step < 1 ? Math.max(1, Math.ceil(-Math.log10(spec.step))) : 0;
+    const fmt = (n: number): string => (decimals > 0 ? n.toFixed(decimals) : String(Math.round(n)));
 
     const sync = (): void => {
       const v = state[spec.key];
@@ -214,18 +225,63 @@ export function showDictationAdvancedPanel(x: number, y: number, opts: AdvancedP
     body.appendChild(row);
   };
 
+  const addGhostModeField = (): void => {
+    const row = document.createElement("label");
+    row.className = "dictation-adv-row dictation-adv-select-row";
+    const labelText = document.createElement("span");
+    labelText.className = "dictation-adv-label";
+    labelText.textContent = "Ghost mode";
+    const select = document.createElement("select");
+    select.className = "dictation-adv-select";
+    for (const mode of ["onset", "estimate"] as const) {
+      const option = document.createElement("option");
+      option.value = mode;
+      option.textContent = mode;
+      select.appendChild(option);
+    }
+    const sync = (): void => {
+      select.value = state.ghostMode;
+    };
+    sync();
+    syncers.push(sync);
+    select.addEventListener("change", () => {
+      state = { ...state, ghostMode: select.value === "estimate" ? "estimate" : "onset" };
+      emit();
+    });
+    row.append(labelText, select);
+    body.appendChild(row);
+  };
+
   // --- Build groups ---
   addSubHeading("Crystallize");
   for (const spec of CRYSTALLIZE_FIELDS) addRangeField(spec);
+
+  addSubHeading("Word detection");
+  addGhostModeField();
+  for (const spec of ONSET_FIELDS) addRangeField(spec);
 
   addSubHeading("Timing");
   for (const spec of TIMING_FIELDS) addRangeField(spec);
 
   addSubHeading("Look");
   for (const spec of LOOK_FIELDS) addRangeField(spec);
-  addCheckboxField("showBlobs", "Show word blobs");
+  addCheckboxField("showBlobs", "Show word placeholders");
   addThemeField();
   addCheckboxField("textOutline", "Text outline");
+
+  // Link to the full tuning lab (replayable timelines + every knob).
+  const labRow = document.createElement("div");
+  labRow.className = "dictation-adv-row";
+  const labLink = document.createElement("button");
+  labLink.type = "button";
+  labLink.className = "dictation-adv-lablink";
+  labLink.textContent = "Open tuning lab ↗";
+  labLink.title = "Replay sample dictations and tune every setting in a full page";
+  labLink.addEventListener("click", () => {
+    window.open("dictation-lab.html", "_blank", "noopener");
+  });
+  labRow.appendChild(labLink);
+  body.appendChild(labRow);
 
   // --- Footer (Reset + Done) ---
   const footer = document.createElement("div");

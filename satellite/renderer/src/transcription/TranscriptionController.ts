@@ -7,6 +7,7 @@
 // presses Enter) unless auto-submit is on.
 
 import { TranscriptionEngine, type DictationState } from "./TranscriptionEngine";
+import { DEFAULT_ONSET_CONFIG } from "./onsetDetector";
 import { DictationBar } from "./DictationBar";
 import { DeepgramProvider } from "./providers/DeepgramProvider";
 import { LocalWhisperProvider } from "./providers/LocalWhisperProvider";
@@ -183,7 +184,14 @@ export class TranscriptionController {
         if (l > 0.01) this.lastVoiceAt = performance.now();
       },
       onSpeechMs: (ms) => {
-        this.heardWords = Math.round((ms / 1000) * WORDS_PER_VOICED_SECOND);
+        // Fallback estimate mode only — "onset" mode uses onWordCount below.
+        if (this.settings.appearance.ghostMode === "estimate") {
+          this.heardWords = Math.round((ms / 1000) * WORDS_PER_VOICED_SECOND);
+        }
+      },
+      onWordCount: (count) => {
+        // Phase 2: one placeholder per detected word onset — instant, accurate.
+        if (this.settings.appearance.ghostMode === "onset") this.heardWords = count;
       },
       onError: (m) => {
         console.error("[dictation] error:", m);
@@ -373,6 +381,7 @@ export class TranscriptionController {
     this.lastTail = "";
     this.heardWords = 0;
     this.resetSettleBuffers();
+    this.applyOnsetConfig();
     this.startSettleTimer();
     await this.engine.start();
   }
@@ -436,7 +445,18 @@ export class TranscriptionController {
   updateAppearance(next: DictationAppearance): void {
     this.settings = { ...this.settings, appearance: next };
     this.bar?.applyAppearance(next);
+    this.applyOnsetConfig();
     if (this.settleTimer !== null) this.startSettleTimer();
+  }
+
+  /** Push the onset-detection thresholds from settings into the engine. */
+  private applyOnsetConfig(): void {
+    const a = this.settings.appearance;
+    this.engine.setOnsetConfig({
+      ...DEFAULT_ONSET_CONFIG,
+      openThreshold: a.onsetOpen,
+      closeThreshold: a.onsetClose,
+    });
   }
 
   dispose(): void {

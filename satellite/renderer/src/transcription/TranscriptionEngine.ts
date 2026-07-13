@@ -5,6 +5,7 @@
 
 import { AudioCapture } from "./AudioCapture";
 import { rms } from "./pcm";
+import { DEFAULT_ONSET_CONFIG, OnsetDetector, type OnsetConfig } from "./onsetDetector";
 import type {
   Transcriber,
   TranscriptionHandlers,
@@ -27,6 +28,9 @@ export interface EngineHandlers {
    * ghost word-placeholders that crystallize as real text arrives.
    */
   onSpeechMs?: (ms: number) => void;
+  /** A word ONSET was detected from the audio (Phase 2) — fires the instant a
+   *  word is spoken, before transcription. `count` is onsets this utterance. */
+  onWordCount?: (count: number) => void;
   onError?: (message: string) => void;
   onStateChange?: (state: DictationState) => void;
 }
@@ -62,11 +66,25 @@ export class TranscriptionEngine {
   private pending: Array<{ chunk: Float32Array; rate: number }> = [];
   private ready = false;
   private speechMs = 0;
+  private onsetCount = 0;
+  private onsetConfig: OnsetConfig = DEFAULT_ONSET_CONFIG;
+  private readonly onset = new OnsetDetector(this.onsetConfig, {
+    onOnset: (id) => {
+      this.onsetCount = id;
+      this.handlers.onWordCount?.(id);
+    },
+  });
 
   constructor(
     private provider: Transcriber,
     private readonly handlers: EngineHandlers,
   ) {}
+
+  /** Update onset-detection thresholds (from the appearance settings). */
+  setOnsetConfig(cfg: OnsetConfig): void {
+    this.onsetConfig = cfg;
+    this.onset.setConfig(cfg);
+  }
 
   getState(): DictationState {
     return this.state;
@@ -120,10 +138,15 @@ export class TranscriptionEngine {
     this.pending = [];
     this.ready = false;
     this.speechMs = 0;
+    this.onsetCount = 0;
+    this.onset.reset();
     this.capture = new AudioCapture({
       onChunk: (chunk, rate) => {
         // Instant volume feedback — independent of the (laggy) transcription.
-        this.handlers.onLevel?.(rms(chunk));
+        const level = rms(chunk);
+        this.handlers.onLevel?.(level);
+        // Word-onset detection (Phase 2): fires the instant a word starts.
+        this.onset.feed(level, rate > 0 ? (chunk.length / rate) * 1000 : 0);
         const voiced = voicedMs(chunk, rate);
         if (voiced > 0) {
           this.speechMs += voiced;
