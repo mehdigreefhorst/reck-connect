@@ -278,6 +278,11 @@ export class TtsEngine {
   ): void {
     if (this.currentUtt) {
       this.detachUtterance(this.currentUtt);
+      // speechSynthesis is one global queue per window and its paused flag
+    // SURVIVES cancel(): once anything pauses it, every later speak() is
+    // queued silently and never plays. Always cancel + resume before
+    // speaking so a stale pause can't swallow this utterance.
+
       this.synth.cancel();
       // pause() pauses the GLOBAL SpeechSynthesis queue, and cancel() does
       // NOT unpause it — speaking into a still-paused queue leaves the new
@@ -294,10 +299,22 @@ export class TtsEngine {
     }
     this.stopHeartbeat();
 
-    // Keep the ORIGINAL chunk: boundary `word` extraction, sliceChunkFrom,
-    // and every adapter's rangeMap index the original string. Split it into
-    // ≤ maxUtteranceChars segments so no single utterance is big enough to
-    // wedge the synthesizer, then speak the first — handleEnd chains the rest.
+    // Speak the sanitized text but keep the ORIGINAL in
+    // currentChunk: boundary `word` extraction, sliceChunkFrom, and every
+    // adapter's rangeMap continue to index the original string (same
+    // length by construction, so charIndex values are interchangeable).
+    const spokenText = sanitizeUtteranceText(chunk.text);
+    const utt = new this.UtteranceCtor(spokenText);
+    utt.text = spokenText;
+    utt.rate = rate;
+    if (voice) {
+      utt.voice = voice;
+      // Keep lang consistent with the voice; with both unset Chromium
+      // resolves a platform "default" that on macOS can be a novelty
+      // voice (Albert) when the system voice is Siri.
+      utt.lang = voice.lang;
+    }
+
     this.currentChunk = chunk;
     this.currentVoice = voice;
     this.rate = rate;
@@ -362,9 +379,8 @@ export class TtsEngine {
     }
     if (this.currentUtt) this.detachUtterance(this.currentUtt);
     this.synth.cancel();
-    // Clear any global paused state left by pause(): cancel() alone keeps
-    // the queue paused, which would wedge every future speak() app-wide
-    // (see speakInternal). No-op when not paused.
+    // Clear a latent pause (stop-while-paused) so the global queue isn't
+    // left wedged for the next speak() — see speakInternal.
     this.synth.resume();
     this.currentUtt = null;
     this.currentChunk = null;
