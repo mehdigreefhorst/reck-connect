@@ -188,13 +188,30 @@ describe("TtsEngine.start", () => {
     expect(synth.spoken[0].voice).toBe(voice);
   });
 
+  it("sets the utterance lang from the voice", () => {
+    const voice = { name: "Daniel", lang: "en-GB" } as SpeechSynthesisVoice;
+    engine.start(chunkOfWords(["a"]), { voice });
+    expect(synth.spoken[0].lang).toBe("en-GB");
+  });
+
   it("cancels a previous utterance when start is re-invoked", () => {
     engine.start(chunkOfWords(["one"]));
-    expect(synth.cancelCount).toBe(0);
+    const cancelsAfterFirstStart = synth.cancelCount;
     engine.start(chunkOfWords(["two"]));
-    expect(synth.cancelCount).toBe(1);
+    expect(synth.cancelCount).toBe(cancelsAfterFirstStart + 1);
     expect(synth.spoken).toHaveLength(2);
     expect(synth.spoken[1].text).toBe("two");
+  });
+
+  // The global speechSynthesis queue's paused flag survives cancel();
+  // a stale pause silently swallows every later speak(). start() must
+  // resume() so the new utterance actually plays.
+  it("clears a stale global pause so the new utterance plays", () => {
+    synth.paused = true;
+    engine.start(chunkOfWords(["hello"]));
+    expect(synth.resumeCount).toBeGreaterThan(0);
+    expect(synth.paused).toBe(false);
+    expect(synth.spoken).toHaveLength(1);
   });
 });
 
@@ -213,8 +230,16 @@ describe("TtsEngine.stop / pause / resume", () => {
 
   it("stop() cancels the synth", () => {
     engine.start(chunkOfWords(["a"]));
+    const cancelsAfterStart = synth.cancelCount;
     engine.stop();
-    expect(synth.cancelCount).toBe(1);
+    expect(synth.cancelCount).toBe(cancelsAfterStart + 1);
+  });
+
+  it("stop() while paused leaves the global queue un-wedged", () => {
+    engine.start(chunkOfWords(["a"]));
+    engine.pause();
+    engine.stop();
+    expect(synth.paused).toBe(false);
   });
 
   it("pause() pauses the synth", () => {
@@ -225,9 +250,10 @@ describe("TtsEngine.stop / pause / resume", () => {
 
   it("resume() resumes the synth", () => {
     engine.start(chunkOfWords(["a"]));
+    const resumesAfterStart = synth.resumeCount;
     engine.pause();
     engine.resume();
-    expect(synth.resumeCount).toBe(1);
+    expect(synth.resumeCount).toBe(resumesAfterStart + 1);
   });
 
   it("isSpeaking reflects synth.speaking", () => {
@@ -432,9 +458,10 @@ describe("TtsEngine setRate while speaking", () => {
     // Pretend we just heard a boundary at the start of "beta" (charIndex=6).
     synth.spoken[0].fireBoundary(6, 4);
 
+    const cancelsAfterStart = synth.cancelCount;
     engine.setRate(1.75);
     // Engine should have cancelled and re-spoken with the new rate.
-    expect(synth.cancelCount).toBe(1);
+    expect(synth.cancelCount).toBe(cancelsAfterStart + 1);
     expect(synth.spoken).toHaveLength(2);
     expect(synth.spoken[1].rate).toBe(1.75);
   });
@@ -458,8 +485,9 @@ describe("TtsEngine setRate while speaking", () => {
 
   it("does NOT restart when the new rate equals the current rate", () => {
     engine.start(chunkOfWords(["alpha"]), { rate: 1.5 });
+    const cancelsAfterStart = synth.cancelCount;
     engine.setRate(1.5);
-    expect(synth.cancelCount).toBe(0);
+    expect(synth.cancelCount).toBe(cancelsAfterStart);
     expect(synth.spoken).toHaveLength(1);
   });
 
@@ -493,17 +521,18 @@ describe("TtsEngine setRate debounce (rapid drag coalescing)", () => {
       const engine = makeEngine(synth, { restartDebounceMs: 60 });
       engine.start(chunkOfWords(["alpha", "beta", "gamma"]));
       synth.spoken[0].fireBoundary(0, 5);
+      const cancelsAfterStart = synth.cancelCount;
       // Simulate rapid slider drag.
       engine.setRate(1.5);
       engine.setRate(1.7);
       engine.setRate(2.0);
       engine.setRate(2.4);
       // Within the debounce window — no restart yet.
-      expect(synth.cancelCount).toBe(0);
+      expect(synth.cancelCount).toBe(cancelsAfterStart);
       expect(synth.spoken).toHaveLength(1);
       vi.advanceTimersByTime(80);
       // After window — exactly ONE restart, with the LAST rate.
-      expect(synth.cancelCount).toBe(1);
+      expect(synth.cancelCount).toBe(cancelsAfterStart + 1);
       expect(synth.spoken).toHaveLength(2);
       expect(synth.spoken[1].rate).toBe(2.4);
       engine.dispose();
@@ -546,13 +575,14 @@ describe("TtsEngine 10-second stall workaround (heartbeat)", () => {
 
   it("calls pause+resume on a heartbeat cadence while speaking", () => {
     engine.start(chunkOfWords(["a"]));
+    const resumesAfterStart = synth.resumeCount;
     expect(synth.pauseCount).toBe(0);
     vi.advanceTimersByTime(100);
     expect(synth.pauseCount).toBe(1);
-    expect(synth.resumeCount).toBe(1);
+    expect(synth.resumeCount).toBe(resumesAfterStart + 1);
     vi.advanceTimersByTime(100);
     expect(synth.pauseCount).toBe(2);
-    expect(synth.resumeCount).toBe(2);
+    expect(synth.resumeCount).toBe(resumesAfterStart + 2);
   });
 
   it("does NOT heartbeat after stop()", () => {
@@ -905,5 +935,120 @@ describe("utterance segmentation (long tool payloads must not wedge)", () => {
     // A late end delivered on the errored utterance must not speak segment 1.
     errored.fireEnd();
     expect(synth.spoken).toHaveLength(1);
+  });
+});
+
+describe("TtsEngine — reswap (recompute upcoming words on scroll)", () => {
+  let synth: StubSynth;
+
+  beforeEach(() => {
+    synth = new StubSynth();
+  });
+
+  function mk(respliceMode?: "scheduled" | "immediate"): TtsEngine {
+    return new TtsEngine({
+      synth: synth as unknown as SpeechSynthesis,
+      UtteranceCtor: StubUtterance as unknown as typeof SpeechSynthesisUtterance,
+      heartbeatIntervalMs: 100,
+      restartDebounceMs: 0,
+      respliceMode,
+    });
+  }
+
+  it("does NOT cancel/re-speak when the upcoming tail is unchanged (zero-gap)", () => {
+    const engine = mk();
+    engine.start(chunkOfWords(["alpha", "beta", "gamma", "delta"]));
+    synth.spoken[0].fireBoundary(0, 5); // speaking "alpha"
+    const cancelsBefore = synth.cancelCount;
+    engine.reswap(chunkOfWords(["alpha", "beta", "gamma", "delta"]));
+    expect(synth.cancelCount).toBe(cancelsBefore);
+    expect(synth.spoken).toHaveLength(1);
+    engine.dispose();
+  });
+
+  it("schedules an append swap: keeps playing, then continues into new content on end", () => {
+    const engine = mk();
+    engine.start(chunkOfWords(["alpha", "beta"]));
+    synth.spoken[0].fireBoundary(0, 5); // "alpha"
+    engine.reswap(chunkOfWords(["alpha", "beta", "gamma", "delta"]));
+    // Divergence is a pure append (past the old end) → no immediate cancel.
+    expect(synth.cancelCount).toBe(0);
+    expect(synth.spoken).toHaveLength(1);
+    synth.spoken[0].fireBoundary(6, 4); // "beta" — still before the old end
+    expect(synth.spoken).toHaveLength(1);
+    // Old chunk finishes → the append continues seamlessly into new content.
+    synth.spoken[0].fireEnd();
+    expect(synth.spoken).toHaveLength(2);
+    expect(synth.spoken[1].text).toContain("gamma");
+    engine.dispose();
+  });
+
+  it("schedules a mid-tail swap: swaps only once the cursor reaches the divergence", () => {
+    const engine = mk();
+    engine.start(chunkOfWords(["alpha", "beta", "gamma", "delta"]));
+    synth.spoken[0].fireBoundary(0, 5); // "alpha"
+    engine.reswap(chunkOfWords(["alpha", "beta", "DELTA", "delta"]));
+    expect(synth.cancelCount).toBe(0); // divergence ("gamma"→"DELTA") is ahead
+    synth.spoken[0].fireBoundary(6, 4); // "beta" — still before divergence
+    expect(synth.cancelCount).toBe(0);
+    synth.spoken[0].fireBoundary(11, 5); // reaches "gamma" (divCharOld) → swap
+    expect(synth.cancelCount).toBe(1);
+    expect(synth.spoken).toHaveLength(2);
+    expect(synth.spoken[1].text).toContain("DELTA");
+    engine.dispose();
+  });
+
+  it("immediate mode swaps right away, resuming at the current word", () => {
+    const engine = mk("immediate");
+    engine.start(chunkOfWords(["alpha", "beta", "gamma"]));
+    synth.spoken[0].fireBoundary(6, 4); // "beta"
+    engine.reswap(chunkOfWords(["alpha", "beta", "gamma", "delta"]));
+    expect(synth.cancelCount).toBe(1);
+    expect(synth.spoken).toHaveLength(2);
+    // Resumes from the current word onward — never re-speaks past content.
+    expect(synth.spoken[1].text.startsWith("beta")).toBe(true);
+    engine.dispose();
+  });
+
+  it("immediate mode still skips the swap when the tail is unchanged", () => {
+    const engine = mk("immediate");
+    engine.start(chunkOfWords(["alpha", "beta", "gamma"]));
+    synth.spoken[0].fireBoundary(0, 5);
+    engine.reswap(chunkOfWords(["alpha", "beta", "gamma"]));
+    expect(synth.cancelCount).toBe(0);
+    expect(synth.spoken).toHaveLength(1);
+    engine.dispose();
+  });
+
+  it("is a no-op when nothing is playing", () => {
+    const engine = mk();
+    engine.reswap(chunkOfWords(["a", "b"]));
+    expect(synth.cancelCount).toBe(0);
+    expect(synth.spoken).toHaveLength(0);
+    engine.dispose();
+  });
+
+  it("is a no-op while paused, and drops any pending swap", () => {
+    const engine = mk();
+    engine.start(chunkOfWords(["alpha", "beta", "gamma", "delta"]));
+    synth.spoken[0].fireBoundary(0, 5);
+    engine.pause();
+    engine.reswap(chunkOfWords(["alpha", "beta", "DELTA", "delta"]));
+    expect(synth.cancelCount).toBe(0);
+    expect(synth.spoken).toHaveLength(1);
+    engine.dispose();
+  });
+
+  it("getPlaybackAnchor reports the current word in chunk coordinates", () => {
+    const engine = mk();
+    engine.start(chunkOfWords(["alpha", "beta"]));
+    synth.spoken[0].fireBoundary(6, 4); // "beta" at charIndex 6, line 1
+    expect(engine.getPlaybackAnchor()).toEqual({
+      charIndex: 6,
+      word: "beta",
+      line: 1,
+      col: 0,
+    });
+    engine.dispose();
   });
 });

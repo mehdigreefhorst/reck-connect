@@ -10,6 +10,9 @@ import {
 } from "./SpeakControlBar";
 import type { TtsTheme } from "./ttsTheme";
 import type { TtsSettings } from "./ttsSettings";
+import { resolveDefaultVoice, formatVoiceLabel } from "./defaultVoice";
+import { detectLanguage } from "./languageDetect";
+import type { VoiceOption } from "./SpeakControlBar";
 import type { SpeakSurfaceAdapter } from "./SpeakSurfaceAdapter";
 
 export interface TtsControllerOptions {
@@ -22,10 +25,13 @@ export interface TtsControllerOptions {
       onResume(): void;
       onStop(): void;
       onRateChange(rate: number): void;
+      onVoiceChange?(name: string | null): void;
     };
     theme: TtsTheme;
     initialRate?: number;
     voiceName?: string;
+    selectedVoice?: string | null;
+    getVoiceOptions?: () => Promise<VoiceOption[]>;
   }) => SpeakControlBar;
   theme: TtsTheme;
   settings: TtsSettings;
@@ -52,6 +58,9 @@ export class TtsController {
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private voicesCache: SpeechSynthesisVoice[] = [];
   private detachEngineListeners: Array<() => void> = [];
+  // Unsubscribe from the active surface's content-change notifications (scroll
+  // / repaint). Live only while a re-resolvable surface is playing.
+  private contentChangeUnsub: (() => void) | null = null;
 
   constructor(opts: TtsControllerOptions) {
     this.opts = opts;
@@ -76,10 +85,26 @@ export class TtsController {
       this.currentSurface.clearHighlight();
     }
 
-    const voice = this.findVoice(this.settings.voice);
+    // No voice configured (or the configured one vanished) → resolve an
+    // explicit default rather than leaving the utterance voiceless.
+    // Chromium's own fallback is unreliable on macOS: with a Siri system
+    // voice (not exposed to the Web Speech API) it lands on the novelty
+    // voice "Albert" regardless of the `default` flag in getVoices().
+    // On Automatic, detect the chunk's language so Dutch text gets a
+    // Dutch voice; undetectable text falls back to the UI locale.
+    const voice =
+      this.findVoice(this.settings.voice) ??
+      resolveDefaultVoice(
+        this.voicesCache,
+        detectLanguage(chunk.text) ?? undefined,
+      );
     this.opts.engine.start(chunk, { voice, rate: this.settings.rate });
     this.state = "playing";
     this.currentSurface = surface;
+    // Recompute the upcoming words as the surface scrolls / repaints, so a TUI
+    // status-line repaint or streamed content keeps speech tracking the
+    // screen. No-op for surfaces that don't support it (markdown / codemirror).
+    this.subscribeContentChange(surface);
     // Push the configured highlight colour to the surface so its highlight
     // uses the user's choice (surfaces are built without a theme).
     surface.setTheme?.(this.theme);
@@ -88,10 +113,11 @@ export class TtsController {
     this.currentBar?.show();
     this.currentBar?.setState("playing");
     this.currentBar?.setRate(this.settings.rate);
-    this.currentBar?.setVoiceName(this.settings.voice ?? "Default voice");
+    this.currentBar?.setVoiceName(formatVoiceLabel(voice));
   }
 
   stop(): void {
+    this.unsubscribeContentChange();
     this.opts.engine.stop();
     this.state = "idle";
     this.currentSurface?.clearHighlight();
@@ -130,7 +156,8 @@ export class TtsController {
 
   async setVoice(name: string | null): Promise<void> {
     this.settings = { ...this.settings, voice: name };
-    this.currentBar?.setVoiceName(name ?? "Default voice");
+    this.currentBar?.setVoiceName(formatVoiceLabel(this.effectiveVoice()));
+    this.currentBar?.setSelectedVoice(name);
     await this.opts.saveSettings(this.settings);
   }
 
@@ -150,6 +177,7 @@ export class TtsController {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
+    this.unsubscribeContentChange();
     for (const off of this.detachEngineListeners) off();
     this.detachEngineListeners = [];
     this.currentBar?.dispose();
@@ -179,6 +207,26 @@ export class TtsController {
     return surface.resolveSpokenChunk(point ?? undefined);
   }
 
+  /** Subscribe to the surface's content-change stream and re-swap the engine's
+   *  upcoming words whenever a fresh chunk is available. Surfaces that don't
+   *  implement both hooks (markdown / codemirror) are simply never watched. */
+  private subscribeContentChange(surface: SpeakSurfaceAdapter): void {
+    this.unsubscribeContentChange();
+    if (!surface.onContentChange || !surface.resolveUpcomingChunk) return;
+    this.contentChangeUnsub = surface.onContentChange(() => {
+      if (this.state !== "playing") return;
+      const next = surface.resolveUpcomingChunk?.();
+      if (next && next.text) this.opts.engine.reswap(next);
+    });
+  }
+
+  private unsubscribeContentChange(): void {
+    if (this.contentChangeUnsub) {
+      this.contentChangeUnsub();
+      this.contentChangeUnsub = null;
+    }
+  }
+
   private ensureBar(surface: SpeakSurfaceAdapter): void {
     const container = surface.getContainerEl();
     if (this.currentBar && this.currentBarSurfaceEl === container) return;
@@ -188,15 +236,32 @@ export class TtsController {
       parent: container,
       theme: this.theme,
       initialRate: this.settings.rate,
-      voiceName: this.settings.voice ?? "Default voice",
+      voiceName: formatVoiceLabel(this.effectiveVoice()),
+      selectedVoice: this.settings.voice,
+      getVoiceOptions: () => this.getVoiceOptions(),
       callbacks: {
         onPlay: () => this.start(),
         onPause: () => this.pauseToggle(),
         onResume: () => this.pauseToggle(),
         onStop: () => this.stop(),
         onRateChange: (r) => this.setRate(r),
+        onVoiceChange: (name) => void this.setVoice(name),
       },
     });
+  }
+
+  /** The voice playback would use right now: the configured one when it
+   *  exists on this machine, otherwise the resolved default. */
+  private effectiveVoice(): SpeechSynthesisVoice | null {
+    return (
+      this.findVoice(this.settings.voice) ??
+      resolveDefaultVoice(this.voicesCache)
+    );
+  }
+
+  private async getVoiceOptions(): Promise<VoiceOption[]> {
+    if (this.voicesCache.length === 0) await this.preloadVoices();
+    return this.voicesCache.map((v) => ({ name: v.name, lang: v.lang }));
   }
 
   private attachEngine(): void {
@@ -204,11 +269,13 @@ export class TtsController {
       this.currentSurface?.highlightBoundary(b);
     });
     const offEnd = this.opts.engine.on("end", () => {
+      this.unsubscribeContentChange();
       this.state = "idle";
       this.currentSurface?.clearHighlight();
       this.currentBar?.setState("idle");
     });
     const offError = this.opts.engine.on("error", () => {
+      this.unsubscribeContentChange();
       this.state = "idle";
       this.currentSurface?.clearHighlight();
       this.currentBar?.setState("idle");

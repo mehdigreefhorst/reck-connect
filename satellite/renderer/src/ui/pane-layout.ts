@@ -3,10 +3,12 @@ import { allLeaves, findLeaf, focusNav, setRatio } from "../layout/split-tree";
 import { TerminalPane } from "@client-core/terminal/terminal-pane";
 import type { PasteUploadResult } from "@client-core/terminal/terminal-pane";
 import type { PaneWSCloseInfo } from "@client-core/api/ws";
-import type { Stoplight } from "@proto/proto";
+import type { PaneUsage, Stoplight } from "@proto/proto";
 import type { HostRef } from "../host";
-import { iconClose, iconSplitDown, iconSplitRight, iconDetach, iconHistory } from "./icons";
+import { iconClose, iconSplitDown, iconSplitRight, iconDetach, iconHistory, iconMic } from "./icons";
 import { ensureHistoryButton } from "./paneControls";
+import { ensureDictationFab } from "../transcription/micOverlay";
+import { installVoiceErrorHint } from "../transcription/voiceErrorHint";
 import { computeReorder } from "./reorder";
 import { HoverFocusController } from "./hover-focus-controller";
 
@@ -47,6 +49,11 @@ export interface PaneLayoutCallbacks {
   // Resolves current stoplight for a pane so the tab bar can render a
   // per-tab status dot. Return "gray" if unknown.
   getStoplight: (paneId: string) => Stoplight;
+  // Resolves the latest usage glance for a pane so the tab bar can render
+  // a minimal "ctx 43% · 5h 61%" badge on Claude tabs. Returns undefined
+  // when unknown (no sample yet, non-Claude pane, or telemetry disabled).
+  // Optional so tests / non-Satellite consumers can omit it.
+  getUsage?: (paneId: string) => PaneUsage | undefined;
   // User events
   onSwitchTab: (leafId: string, tabId: string) => void;
   onCloseTab: (leafId: string, tabId: string) => void;
@@ -169,6 +176,12 @@ export interface PaneLayoutCallbacks {
    * transcript. Optional for the same reason as `onDetachPane`.
    */
   onHistoryPane?: (paneId: string, leafId: string) => void;
+  /**
+   * Toggle voice dictation for a Claude pane (issue #67). When present, a
+   * mic button is mounted in the pane's control stack. Optional — omitted
+   * when the dictation feature isn't wired.
+   */
+  onDictationToggle?: (paneId: string, leafId: string) => void;
 }
 
 /**
@@ -219,6 +232,19 @@ interface LeafView {
   tabBarEl: HTMLElement;
   termsEl: HTMLElement;
   terminals: Map<string, TabRecord>;
+}
+
+// formatPaneUsage renders the minimal tab badge string, e.g.
+// "ctx 43% · 5h 61%". Returns "" when no usable value is present so the
+// caller can skip the DOM node entirely. Exported for unit testing.
+// Number.isFinite (not typeof === "number") guards against a NaN slipping
+// in from a locally-constructed PaneUsage.
+export function formatPaneUsage(u: PaneUsage | undefined): string {
+  if (!u) return "";
+  const parts: string[] = [];
+  if (Number.isFinite(u.context_pct)) parts.push(`ctx ${Math.round(u.context_pct as number)}%`);
+  if (Number.isFinite(u.five_hour_pct)) parts.push(`5h ${Math.round(u.five_hour_pct as number)}%`);
+  return parts.join(" · ");
 }
 
 export class PaneLayout {
@@ -693,6 +719,14 @@ export class PaneLayout {
         onPasteUploadError: this.cb.onPasteUploadError
           ? (err, mime) => this.cb.onPasteUploadError!(t.paneId, err, mime)
           : undefined,
+        // Voice-dictation hint (Phase 0): only Claude panes run `/voice`,
+        // so watch just those for its station-capture failure and, once,
+        // toast the user. `installVoiceErrorHint` mounts into the pane
+        // wrapper; the sink no-ops after it has fired.
+        onDecodedOutput:
+          t.kind === "claude"
+            ? installVoiceErrorHint(wrapper).onOutput
+            : undefined,
         dropPromptTemplate: this.cb.dropPromptTemplate?.(),
         validateDroppedFile: this.cb.validateDroppedFile,
         onDropRejected: this.cb.onDropRejected,
@@ -714,6 +748,19 @@ export class PaneLayout {
           onToggle: () => {
             this.focusLeaf(leaf.id);
             this.cb.onHistoryPane?.(t.paneId, leaf.id);
+          },
+        });
+      }
+      // Voice-dictation mic (issue #67) — Claude panes only: the floating
+      // draggable button anchored to the pane's bottom-left (the chosen
+      // design), not the top-right stack. Focuses the pane, then toggles
+      // dictation there.
+      if (this.cb.onDictationToggle && t.kind === "claude") {
+        ensureDictationFab(wrapper, {
+          icon: iconMic,
+          onToggle: () => {
+            this.focusLeaf(leaf.id);
+            this.cb.onDictationToggle?.(t.paneId, leaf.id);
           },
         });
       }
@@ -886,6 +933,21 @@ export class PaneLayout {
       tabEl.appendChild(dotEl);
       if (hostBadgeEl) tabEl.appendChild(hostBadgeEl);
       tabEl.appendChild(titleEl);
+      // Minimal usage glance on Claude tabs (deferred: a richer, live
+      // usage UI is a separate later pass). NOTE: this is a snapshot taken
+      // when the project is opened — it refreshes on the next project
+      // switch / pane re-fetch, not on the 2s rail poll (usage rides the
+      // ProjectDetail fetch, which the rail poll doesn't call).
+      if (t.kind === "claude") {
+        const usageText = formatPaneUsage(this.cb.getUsage?.(t.paneId));
+        if (usageText) {
+          const usageEl = document.createElement("span");
+          usageEl.className = "tab-usage";
+          usageEl.textContent = usageText;
+          usageEl.title = "Context / 5h quota used";
+          tabEl.appendChild(usageEl);
+        }
+      }
       tabEl.appendChild(closeEl);
 
       tabEl.addEventListener("mousedown", (e) => e.stopPropagation());

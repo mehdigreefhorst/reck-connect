@@ -1,4 +1,5 @@
 import { HttpError } from "@client-core/api/client";
+import { registerDictationSelfTest } from "./transcription/selfTest";
 import { describeError } from "./daemon/connection";
 import type { ConnectionInfo } from "./daemon/connection";
 import { decidePollFailureAction } from "./daemon/poll-failure-policy";
@@ -59,6 +60,7 @@ import { addProjectFlow } from "./ui/add-project-dialog";
 import { confirmDeleteProject } from "./ui/delete-project-dialog";
 import { confirmRestoreProject } from "./ui/confirm-restore-dialog";
 import { initTts } from "./tts/initTts";
+import { initTranscription, type TranscriptionHandle } from "./transcription/initTranscription";
 import { TerminalPaneAdapter } from "./tts/TerminalPaneAdapter";
 import { initSearch } from "./search/initSearch";
 import { TerminalSearchAdapter } from "./search/TerminalSearchAdapter";
@@ -137,7 +139,7 @@ import {
   railDragDecision,
   railDragRelease,
 } from "./ui/rail-collapse";
-import type { PaneKind, Project, Stoplight } from "@proto/proto";
+import type { Pane, PaneKind, PaneUsage, Project, Stoplight } from "@proto/proto";
 import { mergeHybridProjects } from "./hybrid-merge";
 import type { StartupSplashController } from "./ui/startup-splash";
 
@@ -185,6 +187,10 @@ function unmountRestoringOverlay(root: HTMLElement) {
 
 export async function boot(splash?: StartupSplashController) {
   const app = document.getElementById("app")!;
+
+  // Dictation diagnostics — harmless global hook used by the e2e-electron
+  // dictation spec and by humans in DevTools (`reckDictationSelfTest.run()`).
+  registerDictationSelfTest();
 
   // Theme: apply as early as possible to avoid flash. The <html>
   // data-theme attribute also lets the boot splash pick the right
@@ -711,6 +717,18 @@ export async function boot(splash?: StartupSplashController) {
     }
   }
 
+  // Latest per-pane usage glance (context / quota %) from a daemon pane
+  // list, feeding the minimal tab badge. Populated on the same
+  // fetchHostPanes path as capabilities above; a pane without a sample
+  // clears its entry.
+  const paneUsage = new Map<string, PaneUsage>();
+  function recordPaneUsageFromHost(panes: Pane[]) {
+    for (const p of panes) {
+      if (p.usage) paneUsage.set(p.id, p.usage);
+      else paneUsage.delete(p.id);
+    }
+  }
+
   function clearUnseenGreenTimer(projectId: string) {
     const t = unseenGreenTimers.get(projectId);
     if (t !== undefined) {
@@ -1218,6 +1236,10 @@ export async function boot(splash?: StartupSplashController) {
     }),
   });
 
+  // Voice dictation handle (#67), assigned by the async initTranscription
+  // below. The layout's mic-button callback and the ⌘⇧V hotkey route here.
+  let dictationHandle: TranscriptionHandle | null = null;
+
   const layout: PaneLayout = new PaneLayout({
     root: layoutRoot,
     // Phase 10: route each tab's WS through its own host's ApiClient.
@@ -1428,6 +1450,7 @@ export async function boot(splash?: StartupSplashController) {
       if (raw === "green" && !paneUnseenGreen.get(paneId)) return "gray";
       return raw;
     },
+    getUsage: (paneId) => paneUsage.get(paneId),
     onExit: () => {},
     onPaneConnClose: (paneId, info) => {
       // Standard WebSocket close codes — see RFC 6455 §7.4.
@@ -1791,6 +1814,11 @@ export async function boot(splash?: StartupSplashController) {
     // "History" (#51): toggle the transcript overlay for a Claude pane.
     onHistoryPane: (paneId) => {
       void transcripts.toggle(paneId);
+    },
+    // Voice dictation (#67): the mic button focuses the pane (in the layout)
+    // then routes here; the active-pane target is resolved when it starts.
+    onDictationToggle: () => {
+      dictationHandle?.toggle();
     },
   });
   layout.setTheme(theme);
@@ -2248,6 +2276,31 @@ export async function boot(splash?: StartupSplashController) {
     }
   })();
 
+  // Voice dictation (#67): capture the mic on this Mac, transcribe (local
+  // Whisper or Deepgram), and type the text into the active pane's PTY.
+  // Non-fatal like TTS above.
+  void (async () => {
+    try {
+      dictationHandle = await initTranscription({
+        resolveSession: () => {
+          const rec = layout.getActiveTerminalRecord();
+          if (!rec) return null;
+          const encoder = new TextEncoder();
+          return {
+            target: {
+              insert: (text) => rec.term.sendInput(encoder.encode(text)),
+              submit: () => rec.term.sendInput(encoder.encode("\r")),
+            },
+            surface: rec.wrapper,
+          };
+        },
+        onError: (msg) => showToast(document.body, msg, { kind: "error", durationMs: 6000 }),
+      });
+    } catch (e) {
+      console.warn("[dictation] disabled:", e);
+    }
+  })();
+
   // In-view search (⌘/Ctrl+F). Resolves the active terminal pane as a
   // TerminalSearchAdapter (same pattern as the TTS surface above) and
   // routes match-position ticks to that pane's overlay scrollbar.
@@ -2497,6 +2550,7 @@ export async function boot(splash?: StartupSplashController) {
     let livePanesByHost = await fetchHostPanes(primaryPanes);
     for (const panes of Object.values(livePanesByHost)) {
       recordPaneCapabilitiesFromHost(panes);
+      recordPaneUsageFromHost(panes);
     }
 
     const saved = savedLayouts[projectId] ?? null;
@@ -2584,6 +2638,7 @@ export async function boot(splash?: StartupSplashController) {
             livePanesByHost = retried;
             for (const panes of Object.values(livePanesByHost)) {
               recordPaneCapabilitiesFromHost(panes);
+              recordPaneUsageFromHost(panes);
             }
             reconciled = reconcile(saved, livePanesByHost);
             didRetry = true;

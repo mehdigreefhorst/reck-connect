@@ -28,6 +28,7 @@ class StubEngine {
   stopCalls = 0;
   pauseCalls = 0;
   resumeCalls = 0;
+  reswapCalls: SpokenChunk[] = [];
   rate = 1.0;
   speaking = false;
   paused = false;
@@ -53,6 +54,9 @@ class StubEngine {
   resume() {
     this.resumeCalls++;
     this.paused = false;
+  }
+  reswap(chunk: SpokenChunk) {
+    this.reswapCalls.push(chunk);
   }
   setRate(r: number) {
     this.rate = r;
@@ -393,6 +397,88 @@ describe("TtsController.start — text resolution", () => {
   });
 });
 
+describe("TtsController.start — default voice resolution", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  function mkVoice(name: string, opts: { default?: boolean } = {}) {
+    return {
+      name,
+      lang: "en-US",
+      default: opts.default ?? false,
+      localService: true,
+      voiceURI: name,
+    } as SpeechSynthesisVoice;
+  }
+
+  // The Albert bug: with no voice configured the controller used to pass
+  // voice=null to the engine, letting Chromium pick its own default —
+  // which on macOS with a Siri system voice is the novelty voice Albert.
+  it("resolves an explicit default when no voice is configured", async () => {
+    const albert = mkVoice("Albert", { default: true });
+    const zoe = mkVoice("Zoe (Premium)");
+    const pane = fakePane({ bufferLines: ["alpha"] });
+    const engine = new StubEngine();
+    const barFactoryWrap = makeBarFactory();
+    const ctl = new TtsController({
+      engine: engine as unknown as ConstructorParameters<typeof TtsController>[0]["engine"],
+      barFactory: barFactoryWrap.factory as unknown as ConstructorParameters<
+        typeof TtsController
+      >[0]["barFactory"],
+      theme: TTS_THEME_LIGHT,
+      settings: DEFAULT_SETTINGS,
+      saveSettings: async () => undefined,
+      getActiveSurface: () => pane,
+      getLastMousePoint: () => ({ pixelX: 0, pixelY: 0 }),
+      voicesProvider: async () => [albert, zoe],
+    });
+    // Let the constructor's async voice preload settle.
+    await new Promise((r) => setTimeout(r, 0));
+    ctl.start();
+    expect(engine.startCalls).toHaveLength(1);
+    expect(engine.startCalls[0].voice?.name).toBe("Zoe (Premium)");
+    // The bar shows a compact label for the actually-resolved voice.
+    expect(barFactoryWrap.last?.voices).toContain("EN (Zoe)");
+    ctl.dispose();
+  });
+
+  it("detects the chunk's language on Automatic and picks a voice for it", async () => {
+    const zoe = mkVoice("Zoe (Premium)");
+    const claire = {
+      name: "Claire (Enhanced)",
+      lang: "nl-NL",
+      default: false,
+      localService: true,
+      voiceURI: "Claire (Enhanced)",
+    } as SpeechSynthesisVoice;
+    const pane = fakePane({
+      bufferLines: [
+        "welke knoppen heb je dat is een gewoon script en de server geeft het resultaat terug",
+      ],
+    });
+    const engine = new StubEngine();
+    const barFactoryWrap = makeBarFactory();
+    const ctl = new TtsController({
+      engine: engine as unknown as ConstructorParameters<typeof TtsController>[0]["engine"],
+      barFactory: barFactoryWrap.factory as unknown as ConstructorParameters<
+        typeof TtsController
+      >[0]["barFactory"],
+      theme: TTS_THEME_LIGHT,
+      settings: DEFAULT_SETTINGS,
+      saveSettings: async () => undefined,
+      getActiveSurface: () => pane,
+      getLastMousePoint: () => ({ pixelX: 0, pixelY: 0 }),
+      voicesProvider: async () => [zoe, claire],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    ctl.start();
+    expect(engine.startCalls[0].voice?.name).toBe("Claire (Enhanced)");
+    expect(barFactoryWrap.last?.voices).toContain("NL (Claire)");
+    ctl.dispose();
+  });
+});
+
 describe("TtsController.start — UI side effects", () => {
   afterEach(() => {
     document.body.innerHTML = "";
@@ -713,6 +799,142 @@ describe("TtsController — highlight theme push to surface", () => {
     ctl.start();
     ctl.setTheme({ ...TTS_THEME_LIGHT, backgroundColor: "#123456" });
     expect(pane.themeColors).toContain("#123456");
+    ctl.dispose();
+  });
+});
+
+// ── Content-change re-resolution (scroll → reswap) ──────────────────
+
+/** Minimal single-word chunk (rangemap details irrelevant to these tests). */
+function chunkText(text: string): SpokenChunk {
+  return {
+    text,
+    rangeMap: [{ charStart: 0, charEnd: text.length, line: 0, col: 0, len: text.length }],
+  };
+}
+
+/** A surface that supports the optional content-change hooks, with controls to
+ *  drive the notification and inspect subscription state. */
+function contentChangeSurface(opts: {
+  chunk: SpokenChunk;
+  upcoming: SpokenChunk | null;
+}) {
+  const container = document.createElement("div");
+  container.style.position = "relative";
+  document.body.appendChild(container);
+  let cb: (() => void) | null = null;
+  let unsub = false;
+  let upcoming = opts.upcoming;
+  const surface: SpeakSurfaceAdapter = {
+    kind: "terminal",
+    getContainerEl: () => container,
+    resolveSpokenChunk: () => opts.chunk,
+    highlightBoundary: () => undefined,
+    clearHighlight: () => undefined,
+    onContentChange: (fn: () => void) => {
+      cb = fn;
+      return () => {
+        unsub = true;
+        cb = null;
+      };
+    },
+    resolveUpcomingChunk: () => upcoming,
+    dispose: () => undefined,
+  };
+  return {
+    surface,
+    fire: () => cb?.(),
+    unsubscribed: () => unsub,
+    setUpcoming: (c: SpokenChunk | null) => {
+      upcoming = c;
+    },
+  };
+}
+
+describe("TtsController — recompute upcoming words on content change", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("reswaps the engine with a freshly-resolved chunk while playing", () => {
+    const s = contentChangeSurface({
+      chunk: chunkText("alpha beta"),
+      upcoming: chunkText("alpha beta gamma"),
+    });
+    const { engine, ctl } = makeController({ pane: s.surface, point: { pixelX: 0, pixelY: 0 } });
+    ctl.start();
+    expect(engine.startCalls).toHaveLength(1);
+    s.fire();
+    expect(engine.reswapCalls).toHaveLength(1);
+    expect(engine.reswapCalls[0].text).toBe("alpha beta gamma");
+    ctl.dispose();
+  });
+
+  it("does NOT reswap when the surface declines re-resolution (returns null)", () => {
+    const s = contentChangeSurface({ chunk: chunkText("alpha"), upcoming: null });
+    const { engine, ctl } = makeController({ pane: s.surface, point: { pixelX: 0, pixelY: 0 } });
+    ctl.start();
+    s.fire();
+    expect(engine.reswapCalls).toHaveLength(0);
+    ctl.dispose();
+  });
+
+  it("does NOT reswap on an empty recomputed chunk", () => {
+    const s = contentChangeSurface({
+      chunk: chunkText("alpha"),
+      upcoming: { text: "", rangeMap: [] },
+    });
+    const { engine, ctl } = makeController({ pane: s.surface, point: { pixelX: 0, pixelY: 0 } });
+    ctl.start();
+    s.fire();
+    expect(engine.reswapCalls).toHaveLength(0);
+    ctl.dispose();
+  });
+
+  it("does NOT reswap while paused", () => {
+    const s = contentChangeSurface({
+      chunk: chunkText("alpha"),
+      upcoming: chunkText("alpha beta"),
+    });
+    const { engine, ctl } = makeController({ pane: s.surface, point: { pixelX: 0, pixelY: 0 } });
+    ctl.start();
+    ctl.pauseToggle(); // → paused
+    s.fire();
+    expect(engine.reswapCalls).toHaveLength(0);
+    ctl.dispose();
+  });
+
+  it("unsubscribes from content changes on stop", () => {
+    const s = contentChangeSurface({
+      chunk: chunkText("alpha"),
+      upcoming: chunkText("alpha beta"),
+    });
+    const { engine, ctl } = makeController({ pane: s.surface, point: { pixelX: 0, pixelY: 0 } });
+    ctl.start();
+    ctl.stop();
+    expect(s.unsubscribed()).toBe(true);
+    s.fire();
+    expect(engine.reswapCalls).toHaveLength(0);
+    ctl.dispose();
+  });
+
+  it("unsubscribes from content changes when playback ends", () => {
+    const s = contentChangeSurface({
+      chunk: chunkText("alpha"),
+      upcoming: chunkText("alpha beta"),
+    });
+    const { engine, ctl } = makeController({ pane: s.surface, point: { pixelX: 0, pixelY: 0 } });
+    ctl.start();
+    engine.fireEnd();
+    expect(s.unsubscribed()).toBe(true);
+    ctl.dispose();
+  });
+
+  it("never subscribes for surfaces without the hooks (no crash)", () => {
+    const pane = fakePane({ bufferLines: ["alpha beta"] });
+    const { engine, ctl } = makeController({ pane, point: { pixelX: 0, pixelY: 0 } });
+    expect(() => ctl.start()).not.toThrow();
+    expect(engine.reswapCalls).toHaveLength(0);
     ctl.dispose();
   });
 });
