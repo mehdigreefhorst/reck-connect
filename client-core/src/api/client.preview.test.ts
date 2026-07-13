@@ -43,6 +43,25 @@ describe("ApiClient preview lifecycle", () => {
     expect(resp).toEqual(statusBody);
   });
 
+  it("carries app_rel_path in the POST body when appRelPath is provided", async () => {
+    const c = new ApiClient({ baseUrl: "http://x:7315" });
+    let captured = { body: "" };
+    global.fetch = vi.fn(async (_u, init) => {
+      captured = { body: String(init?.body ?? "") };
+      return new Response(JSON.stringify(statusBody), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    await c.startPreview("p", { hmrHost: "100.1.2.3", appRelPath: "apps/dashboard-v2" });
+
+    expect(JSON.parse(captured.body)).toEqual({
+      hmr_host: "100.1.2.3",
+      app_rel_path: "apps/dashboard-v2",
+    });
+  });
+
   it("defaults hmr_host to empty string when opts omitted", async () => {
     const c = new ApiClient({ baseUrl: "http://x:7315" });
     let captured = { body: "" };

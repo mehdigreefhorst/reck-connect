@@ -17,6 +17,15 @@ describe("createComponentPreview", () => {
     h.dispose();
   });
 
+  it("forwards appRelPath (with defaulted hmrHost) to startPreview for a monorepo subdir app", async () => {
+    const api = { startPreview: vi.fn().mockResolvedValue(ready), getPreview: vi.fn().mockResolvedValue(ready), stopPreview: vi.fn().mockResolvedValue(undefined) };
+    const h = createComponentPreview({ api, projectId: "p", stationHost: "100.1.2.3", targetRelPath: "apps/dashboard-v2/src/App.tsx", appRelPath: "apps/dashboard-v2" });
+    document.body.appendChild(h.el);
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(api.startPreview).toHaveBeenCalledWith("p", { hmrHost: "100.1.2.3", appRelPath: "apps/dashboard-v2" });
+    h.dispose();
+  });
+
   it("shows a degrade panel and calls onError when start returns not-ready", async () => {
     const api = { startPreview: vi.fn().mockResolvedValue({ running:false, ready:false, port:0, error:"node not found on station" }), getPreview: vi.fn(), stopPreview: vi.fn().mockResolvedValue(undefined) };
     const onError = vi.fn();

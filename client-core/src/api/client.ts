@@ -379,15 +379,21 @@ export class ApiClient {
    * (Phase B). POST `/projects/:id/preview`. The `hmrHost` opt is the
    * station tailnet host the Vite runner should advertise for HMR; it is
    * sent as snake_case `hmr_host` to match `PreviewStartRequest` and
-   * defaults to the empty string (daemon then binds the host itself).
-   * Returns the daemon's current `PreviewStatus`. Throws `HttpError` on
-   * non-2xx via the shared `fetch<T>` convention.
+   * defaults to the empty string (daemon then binds the host itself). The
+   * `appRelPath` opt is the project-root-relative Vite app directory for a
+   * monorepo subdir app; it is sent as snake_case `app_rel_path` and
+   * omitted from the body when undefined (daemon treats absent as the
+   * project root). Returns the daemon's current `PreviewStatus`. Throws
+   * `HttpError` on non-2xx via the shared `fetch<T>` convention.
    */
   startPreview(
     projectId: string,
-    opts?: { hmrHost?: string },
+    opts?: { hmrHost?: string; appRelPath?: string },
   ): Promise<PreviewStatus> {
-    const body: PreviewStartRequest = { hmr_host: opts?.hmrHost ?? "" };
+    const body: PreviewStartRequest = {
+      hmr_host: opts?.hmrHost ?? "",
+      app_rel_path: opts?.appRelPath,
+    };
     return this.fetch<PreviewStatus>(
       `/projects/${encodeURIComponent(projectId)}/preview`,
       { method: "POST", body: JSON.stringify(body) },

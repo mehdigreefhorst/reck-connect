@@ -37,7 +37,7 @@ export type PreviewStatusLike = PreviewStatus;
 export interface PreviewApi {
   startPreview(
     projectId: string,
-    opts?: { hmrHost?: string },
+    opts?: { hmrHost?: string; appRelPath?: string },
   ): Promise<PreviewStatus>;
   getPreview(projectId: string): Promise<PreviewStatus>;
   stopPreview(projectId: string): Promise<void>;
@@ -50,6 +50,12 @@ export interface ComponentPreviewOptions {
   stationHost: string;
   /** Project-root-relative path of the component file to preview. */
   targetRelPath: string;
+  /**
+   * Vite app directory relative to the project root, for a monorepo subdir
+   * app ("" / omitted = the project root is the app). Forwarded to
+   * `startPreview` so the daemon runs Vite in that subdir.
+   */
+  appRelPath?: string;
   /** Invoked with a human-readable message when the preview degrades. */
   onError?(message: string): void;
   /** Usually === `stationHost`; forwarded to `startPreview` for Vite HMR. */
@@ -150,7 +156,7 @@ export function createComponentPreview(
   console.info(
     `[preview] startPreview project=${projectId} hmrHost=${hmrHost} target=${targetRelPath}`,
   );
-  void api.startPreview(projectId, { hmrHost }).then(
+  void api.startPreview(projectId, { hmrHost, appRelPath: opts.appRelPath }).then(
     (status) => {
       if (disposed) return;
       console.info(
