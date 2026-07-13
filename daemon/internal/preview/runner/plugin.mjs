@@ -52,8 +52,15 @@ export function reckPreviewPlugin({ cwd }) {
       if (id === "/@reck/bootstrap") return "\0/@reck/bootstrap";
       if (id.startsWith("/@reck/entry")) return "\0" + id; // keep ?target= on the id
       if (id.startsWith("/@reck/providers")) {
-        // derive the target from the entry module that is importing us
-        return "\0/@reck/providers?target=" + encodeURIComponent(targetOf(importer));
+        // Already-resolved form (the browser re-requests the rewritten URL).
+        if (id.includes("?target=")) return id;
+        // Derive the target from the entry module that is importing us. NO \0
+        // prefix and a .tsx extension, deliberately: rollup's createFilter
+        // excludes every \0 id, which would skip vite:esbuild and leak raw
+        // JSX into import-analysis. A plain virtual path (same trick as
+        // plugin-react's /@react-refresh) rides the project's own JSX/TS
+        // transform pipeline instead.
+        return "/@reck/providers.tsx?target=" + encodeURIComponent(targetOf(importer));
       }
     },
     async load(id) {
@@ -66,8 +73,9 @@ export function reckPreviewPlugin({ cwd }) {
         ]);
         return buildPreviewEntry({ targetRelPath: target, sideEffectImports, hasProviders: !!prov });
       }
-      if (id.startsWith("\0/@reck/providers")) {
+      if (id.startsWith("/@reck/providers")) {
         const prov = await detectProviders(cwd, targetOf(id));
+        if (prov?.source) return prov.source; // entry-derived module, served verbatim
         return buildProvidersModule({
           providersImportPath: prov?.importPath ?? null,
           providersExport: prov?.exportName ?? null,

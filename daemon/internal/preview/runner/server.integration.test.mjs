@@ -66,9 +66,36 @@ test("entry module imports global.css + target + providers", async () => {
   const src = await res.text();
   assert.match(src, /src\/index\.css/);
   assert.match(src, /src\/components\/Button\.tsx/);
-  // providers wrapper is threaded in because the fixture ships src/Providers.tsx
+  // providers wrapper is threaded in (entry-derived, from the fixture's main.tsx)
   assert.match(src, /@reck\/providers/);
   // issue #44 acceptance: auto-wrap reached the entry graph for a themed fixture —
   // pin the exact import path (leading slash), not just a substring.
   assert.match(src, /\/@reck\/providers/);
+});
+
+test("named-export target resolves through pickComponent in the entry", async () => {
+  const res = await fetch(`${base}/@reck/entry?target=src/features/ThreadView.tsx`);
+  assert.equal(res.status, 200);
+  const src = await res.text();
+  assert.match(src, /src\/features\/ThreadView\.tsx/);
+  assert.match(src, /pickComponent\(__mod, "ThreadView"\)/);
+});
+
+test("providers module replays main.tsx's ToastProvider, transformed by the project's Vite", async () => {
+  // resolve the providers module exactly the way the browser would: follow the
+  // rewritten import URL out of the transformed entry.
+  const entry = await (await fetch(`${base}/@reck/entry?target=src/features/ThreadView.tsx`)).text();
+  const m = /["']([^"']*@reck\/providers[^"']*)["']/.exec(entry);
+  assert.ok(m, "entry references the providers module");
+  const res = await fetch(base + m[1]);
+  assert.equal(res.status, 200, "providers virtual module serves");
+  const src = await res.text();
+  // entry-derived: the app's real ToastProvider wraps {children}…
+  assert.match(src, /ToastProvider/);
+  assert.match(src, /children/);
+  // …and the JSX was actually transformed (raw JSX would 500 or leak '<' tags)
+  assert.doesNotMatch(src, /<ToastProvider/);
+  assert.doesNotMatch(src, /<StrictMode/);
+  // the app leaf import was stripped — previewing must not load the whole app
+  assert.doesNotMatch(src, /src\/App/);
 });
