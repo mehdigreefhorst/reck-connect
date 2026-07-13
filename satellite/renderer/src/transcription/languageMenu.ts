@@ -119,27 +119,29 @@ export function showDictationContextMenu(x: number, y: number, props: LanguageMe
   // left edge, so the menu never covers the mic or the live pill; fall back
   // to below if there's no room above. Otherwise position at (x,y). Clamp on
   // screen either way.
-  const rect = menu.getBoundingClientRect();
+  // offsetWidth/offsetHeight = untransformed layout size; getBoundingClientRect
+  // reads short during the scale-in animation and would mis-place the menu.
+  const w = menu.offsetWidth;
+  const h = menu.offsetHeight;
   const margin = 8;
   if (props.anchorRect) {
     const a = props.anchorRect;
     const left = Math.min(
       Math.max(margin, a.left),
-      Math.max(margin, window.innerWidth - margin - rect.width),
+      Math.max(margin, window.innerWidth - margin - w),
     );
-    const above = a.top - margin - rect.height;
+    const above = a.top - margin - h;
     const top =
-      above >= margin
-        ? above
-        : Math.min(a.bottom + margin, window.innerHeight - margin - rect.height);
+      above >= margin ? above : Math.min(a.bottom + margin, window.innerHeight - margin - h);
     menu.style.left = `${left}px`;
     menu.style.top = `${Math.max(margin, top)}px`;
   } else {
+    const rect = menu.getBoundingClientRect();
     if (rect.right > window.innerWidth - margin) {
-      menu.style.left = `${window.innerWidth - margin - rect.width}px`;
+      menu.style.left = `${window.innerWidth - margin - w}px`;
     }
     if (rect.bottom > window.innerHeight - margin) {
-      menu.style.top = `${window.innerHeight - margin - rect.height}px`;
+      menu.style.top = `${window.innerHeight - margin - h}px`;
     }
   }
 

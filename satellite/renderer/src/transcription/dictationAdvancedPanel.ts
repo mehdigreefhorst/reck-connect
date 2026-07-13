@@ -253,15 +253,19 @@ export function showDictationAdvancedPanel(x: number, y: number, opts: AdvancedP
   document.body.appendChild(panel);
 
   // Position: bottom edge at `y`, centered on `x`, clamped fully on screen.
-  const rect = panel.getBoundingClientRect();
+  // Use offsetWidth/offsetHeight (the untransformed LAYOUT size) — the panel's
+  // scale-in entrance animation makes getBoundingClientRect() read short
+  // mid-animation, which pushed the bottom well past the click point.
+  const w = panel.offsetWidth;
+  const h = panel.offsetHeight;
   const margin = 8;
   const left = Math.min(
-    Math.max(margin, x - rect.width / 2),
-    Math.max(margin, window.innerWidth - margin - rect.width),
+    Math.max(margin, x - w / 2),
+    Math.max(margin, window.innerWidth - margin - w),
   );
   const top = Math.min(
-    Math.max(margin, y - rect.height),
-    Math.max(margin, window.innerHeight - margin - rect.height),
+    Math.max(margin, y - h),
+    Math.max(margin, window.innerHeight - margin - h),
   );
   panel.style.left = `${left}px`;
   panel.style.top = `${top}px`;
