@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { detectStationProjectPreview } from "./stationPreviewDetect";
+import {
+  detectStationProjectPreview,
+  detectStationPreviewForFile,
+} from "./stationPreviewDetect";
 
 // Reader stub keyed by absolute station path. Missing key → null (the
 // production wiring maps a failed `files.readStation` to null the same way).
@@ -109,5 +112,105 @@ describe("detectStationProjectPreview", () => {
     await expect(
       detectStationProjectPreview(read, `${CWD}/`),
     ).resolves.toEqual({ previewable: true, reason: "" });
+  });
+});
+
+// Task 6 — the file-aware walk-up variant, over the same injected reader.
+// Mirrors Task 1's `detectPreviewForFile` cases (main/project-detect.test.ts)
+// against a fake path→content map so no fs / IPC is touched.
+const ROOT = "/home/strijders/projects/mono";
+
+describe("detectStationPreviewForFile (walk-up)", () => {
+  it("finds a Vite+React app in a monorepo subdir", async () => {
+    const app = `${ROOT}/apps/dashboard-v2`;
+    const read = readerFor({
+      [`${app}/package.json`]: JSON.stringify({
+        dependencies: { vite: "5", react: "18" },
+      }),
+    });
+    await expect(
+      detectStationPreviewForFile(read, ROOT, `${app}/src/App.tsx`),
+    ).resolves.toEqual({
+      previewable: true,
+      appRelPath: "apps/dashboard-v2",
+      targetRelPath: "src/App.tsx",
+      reason: "ok",
+    });
+  });
+
+  it("treats a root-level Vite app as appRelPath=''", async () => {
+    const read = readerFor({
+      [`${ROOT}/package.json`]: JSON.stringify({ dependencies: { react: "18" } }),
+      [`${ROOT}/vite.config.ts`]: "export default {}",
+    });
+    await expect(
+      detectStationPreviewForFile(read, ROOT, `${ROOT}/src/App.tsx`),
+    ).resolves.toEqual({
+      previewable: true,
+      appRelPath: "",
+      targetRelPath: "src/App.tsx",
+      reason: "ok",
+    });
+  });
+
+  it("reports no-vite-app when nothing up the tree is Vite", async () => {
+    const read = readerFor({
+      [`${ROOT}/package.json`]: JSON.stringify({ dependencies: { react: "18" } }),
+    });
+    const info = await detectStationPreviewForFile(
+      read,
+      ROOT,
+      `${ROOT}/src/App.tsx`,
+    );
+    expect(info.previewable).toBe(false);
+    expect(info.reason).toBe("no-vite-app");
+  });
+
+  it("reports vite-no-react when the nearest Vite app lacks React", async () => {
+    const app = `${ROOT}/apps/cli`;
+    const read = readerFor({
+      [`${app}/package.json`]: JSON.stringify({ dependencies: { vite: "5" } }),
+      [`${app}/vite.config.ts`]: "export default {}",
+    });
+    const info = await detectStationPreviewForFile(
+      read,
+      ROOT,
+      `${app}/src/main.tsx`,
+    );
+    expect(info.previewable).toBe(false);
+    expect(info.reason).toBe("vite-no-react");
+  });
+
+  it("does not walk above the project root", async () => {
+    const proj = `${ROOT}/packages/inner`;
+    const read = readerFor({
+      // A Vite+React app ABOVE the project root must be ignored.
+      [`${ROOT}/package.json`]: JSON.stringify({
+        dependencies: { vite: "5", react: "18" },
+      }),
+      [`${ROOT}/vite.config.ts`]: "export default {}",
+      [`${proj}/package.json`]: JSON.stringify({ dependencies: { react: "18" } }),
+    });
+    const info = await detectStationPreviewForFile(
+      read,
+      proj,
+      `${proj}/src/App.tsx`,
+    );
+    expect(info.previewable).toBe(false);
+    expect(info.reason).toBe("no-vite-app");
+  });
+
+  it("reports read-error when the file's own dir package.json read throws", async () => {
+    const read = vi.fn(async (p: string): Promise<string | null> => {
+      if (p === `${ROOT}/src/package.json`) throw new Error("ssh exploded");
+      return null;
+    });
+    const info = await detectStationPreviewForFile(
+      read,
+      ROOT,
+      `${ROOT}/src/App.tsx`,
+    );
+    expect(info.previewable).toBe(false);
+    expect(info.reason).toBe("read-error");
   });
 });

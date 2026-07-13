@@ -12,6 +12,8 @@
 // Kept reader-injected (no `window.reckAPI` import) so the vitest unit test
 // needs no IPC mock.
 
+import type { PreviewReasonKey } from "./previewReason";
+
 /** Reads a station-side file; resolves `null` when unreadable/missing. */
 export type StationFileReader = (stationPath: string) => Promise<string | null>;
 
@@ -19,6 +21,20 @@ export interface StationPreviewInfo {
   previewable: boolean;
   /** Human-readable; "" when previewable, else why not (for a UI hint). */
   reason: string;
+}
+
+/**
+ * File-aware result — the station mirror of Task 1's `FilePreviewInfo`
+ * (main/project-detect.ts). `appRelPath` is the nearest Vite+React app dir
+ * relative to the project root ("" = the root itself is the app);
+ * `targetRelPath` is the file relative to that app dir. The `reason` union
+ * is shared with the "why" card copy so the two never drift.
+ */
+export interface FilePreviewInfo {
+  previewable: boolean;
+  appRelPath: string;
+  targetRelPath: string;
+  reason: PreviewReasonKey;
 }
 
 /**
@@ -85,6 +101,109 @@ export async function detectStationProjectPreview(
   if (!hasVite) return { previewable: false, reason: "not a Vite project" };
   if (!hasReact) return { previewable: false, reason: "no React dependency" };
   return { previewable: true, reason: "" };
+}
+
+/** POSIX dirname over a station (Linux) absolute path — no `node:path` so
+ *  the module stays reader-injected and unit-testable without fs. */
+function posixDirname(p: string): string {
+  const idx = p.lastIndexOf("/");
+  if (idx < 0) return "";
+  if (idx === 0) return "/";
+  return p.slice(0, idx);
+}
+
+/**
+ * Classify a single directory over the injected reader — the station mirror
+ * of Task 1's `classifyDir`. A `null` package.json read means "no file here"
+ * (walk keeps going); a *thrown* reader error is a genuine read failure
+ * (`readError`). Malformed JSON is NOT a read error — it degrades to empty
+ * deps, matching the main-process detector.
+ */
+async function classifyStationDir(
+  readFile: StationFileReader,
+  dir: string,
+): Promise<{ vite: boolean; react: boolean; readError: boolean }> {
+  let deps: Record<string, unknown> = {};
+  let readError = false;
+  let raw: string | null;
+  try {
+    raw = await readFile(`${dir}/package.json`);
+  } catch {
+    raw = null;
+    readError = true; // reader threw → real failure, not just an absent file
+  }
+  if (raw !== null) {
+    try {
+      const pkg = JSON.parse(raw) as {
+        dependencies?: unknown;
+        devDependencies?: unknown;
+      };
+      deps = {
+        ...asRecord(pkg.dependencies),
+        ...asRecord(pkg.devDependencies),
+      };
+    } catch {
+      // Malformed package.json — leave deps empty (no readError), same as
+      // the main-process walk-up.
+    }
+  }
+  let vite = "vite" in deps;
+  if (!vite) {
+    for (const cfg of VITE_CONFIGS) {
+      let content: string | null;
+      try {
+        content = await readFile(`${dir}/${cfg}`);
+      } catch {
+        content = null;
+      }
+      if (content !== null) {
+        vite = true;
+        break;
+      }
+    }
+  }
+  return { vite, react: "react" in deps, readError };
+}
+
+/**
+ * Walk up from `filePath` to `projectCwd` (inclusive) over the injected
+ * `readFile`, reporting the nearest Vite+React app root. Station mirror of
+ * Task 1's `detectPreviewForFile`: `appRelPath` is that dir relative to the
+ * project root ("" when it IS the root), `targetRelPath` is the file relative
+ * to the app root. Never walks above the project root and never throws.
+ */
+export async function detectStationPreviewForFile(
+  readFile: StationFileReader,
+  projectCwd: string,
+  filePath: string,
+): Promise<FilePreviewInfo> {
+  const notPreviewable = (reason: PreviewReasonKey): FilePreviewInfo => ({
+    previewable: false,
+    appRelPath: "",
+    targetRelPath: "",
+    reason,
+  });
+  const root = projectCwd.replace(/\/+$/, "");
+  const fileDir = posixDirname(filePath);
+  let dir = fileDir;
+  let sawViteNoReact = false;
+  // Guard: filePath must live under projectCwd.
+  if (dir !== root && !dir.startsWith(root + "/")) {
+    return notPreviewable("no-vite-app");
+  }
+  while (true) {
+    const { vite, react, readError } = await classifyStationDir(readFile, dir);
+    if (readError && dir === fileDir) return notPreviewable("read-error");
+    if (vite && react) {
+      const appRelPath = dir === root ? "" : dir.slice(root.length + 1);
+      const targetRelPath = filePath.slice(dir.length + 1);
+      return { previewable: true, appRelPath, targetRelPath, reason: "ok" };
+    }
+    if (vite && !react) sawViteNoReact = true;
+    if (dir === root) break;
+    dir = posixDirname(dir);
+  }
+  return notPreviewable(sawViteNoReact ? "vite-no-react" : "no-vite-app");
 }
 
 /** Coerce an unknown package.json field into a plain string-keyed record. */

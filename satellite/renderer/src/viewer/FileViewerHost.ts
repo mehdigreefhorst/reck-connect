@@ -22,7 +22,7 @@ import {
   deriveComponentTarget,
   deriveStationComponentTarget,
 } from "./componentTarget";
-import { detectStationProjectPreview } from "./stationPreviewDetect";
+import { detectStationPreviewForFile } from "./stationPreviewDetect";
 import {
   previewReasonCopy,
   type PreviewReasonKey,
@@ -1054,6 +1054,15 @@ async function renderStationRemote(
   let settings: Awaited<ReturnType<typeof loadSettings>> = null;
   let stationTarget: ReturnType<typeof deriveStationComponentTarget> = null;
   let componentPreviewAvailable = false;
+  // Phase B — mirrors renderForPath's local gate. When detection ran and the
+  // file isn't previewable, `previewReason` carries the walk-up detector's
+  // reason so the source branch can render a legible "why" card instead of
+  // silently dropping to the bare editor. `componentAppRelPath` is the Vite
+  // app dir relative to the project root ("" = the root is the app) and
+  // `componentTargetRel` is the app-relative target passed to the preview.
+  let previewReason: PreviewReasonKey | null = null;
+  let componentAppRelPath = "";
+  let componentTargetRel = "";
   if (isComponentPath(filePath)) {
     settings = await loadSettings();
     console.info(
@@ -1080,14 +1089,23 @@ async function renderStationRemote(
               : "<not under cwd>"),
         );
         if (stationTarget) {
-          const det = await detectStationProjectPreview(async (p) => {
+          const readFn = async (p: string): Promise<string | null> => {
             const r = await window.reckAPI.files.readStation(p);
             return r.ok ? r.content : null;
-          }, renderOpts.projectCwd);
+          };
+          const det = await detectStationPreviewForFile(
+            readFn,
+            renderOpts.projectCwd,
+            filePath,
+          );
           componentPreviewAvailable = det.previewable;
+          previewReason = det.previewable ? null : det.reason;
+          componentAppRelPath = det.appRelPath;
+          componentTargetRel = det.targetRelPath;
           console.info(
             `[preview] detect(station) cwd=${renderOpts.projectCwd} ` +
-              `previewable=${det.previewable}` +
+              `file=${filePath} previewable=${det.previewable} ` +
+              `app=${det.appRelPath || "<root>"} target=${det.targetRelPath}` +
               (det.reason ? ` reason=${det.reason}` : ""),
           );
         }
@@ -1292,7 +1310,14 @@ async function renderStationRemote(
       api,
       projectId: renderOpts.projectId!,
       stationHost,
-      targetRelPath: stationTarget.targetRelPath,
+      // Prefer the detector's app-relative target (correct for a monorepo
+      // subdir app); fall back to the cwd-relative target for root-level
+      // apps or a detector that returned none.
+      targetRelPath: componentTargetRel || stationTarget.targetRelPath,
+      // MUST be passed explicitly — the option is optional so the compiler
+      // won't flag its absence, but a subdir app renders at the wrong
+      // directory without it. "" means the project root is the Vite app.
+      appRelPath: componentAppRelPath,
       onError: (m) =>
         showToast(shell.body, m, { kind: "error", durationMs: 5000 }),
     });
@@ -1305,10 +1330,37 @@ async function renderStationRemote(
     // Source mode (markdown source OR non-markdown code) — EDITABLE
     // CodeMirror. mountCodeEditor's onChange feeds autoSave.markDirty
     // which fires writeStation 400ms after the last keystroke.
+    shell.body.innerHTML = "";
+
+    // Phase B — legible failure (mirrors renderForPath). When a component
+    // file was probed and isn't previewable, we tried and failed
+    // (previewReason set), so surface a "why" card above a hidden editor
+    // instead of silently dropping to source. Non-component opens (`.md`,
+    // `.html`, plain files) and files where detection never ran keep
+    // previewReason null → no card.
+    const showReasonCard = isComponentPath(filePath) && previewReason !== null;
+    // Editor + banners mount inside their own host so the reason card can
+    // keep them hidden until the user clicks "Show source".
+    const editorHost = document.createElement("div");
+    editorHost.className = "file-viewer-source-host";
+    if (showReasonCard) {
+      editorHost.hidden = true;
+      let card: HTMLElement | null = null;
+      card = mountPreviewReasonCard({
+        parent: shell.body,
+        reason: previewReason as PreviewReasonKey,
+        onShowSource: () => {
+          card?.remove();
+          editorHost.hidden = false;
+        },
+      });
+    }
+    shell.body.appendChild(editorHost);
+
     // Round 5 Phase V — when the SSH user can't write the file, mount
     // a banner above the editor and lock CodeMirror into readOnly.
     if (!result.writable) {
-      mountReadOnlyBanner(shell.body);
+      mountReadOnlyBanner(editorHost);
     }
     // Round 5 Phase W — full-width lock banner. Same logic as in
     // renderForPath: default LOCKED unless `initialUnlocked: true`.
@@ -1316,7 +1368,7 @@ async function renderStationRemote(
     const startLocked = result.writable && renderOpts.initialUnlocked !== true;
     if (result.writable) {
       lockBannerRef = mountLockBanner({
-        parent: shell.body,
+        parent: editorHost,
         initialLocked: startLocked,
         onToggle: (locked) => {
           codeEditor?.setReadOnly(locked);
@@ -1325,7 +1377,7 @@ async function renderStationRemote(
     }
     const wrapper = document.createElement("div");
     wrapper.className = "file-viewer-code-editor";
-    shell.body.appendChild(wrapper);
+    editorHost.appendChild(wrapper);
     codeEditor = mountCodeEditor({
       initialContent: result.content,
       filePath,
