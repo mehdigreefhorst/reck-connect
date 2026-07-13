@@ -24,6 +24,10 @@ import {
 } from "./componentTarget";
 import { detectStationProjectPreview } from "./stationPreviewDetect";
 import {
+  previewReasonCopy,
+  type PreviewReasonKey,
+} from "./previewReason";
+import {
   createComponentPreview,
   type ComponentPreviewHandle,
 } from "./ComponentPreview";
@@ -232,6 +236,49 @@ function mountReadOnlyBanner(parent: HTMLElement): void {
   banner.textContent =
     "⚠ Read-only on disk (no write permission). Edit elsewhere with elevated permissions.";
   parent.appendChild(banner);
+}
+
+/**
+ * Phase B — legible failure for component files. When a `.tsx/.jsx` file was
+ * probed for a live preview and came back not-previewable, we show this "why"
+ * card (built from {@link previewReasonCopy}) instead of silently dropping to
+ * the bare editor. A "Show source" button reveals the editor on demand.
+ *
+ * Reuses the `.file-viewer-component-error` panel look; a `-reason` modifier
+ * takes it out of the absolute overlay flow and stacks the copy + action.
+ * Returns the card element so the caller can remove it once source is shown.
+ */
+function mountPreviewReasonCard(opts: {
+  parent: HTMLElement;
+  reason: PreviewReasonKey;
+  onShowSource: () => void;
+}): HTMLElement {
+  const copy = previewReasonCopy(opts.reason);
+  const card = document.createElement("div");
+  card.className = "file-viewer-component-error file-viewer-preview-reason";
+  card.setAttribute("role", "note");
+
+  const inner = document.createElement("div");
+  inner.className = "file-viewer-preview-reason-inner";
+
+  const title = document.createElement("div");
+  title.className = "file-viewer-preview-reason-title";
+  title.textContent = copy.title;
+
+  const body = document.createElement("div");
+  body.className = "file-viewer-preview-reason-body";
+  body.textContent = copy.body;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "file-viewer-preview-reason-show";
+  button.textContent = "Show source";
+  button.addEventListener("click", opts.onShowSource);
+
+  inner.append(title, body, button);
+  card.appendChild(inner);
+  opts.parent.appendChild(card);
+  return card;
 }
 
 /**
@@ -1578,6 +1625,16 @@ async function renderForPath(
   let settings: Awaited<ReturnType<typeof loadSettings>> = null;
   let componentTarget: ReturnType<typeof deriveComponentTarget> = null;
   let componentPreviewAvailable = false;
+  // When detection ran and the file isn't previewable, `previewReason` holds
+  // the walk-up detector's reason so the source branch can render a legible
+  // "why" card instead of silently falling back to the bare editor. Stays
+  // null when detection didn't run (non-component file, gate not met) or the
+  // file IS previewable. `componentAppRelPath` is the Vite app directory
+  // (relative to the project root; "" = project root is the app) and
+  // `componentTargetRel` is the app-relative target passed to the preview.
+  let previewReason: PreviewReasonKey | null = null;
+  let componentAppRelPath = "";
+  let componentTargetRel = "";
   if (isComponentPath(filePath)) {
     settings = await loadSettings();
     console.info(
@@ -1599,11 +1656,16 @@ async function renderForPath(
         if (componentTarget) {
           const det = await window.reckAPI.preview.detect(
             componentTarget.projectRootMac,
+            result.resolvedPath,
           );
           componentPreviewAvailable = det.previewable;
+          previewReason = det.previewable ? null : det.reason;
+          componentAppRelPath = det.appRelPath;
+          componentTargetRel = det.targetRelPath;
           console.info(
             `[preview] detect(local) root=${componentTarget.projectRootMac} ` +
-              `previewable=${det.previewable}` +
+              `file=${result.resolvedPath} previewable=${det.previewable} ` +
+              `app=${det.appRelPath || "<root>"} target=${det.targetRelPath}` +
               (det.reason ? ` reason=${det.reason}` : ""),
           );
         }
@@ -1755,7 +1817,14 @@ async function renderForPath(
       api,
       projectId: renderOpts.projectId!,
       stationHost,
-      targetRelPath: componentTarget.targetRelPath,
+      // Prefer the detector's app-relative target (correct for a monorepo
+      // subdir app); fall back to the project-root-relative target for
+      // root-level apps or a detector that didn't return one.
+      targetRelPath: componentTargetRel || componentTarget.targetRelPath,
+      // MUST be passed explicitly — the option is optional so the compiler
+      // won't flag its absence, but a subdir app renders at the wrong
+      // directory without it. "" means the project root is the Vite app.
+      appRelPath: componentAppRelPath,
       onError: (m) =>
         showToast(shell.body, m, { kind: "error", durationMs: 5000 }),
     });
@@ -1768,12 +1837,37 @@ async function renderForPath(
     // P4: editable CodeMirror surface. `onChange` feeds the auto-save
     // coordinator, which debounces and flushes to `file:write`.
     shell.body.innerHTML = "";
+
+    // Phase B — legible failure. When a component file was probed and isn't
+    // previewable, we tried and failed (previewReason set), so surface a
+    // "why" card above a hidden editor instead of silently dropping to
+    // source. Non-component opens (`.md`, `.html`, plain files) and files
+    // where detection never ran keep previewReason null → no card.
+    const showReasonCard = isComponentPath(filePath) && previewReason !== null;
+    // Editor + banners mount inside their own host so the reason card can
+    // keep them hidden until the user clicks "Show source".
+    const editorHost = document.createElement("div");
+    editorHost.className = "file-viewer-source-host";
+    if (showReasonCard) {
+      editorHost.hidden = true;
+      let card: HTMLElement | null = null;
+      card = mountPreviewReasonCard({
+        parent: shell.body,
+        reason: previewReason as PreviewReasonKey,
+        onShowSource: () => {
+          card?.remove();
+          editorHost.hidden = false;
+        },
+      });
+    }
+    shell.body.appendChild(editorHost);
+
     // Round 5 Phase V — when the file is read-only on disk, mount a
     // banner above the editor body and force CodeMirror into readOnly
     // mode. The onChange handler still wires to autoSave, but since
     // CodeMirror suppresses edits, markDirty never fires.
     if (!result.writable) {
-      mountReadOnlyBanner(shell.body);
+      mountReadOnlyBanner(editorHost);
     }
     // Round 5 Phase W — lock banner (Variation D, full-width). Only
     // when the file is writable (read-only files have their own
@@ -1784,7 +1878,7 @@ async function renderForPath(
     const startLocked = result.writable && renderOpts.initialUnlocked !== true;
     if (result.writable) {
       lockBannerRef = mountLockBanner({
-        parent: shell.body,
+        parent: editorHost,
         initialLocked: startLocked,
         onToggle: (locked) => {
           codeEditor?.setReadOnly(locked);
@@ -1799,7 +1893,7 @@ async function renderForPath(
       initialContent: result.content,
       filePath: filePath,
       theme,
-      parent: shell.body,
+      parent: editorHost,
       readOnly: !result.writable || startLocked,
       onChange: (content) => autoSave.markDirty(content),
     });

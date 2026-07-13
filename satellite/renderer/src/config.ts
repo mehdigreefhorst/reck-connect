@@ -242,13 +242,23 @@ declare global {
         getViewerPath(): string | null;
       };
       /**
-       * Phase B — component-preview capability probe. `detect(cwd)` asks
-       * main whether the project at `cwd` (a Mac-mount path) can host a
-       * live component preview (a Vite + React project readable over the
-       * sshfs mount). Backed by `preview:detect` in the preload bridge.
+       * Phase B — component-preview capability probe. `detect(projectRoot,
+       * filePath)` asks main whether the file at `filePath` (a Mac-mount
+       * path) can host a live component preview, walking up from the file to
+       * find the nearest Vite + React app. Returns the app directory and the
+       * app-relative target path plus a `reason` when not previewable. Backed
+       * by `preview:detect` in the preload bridge.
        */
       preview: {
-        detect(cwd: string): Promise<{ previewable: boolean; reason: string }>;
+        detect(
+          projectRoot: string,
+          filePath: string,
+        ): Promise<{
+          previewable: boolean;
+          appRelPath: string;
+          targetRelPath: string;
+          reason: "ok" | "no-vite-app" | "vite-no-react" | "read-error";
+        }>;
       };
       mount: {
         status(): Promise<"green" | "yellow" | "gray">;

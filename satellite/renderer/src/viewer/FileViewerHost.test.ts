@@ -1670,3 +1670,163 @@ describe("Phase B — station-remote component preview", () => {
     expect(files.readStation).toHaveBeenCalledWith(FILE);
   });
 });
+
+/**
+ * Task 5 — LOCAL viewer gate. A `.tsx` opened over the Mac mount (no
+ * `host=station-remote`) runs the walk-up `preview.detect` IPC. Previewable
+ * files mount the live iframe (threading the detector's app-relative target
+ * and app dir); non-previewable files show a legible "why" card above a
+ * hidden source editor, revealed on demand — never a silent source fallback.
+ */
+describe("Task 5 — local component preview gate", () => {
+  const MOUNT = "/mount/projects";
+  const RESOLVED = `${MOUNT}/myapp/src/Button.tsx`;
+  const PROJECT_ROOT = `${MOUNT}/myapp`;
+  const SETTINGS = {
+    station: { enabled: true, url: "http://station.local:7315" },
+  };
+
+  let root: HTMLElement;
+  let files: FilesApiStub;
+  let detect: ReturnType<typeof vi.fn>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  function settingsConfig(): ConfigStub {
+    return {
+      get: vi
+        .fn()
+        .mockImplementation(async (key: string) =>
+          key === "settings" ? SETTINGS : undefined,
+        ),
+      set: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  /** Install reckAPI, then graft on the `preview.detect` bridge the local
+   *  gate calls (the shared helper doesn't stub it). */
+  function installWithDetect(): void {
+    installReckApi(files, settingsConfig());
+    (window as unknown as { reckAPI: { preview: unknown } }).reckAPI.preview = {
+      detect,
+    };
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    root = document.createElement("div");
+    document.body.appendChild(root);
+    files = {
+      read: vi.fn().mockResolvedValue({
+        ok: true,
+        resolvedPath: RESOLVED,
+        content: "export default function Button() { return null }",
+        baseline: { mtimeMs: 1, sha256: "abc", size: 48 },
+        writable: true,
+      }),
+      stat: vi.fn(),
+      openInViewer: vi.fn().mockResolvedValue({ ok: true }),
+      write: vi.fn(),
+      watchSubscribe: vi.fn().mockResolvedValue({ ok: true, resolvedPath: "" }),
+      watchUnsubscribe: vi.fn().mockResolvedValue({ ok: true }),
+      onWatchEvent: vi.fn().mockReturnValue(() => {}),
+      suffixSearch: {
+        onMatch: vi.fn().mockReturnValue(() => {}),
+        onProgress: vi.fn().mockReturnValue(() => {}),
+        onDone: vi.fn().mockReturnValue(() => {}),
+        onCancelled: vi.fn().mockReturnValue(() => {}),
+        cancel: vi.fn().mockResolvedValue({ ok: true }),
+      },
+    };
+    detect = vi.fn();
+    fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({ running: true, ready: true, port: 5199, error: "" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the why-card (not silent source) for a non-previewable .tsx", async () => {
+    detect.mockResolvedValue({
+      previewable: false,
+      appRelPath: "",
+      targetRelPath: "src/Button.tsx",
+      reason: "no-vite-app",
+    });
+    installWithDetect();
+    await mountFileViewer({
+      root,
+      params: new URLSearchParams(
+        `path=${encodeURIComponent(RESOLVED)}&projectId=p1`,
+      ),
+    });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    // Detection ran against (projectRoot, filePath) — the two-arg contract.
+    expect(detect).toHaveBeenCalledWith(PROJECT_ROOT, RESOLVED);
+    // No live preview surface; instead a legible card.
+    expect(root.querySelector(".file-viewer-component")).toBeNull();
+    const card = root.querySelector(".file-viewer-preview-reason");
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toMatch(/no live preview/i);
+    // Editor is mounted but hidden behind the card until "Show source".
+    const host = root.querySelector(
+      ".file-viewer-source-host",
+    ) as HTMLElement | null;
+    expect(host).not.toBeNull();
+    expect(host!.hidden).toBe(true);
+    expect(root.querySelector(".cm-editor")).not.toBeNull();
+    // No preview spawn for a non-previewable file.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // "Show source" reveals the editor and dismisses the card.
+    const btn = card!.querySelector(
+      ".file-viewer-preview-reason-show",
+    ) as HTMLButtonElement;
+    btn.click();
+    expect(host!.hidden).toBe(false);
+    expect(root.querySelector(".file-viewer-preview-reason")).toBeNull();
+  });
+
+  it("mounts the live preview threading appRelPath for a subdir app", async () => {
+    detect.mockResolvedValue({
+      previewable: true,
+      appRelPath: "apps/web",
+      targetRelPath: "src/Button.tsx",
+      reason: "ok",
+    });
+    installWithDetect();
+    await mountFileViewer({
+      root,
+      params: new URLSearchParams(
+        `path=${encodeURIComponent(RESOLVED)}&projectId=p1`,
+      ),
+    });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    const frame = root.querySelector(
+      ".file-viewer-component-frame",
+    ) as HTMLIFrameElement | null;
+    expect(frame).not.toBeNull();
+    // Iframe target is the detector's app-relative path.
+    expect(frame!.getAttribute("src")).toBe(
+      "http://station.local:5199/?target=src%2FButton.tsx",
+    );
+    // startPreview forwarded the app subdir so Vite runs in apps/web.
+    const startCall = fetchMock.mock.calls.find(
+      ([url]) => url === "http://station.local:7315/projects/p1/preview",
+    );
+    expect(startCall).toBeDefined();
+    // ApiClient serializes to the daemon's snake_case wire shape (Task 4).
+    expect(JSON.parse(startCall![1].body as string)).toMatchObject({
+      app_rel_path: "apps/web",
+    });
+    // No source editor behind a live preview.
+    expect(root.querySelector(".cm-editor")).toBeNull();
+  });
+});

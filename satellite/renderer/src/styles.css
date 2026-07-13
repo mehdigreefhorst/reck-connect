@@ -4020,3 +4020,58 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   font-size: 0.85rem;
   line-height: 1.5;
 }
+/* Phase B — "why" card shown when a component file can't live-preview.
+   Reuses the degrade-panel look but drops the absolute overlay so it sits
+   in normal flow above the (hidden) source editor. Informational, not an
+   error, so it uses the neutral text tint rather than rose. */
+.file-viewer-preview-reason {
+  position: relative;
+  inset: auto;
+  color: var(--app-text);
+  min-height: 40vh;
+}
+.file-viewer-preview-reason-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 34rem;
+}
+.file-viewer-preview-reason-title {
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--app-text);
+}
+.file-viewer-preview-reason-body {
+  color: var(--app-text-dim);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.file-viewer-preview-reason-show {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+  padding: 5px 12px;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  line-height: 1.2;
+  transition:
+    background 0.15s var(--ease-smooth),
+    color 0.15s var(--ease-smooth),
+    border-color 0.15s var(--ease-smooth);
+}
+.file-viewer-preview-reason-show:hover {
+  background: var(--app-hover);
+  color: var(--claude-orange);
+  border-color: var(--claude-orange);
+}
+.file-viewer-preview-reason-show:focus-visible {
+  outline: 2px solid var(--claude-orange);
+  outline-offset: 2px;
+}
