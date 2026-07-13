@@ -23,8 +23,8 @@ import { BrowserWindow, dialog, ipcMain, screen, shell } from "electron";
 
 import { resolveInsideAllowedRoots } from "./file-allowlist";
 import { checkExternalUrl } from "./ipc-validation";
-import { detectProjectPreview } from "./project-detect";
-import type { ProjectPreviewInfo } from "./project-detect";
+import { detectPreviewForFile } from "./project-detect";
+import type { FilePreviewInfo } from "./project-detect";
 import { deriveProjectAnchor } from "./project-anchor";
 import { normalizeProjectCwd } from "./project-cwd";
 import { rootRelativeCandidate } from "./root-relative";
@@ -1536,21 +1536,24 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
   ipcMain.handle("file:write", (_e, req: unknown) => handleFileWrite(deps, req));
 
   // Phase B Task 8 — component-preview capability probe. Reports whether
-  // the project at `cwd` is a Vite + React project (read over the sshfs
-  // mount by `detectProjectPreview`, which is pure fs and never throws).
-  // The viewer uses this to decide whether to offer `component` mode.
-  // A non-string cwd is rejected at the boundary rather than letting
-  // `path.join` throw across the IPC bridge.
+  // the file at `filePath` inside the project at `projectRoot` is
+  // previewable as a live React component (read over the sshfs mount by
+  // `detectPreviewForFile`, which is pure fs and never throws). The viewer
+  // uses this to decide whether to offer `component` mode. Non-string args
+  // are rejected at the boundary rather than letting `path.join` throw
+  // across the IPC bridge.
   ipcMain.handle(
     "preview:detect",
-    (_e, cwd: unknown): Promise<ProjectPreviewInfo> => {
-      if (typeof cwd !== "string") {
+    (_e, projectRoot: unknown, filePath: unknown): Promise<FilePreviewInfo> => {
+      if (typeof projectRoot !== "string" || typeof filePath !== "string") {
         return Promise.resolve({
           previewable: false,
-          reason: "cwd must be a string",
+          appRelPath: "",
+          targetRelPath: "",
+          reason: "read-error",
         });
       }
-      return detectProjectPreview(cwd);
+      return detectPreviewForFile(projectRoot, filePath);
     },
   );
 
