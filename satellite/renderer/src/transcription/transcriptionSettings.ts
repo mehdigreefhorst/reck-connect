@@ -62,6 +62,11 @@ export interface TranscriptionSettings {
    * so the button sits in the same spot on all of them.
    */
   micOffset: { dx: number; dy: number };
+  /**
+   * When true, ghost-tail words crystallize (blur→sharp, left-anchored) as
+   * they firm up, instead of hard-popping. Purely cosmetic; off = snappy.
+   */
+  fluidMotion: boolean;
 }
 
 export const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettings = {
@@ -74,6 +79,7 @@ export const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettings = {
   language: "auto",
   showMicButton: true,
   micOffset: { dx: 14, dy: 14 },
+  fluidMotion: true,
 };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -115,6 +121,7 @@ export function coerce(raw: unknown): TranscriptionSettings {
       : DEFAULT_TRANSCRIPTION_SETTINGS.language,
     showMicButton: coerceBool(raw.showMicButton, DEFAULT_TRANSCRIPTION_SETTINGS.showMicButton),
     micOffset: coerceOffset(raw.micOffset),
+    fluidMotion: coerceBool(raw.fluidMotion, DEFAULT_TRANSCRIPTION_SETTINGS.fluidMotion),
   };
 }
 

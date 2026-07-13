@@ -31,8 +31,14 @@ describe("transcriptionSettings.coerce", () => {
       language: "nl",
       showMicButton: false,
       micOffset: { dx: 40, dy: 22 },
+      fluidMotion: false,
     };
     expect(coerce(input)).toEqual(input);
+  });
+
+  it("defaults fluidMotion on", () => {
+    expect(coerce({}).fluidMotion).toBe(true);
+    expect(coerce({ fluidMotion: false }).fluidMotion).toBe(false);
   });
 
   it("defaults and sanitizes the mic offset", () => {

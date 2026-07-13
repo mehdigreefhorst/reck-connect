@@ -42,9 +42,15 @@ export class DictationBar implements DictationUI {
   private sawProgress = false;
   private ready = false;
 
+  // Words currently rendered in the ghost tail — diffed against each update
+  // so only NEWLY-appended words get the crystallize animation (revisions
+  // just re-render, avoiding a whole-tail re-animate every flush).
+  private tailWords: string[] = [];
+
   constructor(
     private readonly surface: HTMLElement,
     private readonly modelLabel: string | null = null,
+    private readonly fluidMotion: boolean = true,
   ) {
     this.el = document.createElement("div");
     this.el.className = "dictation-bar";
@@ -161,9 +167,32 @@ export class DictationBar implements DictationUI {
   }
 
   setTail(text: string): void {
-    if (this.tailEl.textContent === text) return;
-    this.tailEl.textContent = text;
-    this.tailEl.classList.toggle("has-text", text.length > 0);
+    const words = text.trim() === "" ? [] : text.trim().split(/\s+/);
+    if (words.length === this.tailWords.length && words.every((w, i) => w === this.tailWords[i])) {
+      return; // unchanged
+    }
+    if (!this.fluidMotion) {
+      // Snappy: one plain span, no per-word animation.
+      this.tailEl.textContent = words.join(" ");
+      this.tailEl.classList.toggle("has-text", words.length > 0);
+      this.tailWords = words;
+      return;
+    }
+    // Fluid: keep spans for the unchanged leading prefix; the appended words
+    // (the leading ghost edge) crystallize in. On a revision (prefix differs)
+    // we rebuild that suffix — only the changed words re-animate.
+    let common = 0;
+    const max = Math.min(words.length, this.tailWords.length);
+    while (common < max && words[common] === this.tailWords[common]) common++;
+    while (this.tailEl.children.length > common) this.tailEl.lastElementChild?.remove();
+    for (let i = common; i < words.length; i++) {
+      const span = document.createElement("span");
+      span.className = "dictation-tail-word crystallize";
+      span.textContent = words[i];
+      this.tailEl.appendChild(span);
+    }
+    this.tailEl.classList.toggle("has-text", words.length > 0);
+    this.tailWords = words;
   }
 
   setPendingWords(count: number): void {

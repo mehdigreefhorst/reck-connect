@@ -4187,11 +4187,15 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
    Stable words live in the real prompt; ONLY this ghost ever rewrites. */
 .dictation-tail {
   display: none;
+  align-items: baseline;
+  gap: 0.32em;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 13px;
   font-style: italic;
   color: rgba(245, 242, 234, 0.95);
-  /* Ghosted but READABLE — the blur says "not committed", the ink stays legible. */
+  /* Ghosted but READABLE — the blur says "not committed", ink stays legible.
+     (Snappy mode renders plain text here; fluid mode fills it with word
+     spans that carry their own blur, so keep this base subtle.) */
   filter: blur(0.4px);
   opacity: 0.85;
   white-space: nowrap;
@@ -4199,7 +4203,32 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   text-overflow: ellipsis;
   min-width: 0;
 }
-.dictation-tail.has-text { display: block; }
+.dictation-tail.has-text { display: inline-flex; }
+/* Per-word ghost that crystallizes: a new word fades up from blurred to
+   sharp, left-anchored, so the tail reads as "firming up" left→right rather
+   than hard-popping. Committed words leave the tail already crisp. */
+.dictation-tail-word {
+  display: inline-block;
+  transform-origin: left center;
+}
+.dictation-tail-word.crystallize {
+  animation: dictation-crystallize 0.42s var(--ease-smooth) both;
+}
+@keyframes dictation-crystallize {
+  from {
+    filter: blur(3px);
+    opacity: 0.15;
+    transform: translateX(-2px) scale(0.96);
+  }
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dictation-tail-word.crystallize { animation: none; }
+}
 /* Ghost word-blobs: one per word HEARD (voice energy) but not yet
    transcribed. They appear the instant you speak — proof you're being heard —
    and crystallize into ghost words, then real prompt text, as the engine

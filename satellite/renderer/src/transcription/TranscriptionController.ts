@@ -58,8 +58,9 @@ const FLOOR_DECAY_MS = 500;
 // How many blobs the "you're being heard" floor shows while voicing.
 const ACTIVE_FLOOR_BLOBS = 2;
 // Backlog is reconciled to the transcript after this much silence, so stale
-// blobs drain at the end of an utterance instead of squatting.
-const SILENCE_RECONCILE_MS = 1500;
+// blobs drain at the end of an utterance instead of squatting (kept short so
+// the ghosts don't linger after you stop talking).
+const SILENCE_RECONCILE_MS = 800;
 // How often the buffered transcript + ghost updates are flushed to the UI.
 // ~half a second reads as "words settling in batches" rather than a jittery
 // stream — the cadence the messy per-event rendering was missing.
@@ -352,7 +353,7 @@ export class TranscriptionController {
       return;
     }
     this.target = session.target;
-    this.bar = new DictationBar(session.surface, this.modelLabel());
+    this.bar = new DictationBar(session.surface, this.modelLabel(), this.settings.fluidMotion);
     this.injectedText = "";
     this.lastTail = "";
     this.heardWords = 0;

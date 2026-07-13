@@ -244,6 +244,13 @@ export async function renderSettings(
         <p style="margin-top:0.25rem;margin-left:1.5rem;color:var(--text-secondary);font-size:0.8rem;">
           The floating mic on each Claude pane — drag it anywhere; the spot is shared by all panes. ⌘⇧V works even when it's hidden.
         </p>
+        <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;font-family:var(--font-body);text-transform:none;letter-spacing:0;font-size:0.95rem;color:var(--app-text);font-weight:500;">
+          <input id="s-stt-fluid" type="checkbox" ${sttSettings.fluidMotion ? "checked" : ""} style="width:auto;" />
+          Fluid motion
+        </label>
+        <p style="margin-top:0.25rem;margin-left:1.5rem;color:var(--text-secondary);font-size:0.8rem;">
+          Ghost words crystallize (blur → sharp) as they firm up, instead of popping in. Off is snappier.
+        </p>
         <div class="divider" style="margin-top:1.5rem;"></div>
         <h3>Reck Connect prompt</h3>
         <p style="margin-top:0.4rem;color:var(--text-secondary);font-size:0.85rem;">
@@ -413,6 +420,7 @@ export async function renderSettings(
         .value as EmbeddedModelId,
       language: (root.querySelector("#s-stt-language") as HTMLSelectElement).value,
       showMicButton: (root.querySelector("#s-stt-show-mic") as HTMLInputElement).checked,
+      fluidMotion: (root.querySelector("#s-stt-fluid") as HTMLInputElement).checked,
     });
     {
       // Apply mic visibility immediately (no restart).
