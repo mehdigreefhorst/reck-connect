@@ -326,6 +326,11 @@ export interface PreviewStartRequest {
    * => bind host.
    */
   hmr_host?: string;
+  /**
+   * Vite app directory relative to the project root ("" / omitted = the
+   * project root is the app). Must not escape the project.
+   */
+  app_rel_path?: string;
 }
 
 // --- Session persistence  ---

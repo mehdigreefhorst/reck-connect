@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -508,7 +509,20 @@ func (s *Server) handleStartPreview(w nethttp.ResponseWriter, r *nethttp.Request
 			return
 		}
 	}
-	st, _ := s.Preview.Start(r.Context(), id, detail.Cwd, req.HmrHost)
+	// Resolve the Vite root: the project cwd, optionally descended into the
+	// monorepo app subdirectory the satellite detected. The relative path must
+	// never escape the project, so reject any clean form that climbs out or is
+	// absolute. "" keeps the project root (filepath.Join(cwd,"")==cwd).
+	appCwd := detail.Cwd
+	if req.AppRelPath != "" {
+		clean := filepath.Clean(req.AppRelPath)
+		if clean == ".." || strings.HasPrefix(clean, "../") || filepath.IsAbs(clean) {
+			writeJSONStatus(w, nethttp.StatusBadRequest, proto.PreviewStatus{Error: "invalid app path"})
+			return
+		}
+		appCwd = filepath.Join(detail.Cwd, clean)
+	}
+	st, _ := s.Preview.Start(r.Context(), id, appCwd, req.HmrHost)
 	writeJSON(w, st)
 }
 

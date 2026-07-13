@@ -356,6 +356,9 @@ type PreviewStatus struct {
 // PreviewStartRequest is the POST body for starting a preview.
 type PreviewStartRequest struct {
 	HmrHost string `json:"hmr_host"` // station tailnet host the runner should use for Vite HMR; empty => bind host
+	// AppRelPath is the Vite app directory relative to the project root
+	// ("" = the project root is the app). Must not escape the project.
+	AppRelPath string `json:"app_rel_path,omitempty"`
 }
 
 // --- Session persistence  ---

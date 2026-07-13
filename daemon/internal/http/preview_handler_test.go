@@ -16,6 +16,7 @@ import (
 	"io"
 	nethttp "net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -145,6 +146,47 @@ func TestPreview_startReturnsStatusAndWiresArgs(t *testing.T) {
 	}
 	if stub.startHmrHost != "station.tailnet" {
 		t.Fatalf("Start hmrHost = %q, want station.tailnet", stub.startHmrHost)
+	}
+}
+
+// A non-empty AppRelPath must be joined onto the project cwd and forwarded to
+// Start as the Vite root, so the runner boots the monorepo app subdirectory.
+func TestPreview_startJoinsAppRelPath(t *testing.T) {
+	s, stub, cwd := newServerWithPreview(t)
+	srv := httptest.NewServer(newTestHandler(t, s))
+	defer srv.Close()
+
+	resp, body := doPreview(t, srv.URL, nethttp.MethodPost, "p1",
+		`{"hmr_host":"station.tailnet","app_rel_path":"apps/dashboard-v2"}`)
+	if resp.StatusCode != nethttp.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", resp.StatusCode, body)
+	}
+	if !stub.startCalled {
+		t.Fatal("Start was not called")
+	}
+	if want := filepath.Join(cwd, "apps/dashboard-v2"); stub.startCwd != want {
+		t.Fatalf("Start cwd = %q, want %q (project cwd joined with app_rel_path)", stub.startCwd, want)
+	}
+}
+
+// An AppRelPath that tries to escape the project (../etc, absolute, or "..")
+// must be rejected with 400 and Start must never run for it.
+func TestPreview_startRejectsEscapingAppRelPath(t *testing.T) {
+	for _, rel := range []string{"../etc", "..", "../../root", "/etc/passwd"} {
+		s, stub, _ := newServerWithPreview(t)
+		srv := httptest.NewServer(newTestHandler(t, s))
+
+		body := `{"app_rel_path":"` + rel + `"}`
+		resp, respBody := doPreview(t, srv.URL, nethttp.MethodPost, "p1", body)
+		if resp.StatusCode != nethttp.StatusBadRequest {
+			srv.Close()
+			t.Fatalf("app_rel_path %q: status = %d, want 400 (body %q)", rel, resp.StatusCode, respBody)
+		}
+		if stub.startCalled {
+			srv.Close()
+			t.Fatalf("app_rel_path %q: Start must not be called for an escaping path", rel)
+		}
+		srv.Close()
 	}
 }
 

@@ -45,6 +45,7 @@ const (
 // every waiter — on READY, on failure/timeout, or on child exit.
 type previewProc struct {
 	cmd      *exec.Cmd
+	cwd      string // Vite root the child was spawned with; a change forces a restart.
 	port     int
 	ready    bool
 	errMsg   string
@@ -125,26 +126,43 @@ func newManagerForTest(nodePath, runnerPath string) *Manager {
 func (m *Manager) Start(ctx context.Context, projectID, cwd, hmrHost string) (proto.PreviewStatus, error) {
 	m.startReaper()
 
+	// stale holds a ready child that must be torn down because the requested
+	// cwd (app subdir) changed — one preview per project, restarted on change.
+	// It is terminated after the lock is released and the new slot is reserved.
+	var stale *previewProc
+	var staleGrace time.Duration
+
 	m.mu.Lock()
 	if p, ok := m.procs[projectID]; ok {
 		if p.ready {
-			// Fast path: a live, ready child is reused without spawning.
-			p.lastSeen = time.Now()
-			st := statusOf(p)
+			if p.cwd == cwd {
+				// Fast path: a live, ready child at the same cwd is reused
+				// without spawning.
+				p.lastSeen = time.Now()
+				st := statusOf(p)
+				m.mu.Unlock()
+				return st, nil
+			}
+			// The app subdir changed. Drop this entry now (so concurrent
+			// callers see the fresh reservation below, never two children) and
+			// remember the old child to terminate once the lock is released.
+			delete(m.procs, projectID)
+			stale = p
+			staleGrace = m.stopGrace
+		} else {
+			// A concurrent caller has already reserved this slot and is spawning
+			// (I1). Do NOT spawn a second child: wait on its broadcast readyCh.
+			readyCh := p.readyCh
+			readyTimeout := m.readyTimeout
 			m.mu.Unlock()
-			return st, nil
+			return m.waitReadyAsObserver(ctx, projectID, readyCh, readyTimeout)
 		}
-		// A concurrent caller has already reserved this slot and is spawning
-		// (I1). Do NOT spawn a second child: wait on its broadcast readyCh.
-		readyCh := p.readyCh
-		readyTimeout := m.readyTimeout
-		m.mu.Unlock()
-		return m.waitReadyAsObserver(ctx, projectID, readyCh, readyTimeout)
 	}
 
 	// Reserve the map slot with an in-flight proc BEFORE unlocking and spawning
 	// (I1). Concurrent callers now observe this entry instead of double-spawning.
 	proc := &previewProc{
+		cwd:      cwd,
 		lastSeen: time.Now(),
 		exited:   make(chan struct{}),
 		readyCh:  make(chan struct{}),
@@ -153,6 +171,12 @@ func (m *Manager) Start(ctx context.Context, projectID, cwd, hmrHost string) (pr
 	readyTimeout := m.readyTimeout
 	grace := m.stopGrace
 	m.mu.Unlock()
+
+	// Tear the superseded child down (same path as Stop) now that the new slot
+	// is reserved and the lock is released.
+	if stale != nil {
+		m.terminate(stale, staleGrace)
+	}
 
 	if err := m.spawn(projectID, cwd, hmrHost, proc); err != nil {
 		// Spawn failed: drop the poisoned in-flight entry (if still ours) and

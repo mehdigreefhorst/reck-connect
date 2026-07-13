@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -51,12 +52,100 @@ func writeReadyThenExitRunner(t *testing.T, port string) string {
 	return p
 }
 
+// writeCwdRecordingRunner writes a runner that appends the --cwd value it was
+// launched with (arg $2) to recordPath, then prints READY and blocks. It lets a
+// test prove which Vite root each spawned child actually booted against.
+func writeCwdRecordingRunner(t *testing.T, port, recordPath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.sh")
+	script := "#!/bin/sh\n" +
+		"echo \"$2\" >> " + recordPath + "\n" +
+		"echo \"RECK_PREVIEW_READY host=127.0.0.1 port=" + port + "\"\n" +
+		"sleep 30\n"
+	must(t, os.WriteFile(p, []byte(script), 0o755))
+	return p
+}
+
+// TestStartRestartsOnCwdChange proves the one-preview-per-project contract:
+// starting the same project id at a different cwd tears the running child down
+// and spawns a fresh one rooted at the new cwd — never two children at once.
+func TestStartRestartsOnCwdChange(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "cwds.log")
+	m := newManagerForTest("/bin/sh", writeCwdRecordingRunner(t, "47001", record))
+	defer m.Shutdown()
+	ctx := context.Background()
+
+	cwdA := t.TempDir()
+	cwdB := t.TempDir()
+
+	st, err := m.Start(ctx, "p", cwdA, "")
+	if err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
+	if !st.Ready || st.Port != 47001 {
+		t.Fatalf("Start A: expected ready on port 47001, got %+v", st)
+	}
+	if s := m.spawns(); s != 1 {
+		t.Fatalf("expected 1 spawn after first Start, got %d", s)
+	}
+	pidA := m.spawnedPID()
+	if pidA <= 0 {
+		t.Fatalf("expected a recorded PID for child A, got %d", pidA)
+	}
+
+	// Same project id, different cwd → must restart, not reuse.
+	st2, err := m.Start(ctx, "p", cwdB, "")
+	if err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
+	if !st2.Ready || st2.Port != 47001 {
+		t.Fatalf("Start B: expected ready on port 47001, got %+v", st2)
+	}
+	if s := m.spawns(); s != 2 {
+		t.Fatalf("expected 2 spawns after a cwd change (restart), got %d", s)
+	}
+	pidB := m.spawnedPID()
+	if pidB == pidA {
+		t.Fatalf("expected a new child PID after restart, still %d", pidB)
+	}
+
+	// The original child (cwd A) must be torn down — one preview per project.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pidA, 0); err == syscall.ESRCH {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := syscall.Kill(pidA, 0); err != syscall.ESRCH {
+		t.Fatalf("child A pid=%d still alive after restart (two previews for one project)", pidA)
+	}
+	if !m.Status("p").Running {
+		t.Fatalf("expected the restarted child to be running")
+	}
+
+	// Each child recorded the cwd it booted against: A then B.
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("read cwd record: %v", err)
+	}
+	lines := strings.Fields(strings.TrimSpace(string(data)))
+	if len(lines) != 2 || lines[0] != cwdA || lines[1] != cwdB {
+		t.Fatalf("cwd record = %v, want [%q %q] (A booted at cwdA, restarted child at cwdB)", lines, cwdA, cwdB)
+	}
+}
+
 func TestStartParsesPortAndReuses(t *testing.T) {
 	m := newManagerForTest("/bin/sh", writeReadyRunner(t, "43111"))
 	defer m.Shutdown()
 	ctx := context.Background()
 
-	st, err := m.Start(ctx, "p1", t.TempDir(), "")
+	// Same cwd across both Starts so the reuse fast path applies (a differing
+	// cwd would deliberately restart — see TestStartRestartsOnCwdChange).
+	cwd := t.TempDir()
+
+	st, err := m.Start(ctx, "p1", cwd, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -68,7 +157,7 @@ func TestStartParsesPortAndReuses(t *testing.T) {
 	}
 
 	// Second Start for the same project must reuse the child (no new spawn).
-	st2, err := m.Start(ctx, "p1", t.TempDir(), "")
+	st2, err := m.Start(ctx, "p1", cwd, "")
 	if err != nil {
 		t.Fatalf("Start (reuse): %v", err)
 	}
