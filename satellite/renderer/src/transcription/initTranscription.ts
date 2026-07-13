@@ -69,6 +69,10 @@ export async function initTranscription(
           const state = controller.getState();
           if (state === "listening" || state === "preparing") void controller.toggle();
         },
+        // Enter sends the message → stop recording (we're done talking).
+        onSubmit: () => {
+          if (controller.isActive()) void controller.stopForSend();
+        },
       })
     : () => {};
 

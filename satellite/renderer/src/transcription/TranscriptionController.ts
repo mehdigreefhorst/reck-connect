@@ -43,15 +43,50 @@ export interface DictationUI {
 // transcription pass revises them.
 const DEL = "\x7f";
 
-// Speech-to-word estimate for the ghost placeholders: ~150 wpm = 2.5 words
-// per VOICED second. The blobs only bridge transcription lag, so a rough
-// rate is fine — real words replace them within a pass or two.
-const WORDS_PER_VOICED_SECOND = 2.5;
+// Words per VOICED second (pauses already excluded, so ~4 during actual
+// phonation). Drives the backlog estimate that sizes the ghost blobs.
+const WORDS_PER_VOICED_SECOND = 4;
 // Never render a wall of blobs (long lag / noisy room).
 const MAX_PENDING_BLOBS = 8;
+// Voice counts as "active right now" within this window of the last voiced
+// chunk — while active, a floor of blobs shows regardless of transcription
+// speed, so the leading-edge effect stays visible even on instant engines.
+const VOICE_ACTIVE_MS = 300;
+// After voice stops, the floor decays to 0 over this long — crystallizing,
+// not a hard cut.
+const FLOOR_DECAY_MS = 500;
+// How many blobs the "you're being heard" floor shows while voicing.
+const ACTIVE_FLOOR_BLOBS = 2;
+// Backlog is reconciled to the transcript after this much silence, so stale
+// blobs drain at the end of an utterance instead of squatting.
+const SILENCE_RECONCILE_MS = 1500;
 
 function wordCount(text: string): number {
   return text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
+}
+
+/**
+ * How many ghost blobs to show. A live LEADING EDGE, not a cumulative lag
+ * credit: while you're voicing, a small floor is always shown (so the effect
+ * doesn't vanish the instant a fast engine catches up); on top of that, the
+ * estimated un-transcribed backlog adds more (so a laggy engine like Whisper
+ * shows a longer trail). The floor decays smoothly once you stop speaking.
+ */
+export function computeGhostBlobs(input: {
+  heardWords: number;
+  transcribedWords: number;
+  msSinceVoice: number;
+  max: number;
+}): number {
+  const lag = Math.max(0, input.heardWords - input.transcribedWords);
+  let floor = 0;
+  if (input.msSinceVoice < VOICE_ACTIVE_MS) {
+    floor = ACTIVE_FLOOR_BLOBS;
+  } else if (input.msSinceVoice < VOICE_ACTIVE_MS + FLOOR_DECAY_MS) {
+    const t = (input.msSinceVoice - VOICE_ACTIVE_MS) / FLOOR_DECAY_MS; // 0→1
+    floor = Math.round(ACTIVE_FLOOR_BLOBS * (1 - t));
+  }
+  return Math.min(input.max, Math.max(0, Math.max(floor, lag)));
 }
 
 /** Collapse newlines (would submit the prompt) and trim so passes diff cleanly. */
@@ -198,14 +233,20 @@ export class TranscriptionController {
    */
   private syncGhosts(): void {
     const transcribed = wordCount(this.injectedText) + wordCount(this.lastTail);
-    // The voiced-time estimate overcounts in noisy rooms; once the mic has
-    // been quiet a beat, whatever the engine was going to transcribe has
-    // arrived — reconcile the estimate so stale blobs drain instead of
-    // squatting in the pill.
-    if (this.lastVoiceAt > 0 && performance.now() - this.lastVoiceAt > 1500) {
+    const msSinceVoice =
+      this.lastVoiceAt > 0 ? performance.now() - this.lastVoiceAt : Number.POSITIVE_INFINITY;
+    // Once the mic has been quiet a beat, whatever the engine was going to
+    // transcribe has arrived — reconcile the backlog so it drains at the end
+    // of an utterance instead of squatting.
+    if (msSinceVoice > SILENCE_RECONCILE_MS) {
       this.heardWords = Math.min(this.heardWords, transcribed);
     }
-    const pending = Math.min(MAX_PENDING_BLOBS, Math.max(0, this.heardWords - transcribed));
+    const pending = computeGhostBlobs({
+      heardWords: this.heardWords,
+      transcribedWords: transcribed,
+      msSinceVoice,
+      max: MAX_PENDING_BLOBS,
+    });
     this.bar?.setPendingWords(pending);
   }
 
@@ -265,6 +306,16 @@ export class TranscriptionController {
 
   async stopDictation(): Promise<void> {
     if (this.engine.getState() === "listening") await this.engine.stop();
+  }
+
+  /**
+   * The user pressed Enter to SEND the message — they're done talking. Abort
+   * (don't finalize): the committed text is already in the prompt and about
+   * to be sent, so a late final pass would land in the NEXT prompt. The
+   * already-typed text is untouched by cancel(), so the Enter sends it.
+   */
+  async stopForSend(): Promise<void> {
+    if (this.engine.isActive()) await this.cancel();
   }
 
   async cancel(): Promise<void> {

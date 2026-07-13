@@ -11,6 +11,12 @@ export interface TranscriptionShortcutHandlers {
   onPressStart(): void;
   /** The chord was released; `heldMs` is how long it was held. */
   onPressEnd(heldMs: number): void;
+  /**
+   * A bare Enter (no modifiers) was pressed — i.e. the user is SENDING the
+   * message. Not preventDefault'd: the Enter still reaches the terminal to
+   * submit; this is just the signal that they're done talking.
+   */
+  onSubmit(): void;
 }
 
 export function installTranscriptionShortcuts(
@@ -19,6 +25,19 @@ export function installTranscriptionShortcuts(
   let downAt: number | null = null;
 
   function onKeyDown(e: KeyboardEvent): void {
+    // Bare Enter = "send this message". Report it (the handler decides whether
+    // dictation is active); never preventDefault so the terminal still submits.
+    if (
+      e.key === "Enter" &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.repeat
+    ) {
+      handlers.onSubmit();
+      return;
+    }
     const mod = e.metaKey || e.ctrlKey;
     if (!mod || !e.shiftKey || e.key.toLowerCase() !== "v") return;
     e.preventDefault();
