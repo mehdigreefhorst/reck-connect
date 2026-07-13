@@ -6,7 +6,7 @@
 // its target from the IMPORTER id (the synthesized entry), so there is no
 // shared mutable state and concurrent `?target=` requests stay independent.
 import { buildPreviewEntry, buildProvidersModule } from "./entry-builder.mjs";
-import { detectGlobalCss, detectProviders } from "./detect.mjs";
+import { detectSideEffectImports, detectProviders } from "./detect.mjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -60,11 +60,11 @@ export function reckPreviewPlugin({ cwd }) {
       if (id === "\0/@reck/bootstrap") return BOOTSTRAP;
       if (id.startsWith("\0/@reck/entry")) {
         const target = targetOf(id);
-        const [globalCssRelPath, prov] = await Promise.all([
-          detectGlobalCss(cwd),
+        const [sideEffectImports, prov] = await Promise.all([
+          detectSideEffectImports(cwd),
           detectProviders(cwd, target),
         ]);
-        return buildPreviewEntry({ targetRelPath: target, globalCssRelPath, hasProviders: !!prov });
+        return buildPreviewEntry({ targetRelPath: target, sideEffectImports, hasProviders: !!prov });
       }
       if (id.startsWith("\0/@reck/providers")) {
         const prov = await detectProviders(cwd, targetOf(id));
