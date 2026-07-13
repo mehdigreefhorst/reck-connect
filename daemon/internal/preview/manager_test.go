@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rudie-verweij/reck-connect/proto"
 )
 
 func must(t *testing.T, err error) {
@@ -61,6 +63,23 @@ func writeCwdRecordingRunner(t *testing.T, port, recordPath string) string {
 	p := filepath.Join(dir, "c.sh")
 	script := "#!/bin/sh\n" +
 		"echo \"$2\" >> " + recordPath + "\n" +
+		"echo \"RECK_PREVIEW_READY host=127.0.0.1 port=" + port + "\"\n" +
+		"sleep 30\n"
+	must(t, os.WriteFile(p, []byte(script), 0o755))
+	return p
+}
+
+// writeGatedCwdRunner writes a runner that appends its --cwd value (arg $2) to
+// recordPath, then BLOCKS until gatePath exists before printing READY. The gate
+// lets a test hold a child in the in-flight (spawning, not-yet-ready) state
+// deterministically, so a concurrent Start can be raced against it.
+func writeGatedCwdRunner(t *testing.T, port, recordPath, gatePath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.sh")
+	script := "#!/bin/sh\n" +
+		"echo \"$2\" >> " + recordPath + "\n" +
+		"while [ ! -f " + gatePath + " ]; do sleep 0.02; done\n" +
 		"echo \"RECK_PREVIEW_READY host=127.0.0.1 port=" + port + "\"\n" +
 		"sleep 30\n"
 	must(t, os.WriteFile(p, []byte(script), 0o755))
@@ -133,6 +152,123 @@ func TestStartRestartsOnCwdChange(t *testing.T) {
 	lines := strings.Fields(strings.TrimSpace(string(data)))
 	if len(lines) != 2 || lines[0] != cwdA || lines[1] != cwdB {
 		t.Fatalf("cwd record = %v, want [%q %q] (A booted at cwdA, restarted child at cwdB)", lines, cwdA, cwdB)
+	}
+}
+
+// TestStartInFlightRestartsOnCwdChange is the I-1 regression test. While one
+// Start is still spawning a child for cwdA (in-flight, not yet ready), a
+// concurrent Start for the SAME project id at cwdB must NOT observe-and-reuse
+// the cwdA spawn (which would hand it a Vite server rooted at the wrong app
+// root). It must supersede the in-flight child and end up rooted at cwdB, with
+// only one child alive at the end (the superseded cwdA child reaped).
+func TestStartInFlightRestartsOnCwdChange(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "cwds.log")
+	gate := filepath.Join(t.TempDir(), "gate")
+	m := newManagerForTest("/bin/sh", writeGatedCwdRunner(t, "47002", record, gate))
+	// Give the superseded/gated children ample room to be torn down.
+	m.readyTimeout = 5 * time.Second
+	defer m.Shutdown()
+
+	cwdA := t.TempDir()
+	cwdB := t.TempDir()
+
+	recordLines := func() []string {
+		data, _ := os.ReadFile(record)
+		return strings.Fields(strings.TrimSpace(string(data)))
+	}
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			if cond() {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", what)
+	}
+
+	// Start A: reserves the slot and spawns child A, which records cwdA then
+	// blocks on the gate (stays in-flight / not ready).
+	var stA proto.PreviewStatus
+	var errA error
+	doneA := make(chan struct{})
+	go func() {
+		stA, errA = m.Start(context.Background(), "p", cwdA, "")
+		close(doneA)
+	}()
+
+	// Child A is in-flight once it has recorded its cwd (past cmd.Start) but has
+	// not yet gone ready.
+	waitFor("child A in-flight at cwdA", func() bool {
+		lines := recordLines()
+		return m.spawns() == 1 && len(lines) == 1 && lines[0] == cwdA
+	})
+	if st := m.Status("p"); !st.Running || st.Ready {
+		t.Fatalf("expected child A running-but-not-ready (in-flight), got %+v", st)
+	}
+	pidA := m.spawnedPID()
+	if pidA <= 0 {
+		t.Fatalf("expected a recorded PID for in-flight child A, got %d", pidA)
+	}
+
+	// Start B: same project id, DIFFERENT cwd, while A is still in-flight. It must
+	// supersede A's spawn (not observe it) and spawn a fresh child B at cwdB.
+	var stB proto.PreviewStatus
+	var errB error
+	doneB := make(chan struct{})
+	go func() {
+		stB, errB = m.Start(context.Background(), "p", cwdB, "")
+		close(doneB)
+	}()
+
+	// Wait until child B has been spawned (supersede happened) and recorded cwdB.
+	waitFor("child B spawned at cwdB after supersede", func() bool {
+		lines := recordLines()
+		return m.spawns() == 2 && len(lines) == 2 && lines[1] == cwdB
+	})
+	pidB := m.spawnedPID()
+	if pidB == pidA {
+		t.Fatalf("expected a distinct child B PID after supersede, still %d", pidB)
+	}
+
+	// Open the gate: child B (the surviving reservation) now prints READY. Child A
+	// was superseded/terminated and never reaches this line.
+	must(t, os.WriteFile(gate, []byte("go\n"), 0o644))
+
+	<-doneB
+	<-doneA
+
+	// The requesting caller (B) must get a ready child rooted at cwdB.
+	if errB != nil {
+		t.Fatalf("Start B (requesting cwdB) returned error: %v", errB)
+	}
+	if !stB.Ready || stB.Port != 47002 {
+		t.Fatalf("Start B: expected ready on port 47002 (rooted at cwdB), got %+v", stB)
+	}
+	// The superseded caller (A) is the losing racer: its in-flight child was torn
+	// down, so it must be signaled with an error rather than handed A's server.
+	if errA == nil {
+		t.Fatalf("expected superseded Start A to return an error, got ready=%v", stA.Ready)
+	}
+
+	// Only ONE child alive at the end: the superseded child A must be reaped.
+	waitFor("superseded child A reaped", func() bool {
+		return syscall.Kill(pidA, 0) == syscall.ESRCH
+	})
+	if err := syscall.Kill(pidB, 0); err == syscall.ESRCH {
+		t.Fatalf("child B pid=%d (the requested cwdB preview) must still be alive", pidB)
+	}
+	if !m.Status("p").Running {
+		t.Fatalf("expected the superseding child B to be the live registered preview")
+	}
+
+	// Exactly two spawns (A, then the superseding B) and cwds recorded in order.
+	if s := m.spawns(); s != 2 {
+		t.Fatalf("expected 2 spawns (A then superseding B), got %d", s)
+	}
+	if lines := recordLines(); len(lines) != 2 || lines[0] != cwdA || lines[1] != cwdB {
+		t.Fatalf("cwd record = %v, want [%q %q]", lines, cwdA, cwdB)
 	}
 }
 

@@ -149,13 +149,27 @@ func (m *Manager) Start(ctx context.Context, projectID, cwd, hmrHost string) (pr
 			delete(m.procs, projectID)
 			stale = p
 			staleGrace = m.stopGrace
-		} else {
+		} else if p.cwd == cwd {
 			// A concurrent caller has already reserved this slot and is spawning
-			// (I1). Do NOT spawn a second child: wait on its broadcast readyCh.
+			// (I1) for the SAME cwd. Do NOT spawn a second child: coalesce by
+			// waiting on its broadcast readyCh.
 			readyCh := p.readyCh
 			readyTimeout := m.readyTimeout
 			m.mu.Unlock()
 			return m.waitReadyAsObserver(ctx, projectID, readyCh, readyTimeout)
+		} else {
+			// A concurrent caller is mid-spawn for a DIFFERENT cwd (app subdir
+			// changed, I-1). Observing it would hand this caller a child rooted at
+			// the wrong app root. Supersede it exactly like the ready-branch
+			// restart above: drop the reservation now (so further concurrent
+			// callers coalesce on the fresh cwd slot reserved below, never on the
+			// superseded one) and remember the in-flight child to terminate once
+			// the lock is released. Its cmd may still be nil (mid-spawn); terminate
+			// no-ops then and spawn's identity-guarded orphan check
+			// (m.procs[projectID] != proc) reaps the child once cmd is published.
+			delete(m.procs, projectID)
+			stale = p
+			staleGrace = m.stopGrace
 		}
 	}
 
