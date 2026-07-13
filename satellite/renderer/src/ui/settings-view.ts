@@ -25,6 +25,17 @@ import {
   setExtensionlessAllowlist,
 } from "../viewer/LinkDetector";
 import { loadTtsSettings, saveTtsSettings } from "../tts/ttsSettings";
+import {
+  EMBEDDED_MODELS,
+  loadDeepgramKey,
+  loadTranscriptionSettings,
+  saveDeepgramKey,
+  saveTranscriptionSettings,
+  type EmbeddedModelId,
+  type TranscriptionProvider,
+} from "../transcription/transcriptionSettings";
+import { DICTATION_LANGUAGES } from "../transcription/languages";
+import { setDictationFabsVisible } from "../transcription/micOverlay";
 import { confirmDialog } from "./new-pane-dialog";
 
 function escapeAttr(s: string): string {
@@ -118,6 +129,16 @@ export async function renderSettings(
   const savedReckPrompt =
     (await loadReckConnectPrompt()) ?? DEFAULT_RECK_CONNECT_PROMPT;
   const ttsSettings = await loadTtsSettings();
+  const sttSettings = await loadTranscriptionSettings();
+  const sttKey = await loadDeepgramKey();
+  const sttModelOptions = EMBEDDED_MODELS.map(
+    (m) =>
+      `<option value="${m.id}" ${m.id === sttSettings.localModel ? "selected" : ""}>${escapeAttr(m.label)}</option>`,
+  ).join("");
+  const sttLanguageOptions = DICTATION_LANGUAGES.map(
+    (l) =>
+      `<option value="${l.code}" ${l.code === sttSettings.language ? "selected" : ""}>${escapeAttr(l.label)}</option>`,
+  ).join("");
   root.innerHTML = `
     <div class="settings-shell">
       <div class="settings-card">
@@ -192,6 +213,50 @@ export async function renderSettings(
           <label for="s-tts-color-dark">Dark mode</label>
           <input id="s-tts-color-dark" type="color" value="${escapeAttr(ttsSettings.highlightColorDark)}" />
         </div>
+        <div class="divider" style="margin-top:1.5rem;"></div>
+        <h3>Voice dictation</h3>
+        <p style="margin-top:0.4rem;color:var(--text-secondary);font-size:0.85rem;">
+          Speak into a Claude pane and have it typed in for you. Click the mic button on a Claude pane (or press ⌘⇧V), talk, then press Enter to send. Claude Code's own <code>/voice</code> can't run on the station — this captures the mic on your Mac instead.
+        </p>
+        <label style="display:flex;align-items:center;gap:0.5rem;margin-top:1rem;font-family:var(--font-body);text-transform:none;letter-spacing:0;font-size:0.95rem;color:var(--app-text);font-weight:500;">
+          <input id="s-stt-enabled" type="checkbox" ${sttSettings.enabled ? "checked" : ""} style="width:auto;" />
+          Enable voice dictation
+        </label>
+        <label for="s-stt-provider">Engine</label>
+        <select id="s-stt-provider" class="form-input">
+          <option value="local" ${sttSettings.provider === "local" ? "selected" : ""}>On-device Whisper — private, no key needed</option>
+          <option value="deepgram" ${sttSettings.provider === "deepgram" ? "selected" : ""}>Deepgram cloud — fastest, needs an API key</option>
+        </select>
+        <div id="s-stt-local-fields" ${sttSettings.provider === "local" ? "" : "hidden"}>
+          <label for="s-stt-model">On-device model</label>
+          <select id="s-stt-model" class="form-input">${sttModelOptions}</select>
+          <p style="margin-top:0.25rem;color:var(--text-secondary);font-size:0.8rem;">
+            Downloaded once on first use. Larger models are more accurate but slower and heavier to fetch (large needs a fast GPU).
+          </p>
+        </div>
+        <div id="s-stt-deepgram-fields" ${sttSettings.provider === "deepgram" ? "" : "hidden"}>
+          <label for="s-stt-deepgram-key">Deepgram API key</label>
+          <input id="s-stt-deepgram-key" type="password" autocomplete="off" spellcheck="false" placeholder="dg-..." value="${escapeAttr(sttKey)}" />
+        </div>
+        <label for="s-stt-language">Language</label>
+        <select id="s-stt-language" class="form-input">${sttLanguageOptions}</select>
+        <p style="margin-top:0.25rem;color:var(--text-secondary);font-size:0.8rem;">
+          "Detect" figures out the spoken language automatically. Also switchable by right-clicking the mic button on a pane.
+        </p>
+        <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;font-family:var(--font-body);text-transform:none;letter-spacing:0;font-size:0.95rem;color:var(--app-text);font-weight:500;">
+          <input id="s-stt-show-mic" type="checkbox" ${sttSettings.showMicButton ? "checked" : ""} style="width:auto;" />
+          Show dictation button
+        </label>
+        <p style="margin-top:0.25rem;margin-left:1.5rem;color:var(--text-secondary);font-size:0.8rem;">
+          The floating mic on each Claude pane — drag it anywhere; the spot is shared by all panes. ⌘⇧V works even when it's hidden.
+        </p>
+        <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;font-family:var(--font-body);text-transform:none;letter-spacing:0;font-size:0.95rem;color:var(--app-text);font-weight:500;">
+          <input id="s-stt-fluid" type="checkbox" ${sttSettings.fluidMotion ? "checked" : ""} style="width:auto;" />
+          Fluid motion
+        </label>
+        <p style="margin-top:0.25rem;margin-left:1.5rem;color:var(--text-secondary);font-size:0.8rem;">
+          Ghost words crystallize (blur → sharp) as they firm up, instead of popping in. Off is snappier.
+        </p>
         <div class="divider" style="margin-top:1.5rem;"></div>
         <h3>Reck Connect prompt</h3>
         <p style="margin-top:0.4rem;color:var(--text-secondary);font-size:0.85rem;">
@@ -282,6 +347,18 @@ export async function renderSettings(
   reckResetBtn.onclick = () => {
     reckPromptEl.value = DEFAULT_RECK_CONNECT_PROMPT;
   };
+  // Voice dictation: show only the fields relevant to the chosen engine —
+  // the on-device model picker for local, the API key for Deepgram.
+  const sttProviderEl = root.querySelector("#s-stt-provider") as HTMLSelectElement;
+  const sttLocalFields = root.querySelector("#s-stt-local-fields") as HTMLDivElement;
+  const sttDeepgramFields = root.querySelector("#s-stt-deepgram-fields") as HTMLDivElement;
+  const syncSttFields = (): void => {
+    const isLocal = sttProviderEl.value === "local";
+    sttLocalFields.hidden = !isLocal;
+    sttDeepgramFields.hidden = isLocal;
+  };
+  sttProviderEl.addEventListener("change", syncSttFields);
+
   const btn = root.querySelector("#s-save") as HTMLButtonElement;
   const err = root.querySelector("#s-err") as HTMLDivElement;
   btn.onclick = async () => {
@@ -373,6 +450,30 @@ export async function renderSettings(
       highlightColorLight: ttsLight,
       highlightColorDark: ttsDark,
     });
+
+    // Voice dictation. Reload live settings first so the hotkey/autoSubmit
+    // fields (not surfaced on this page yet) aren't clobbered by the stale
+    // render-time snapshot — same pattern as TTS above.
+    const liveStt = await loadTranscriptionSettings();
+    await saveTranscriptionSettings({
+      ...liveStt,
+      enabled: (root.querySelector("#s-stt-enabled") as HTMLInputElement).checked,
+      provider: (root.querySelector("#s-stt-provider") as HTMLSelectElement)
+        .value as TranscriptionProvider,
+      localModel: (root.querySelector("#s-stt-model") as HTMLSelectElement)
+        .value as EmbeddedModelId,
+      language: (root.querySelector("#s-stt-language") as HTMLSelectElement).value,
+      showMicButton: (root.querySelector("#s-stt-show-mic") as HTMLInputElement).checked,
+      fluidMotion: (root.querySelector("#s-stt-fluid") as HTMLInputElement).checked,
+    });
+    {
+      // Apply mic visibility immediately (no restart).
+      const on =
+        (root.querySelector("#s-stt-enabled") as HTMLInputElement).checked &&
+        (root.querySelector("#s-stt-show-mic") as HTMLInputElement).checked;
+      setDictationFabsVisible(on);
+    }
+    await saveDeepgramKey((root.querySelector("#s-stt-deepgram-key") as HTMLInputElement).value);
 
     // Bounce the local daemon so a port change (or a fresh-install
     // first-save) picks up immediately rather than waiting for the

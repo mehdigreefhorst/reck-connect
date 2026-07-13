@@ -5,8 +5,10 @@ import type { PasteUploadResult } from "@client-core/terminal/terminal-pane";
 import type { PaneWSCloseInfo } from "@client-core/api/ws";
 import type { PaneUsage, Stoplight } from "@proto/proto";
 import type { HostRef } from "../host";
-import { iconClose, iconSplitDown, iconSplitRight, iconDetach, iconHistory } from "./icons";
+import { iconClose, iconSplitDown, iconSplitRight, iconDetach, iconHistory, iconMic } from "./icons";
 import { ensureHistoryButton } from "./paneControls";
+import { ensureDictationFab } from "../transcription/micOverlay";
+import { installVoiceErrorHint } from "../transcription/voiceErrorHint";
 import { computeReorder } from "./reorder";
 import { HoverFocusController } from "./hover-focus-controller";
 
@@ -174,6 +176,12 @@ export interface PaneLayoutCallbacks {
    * transcript. Optional for the same reason as `onDetachPane`.
    */
   onHistoryPane?: (paneId: string, leafId: string) => void;
+  /**
+   * Toggle voice dictation for a Claude pane (issue #67). When present, a
+   * mic button is mounted in the pane's control stack. Optional — omitted
+   * when the dictation feature isn't wired.
+   */
+  onDictationToggle?: (paneId: string, leafId: string) => void;
 }
 
 /**
@@ -711,6 +719,14 @@ export class PaneLayout {
         onPasteUploadError: this.cb.onPasteUploadError
           ? (err, mime) => this.cb.onPasteUploadError!(t.paneId, err, mime)
           : undefined,
+        // Voice-dictation hint (Phase 0): only Claude panes run `/voice`,
+        // so watch just those for its station-capture failure and, once,
+        // toast the user. `installVoiceErrorHint` mounts into the pane
+        // wrapper; the sink no-ops after it has fired.
+        onDecodedOutput:
+          t.kind === "claude"
+            ? installVoiceErrorHint(wrapper).onOutput
+            : undefined,
         dropPromptTemplate: this.cb.dropPromptTemplate?.(),
         validateDroppedFile: this.cb.validateDroppedFile,
         onDropRejected: this.cb.onDropRejected,
@@ -732,6 +748,19 @@ export class PaneLayout {
           onToggle: () => {
             this.focusLeaf(leaf.id);
             this.cb.onHistoryPane?.(t.paneId, leaf.id);
+          },
+        });
+      }
+      // Voice-dictation mic (issue #67) — Claude panes only: the floating
+      // draggable button anchored to the pane's bottom-left (the chosen
+      // design), not the top-right stack. Focuses the pane, then toggles
+      // dictation there.
+      if (this.cb.onDictationToggle && t.kind === "claude") {
+        ensureDictationFab(wrapper, {
+          icon: iconMic,
+          onToggle: () => {
+            this.focusLeaf(leaf.id);
+            this.cb.onDictationToggle?.(t.paneId, leaf.id);
           },
         });
       }
