@@ -5189,3 +5189,11 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   border-left: 1px solid var(--claude-orange);
   border-right: 1px solid var(--claude-orange);
 }
+
+/* Close button hovers reck-orange in both themes (the shared
+   .icon-btn:hover lightens toward cream, which washes out on the
+   raised card background). */
+.usage-close:hover {
+  color: var(--claude-orange);
+  background: var(--app-hover);
+}

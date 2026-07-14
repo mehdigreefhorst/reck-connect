@@ -168,3 +168,13 @@ test("dark theme renders and looks right", async ({ page }) => {
   await page.screenshot({ path: "e2e/artifacts/usage-week-1h-dark.png" });
   await expect(page.locator(".usage-chart canvas")).toBeVisible();
 });
+
+test("close button hovers orange in both themes", async ({ page }) => {
+  const orange = "rgb(212, 104, 58)"; // --claude-orange
+  for (const theme of ["light", "dark"] as const) {
+    await openHarness(page, theme);
+    const closeBtn = page.locator(".usage-close");
+    await closeBtn.hover();
+    await expect(closeBtn).toHaveCSS("color", orange);
+  }
+});
