@@ -198,6 +198,8 @@ export class TtsEngine {
     | null = null;
 
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  // Log marker: "audio actually started" (first boundary after a speak).
+  private firstBoundarySeen = true;
   private currentUtt: SpeechSynthesisUtterance | null = null;
   private currentChunk: SpokenChunk | null = null;
   private currentVoice: SpeechSynthesisVoice | null = null;
@@ -361,6 +363,15 @@ export class TtsEngine {
     utt.onerror = (ev: SpeechSynthesisErrorEvent) => this.handleError(ev);
 
     this.synth.speak(utt);
+    // Post-speak snapshot: the single most diagnostic line for silent
+    // failures (queued-but-never-started utterances show speaking=false
+    // or paused=true here and then no boundary line ever follows).
+    console.info(
+      `[tts] segment ${this.segIndex + 1}/${this.segments.length}: ` +
+        `${spokenText.length} chars · after speak(): ` +
+        `speaking=${this.synth.speaking} pending=${this.synth.pending} paused=${this.synth.paused}`,
+    );
+    this.firstBoundarySeen = false;
     this.startHeartbeat();
   }
 
@@ -572,6 +583,10 @@ export class TtsEngine {
     if (ev.name !== "word") return;
     if (!this.currentChunk) return;
     if (this.boundaryDegenerate) return;
+    if (!this.firstBoundarySeen) {
+      this.firstBoundarySeen = true;
+      console.info("[tts] audio started (first word boundary)");
+    }
     // The OS reports charIndex relative to the current SEGMENT's utterance;
     // shift by segBase to index the whole chunk (rangeMap / word / rate
     // restart all work in chunk coordinates).
@@ -666,6 +681,7 @@ export class TtsEngine {
   }
 
   private handleError(ev: SpeechSynthesisErrorEvent): void {
+    console.warn(`[tts] utterance error: ${ev.error || "unknown"}`);
     this.stopHeartbeat();
     // Reset all in-flight state so an error partway through a multi-segment
     // chunk doesn't leave the engine stuck "mid-chunk" (segments that would
