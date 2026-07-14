@@ -1,22 +1,32 @@
 // Usage view (issue #88): an overlay modal plotting token burn over
-// time — orange bars of tokens per bin (the daemon's authoritative
-// per-turn counts) with the account's 5h / 7d quota peaks as lines on
-// a 0–100% axis. Four granularities (Day = hour bins, Week/Month = day
-// bins, Year = month bins), ‹ › paging, click-a-bar drill-down, ↑
-// drill-up, and a project filter. All binning happens on the daemon
-// (GET /usage/histogram); this module owns only view state and chrome.
+// time — tokens per bin (the daemon's authoritative per-turn counts)
+// with the account's 5h / 7d quota peaks as lines on a 0–100% axis.
+// Four granularities with a selectable bin width each (Day: 1 min–4 h,
+// Week: 5 min–1 day, Month: 30 min–1 day, Year: 1 day/month); coarse
+// widths render bars, fine widths (>96 bins) switch to an area curve.
+// ‹ › paging, click-to-drill-down, ↑ drill-up, project filter. All
+// binning happens on the daemon (GET /usage/histogram); this module
+// owns only view state and chrome.
 //
 // Charting is uPlot: tiny, fast, and unopinionated enough to inherit
 // the reck look — every color is read from the app's CSS custom
 // properties at build time, and the chart is rebuilt when the theme
-// flips.
+// flips. The legend is non-live (labels/toggles only) and the readout
+// line has a reserved height, so hovering never changes the card's
+// layout — that was the v1 "chart grows on hover" bug.
 
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import type { ApiClient, UsageHistogramBin } from "@client-core/api/client";
+import type {
+  ApiClient,
+  UsageHistogramBin,
+  UsageHistogramBucket,
+} from "@client-core/api/client";
 import {
+  BIN_OPTIONS,
   binLabelFor,
-  bucketFor,
+  binOptionLabel,
+  defaultBinFor,
   drillDown,
   drillUp,
   labelFor,
@@ -34,11 +44,14 @@ export interface UsageOverlayOpts {
 
 const GRANULARITIES: Granularity[] = ["day", "week", "month", "year"];
 
-/** "41.2M", "12.3k", "941" — mono-friendly compact token counts. */
+/** "41.2M", "700k", "941" — mono-friendly compact token counts
+ * (trailing ".0" trimmed). */
 export function fmtTokens(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  const compact = (v: number, suffix: string) =>
+    `${v.toFixed(1).replace(/\.0$/, "")}${suffix}`;
+  if (n >= 1e9) return compact(n / 1e9, "B");
+  if (n >= 1e6) return compact(n / 1e6, "M");
+  if (n >= 1e3) return compact(n / 1e3, "k");
   return String(n);
 }
 
@@ -55,6 +68,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
 
   // ---- view state -------------------------------------------------
   let granularity: Granularity = "week";
+  let bucket: UsageHistogramBucket = defaultBinFor(granularity);
   let periodStart = periodFor(granularity, new Date()).start;
   let projectId = ""; // "" = all projects
   let bins: UsageHistogramBin[] = [];
@@ -79,6 +93,9 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         <button class="usage-pager" data-dir="1" title="Next period">›</button>
         <button class="usage-drill-up" title="Zoom out">↑</button>
         <span class="usage-nav-spacer"></span>
+        <label class="usage-project-label">Bins
+          <select class="usage-project usage-bins" title="Bin width"></select>
+        </label>
         <label class="usage-project-label">Project
           <select class="usage-project"><option value="">All projects</option></select>
         </label>
@@ -101,7 +118,8 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   const noteEl = overlay.querySelector(".usage-note") as HTMLElement;
   const readoutEl = overlay.querySelector(".usage-readout") as HTMLElement;
   const statsEl = overlay.querySelector(".usage-stats") as HTMLElement;
-  const projectSel = overlay.querySelector(".usage-project") as HTMLSelectElement;
+  const binsSel = overlay.querySelector(".usage-bins") as HTMLSelectElement;
+  const projectSel = overlay.querySelector(".usage-project:not(.usage-bins)") as HTMLSelectElement;
 
   for (const g of GRANULARITIES) {
     const chip = document.createElement("button");
@@ -111,11 +129,17 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     chip.addEventListener("click", () => {
       if (g === granularity) return;
       granularity = g;
+      bucket = defaultBinFor(g);
       periodStart = periodFor(g, new Date()).start;
       void refresh();
     });
     chipsEl.appendChild(chip);
   }
+
+  binsSel.addEventListener("change", () => {
+    bucket = binsSel.value;
+    void refresh();
+  });
 
   overlay.querySelectorAll<HTMLButtonElement>(".usage-pager").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -128,6 +152,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     const up = drillUp(granularity);
     if (!up) return;
     granularity = up;
+    bucket = defaultBinFor(up);
     periodStart = periodFor(up, periodStart).start;
     void refresh();
   });
@@ -188,11 +213,25 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     noteEl.hidden = msg === "";
   }
 
+  function rebuildBinOptions(): void {
+    const options = BIN_OPTIONS[granularity];
+    binsSel.innerHTML = "";
+    for (const b of options) {
+      const o = document.createElement("option");
+      o.value = b;
+      o.textContent = binOptionLabel(b);
+      binsSel.appendChild(o);
+    }
+    if (!options.includes(bucket)) bucket = defaultBinFor(granularity);
+    binsSel.value = bucket;
+  }
+
   async function refresh(): Promise<void> {
     // Reflect state in the chrome immediately, then fetch.
     chipsEl.querySelectorAll<HTMLElement>(".usage-chip").forEach((c) => {
       c.classList.toggle("active", c.dataset.g === granularity);
     });
+    rebuildBinOptions();
     periodEl.textContent = labelFor(granularity, periodStart);
     drillUpBtn.disabled = drillUp(granularity) === null;
     nextBtn.disabled = nextDisabled(granularity, periodStart, new Date());
@@ -206,7 +245,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     try {
       const resp = await opts.api.getUsageHistogram(
         {
-          bucket: bucketFor(granularity),
+          bucket,
           since: Math.floor(start.getTime() / 1000),
           until: Math.floor(until.getTime() / 1000),
           projectId: projectId || undefined,
@@ -261,7 +300,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       return;
     }
     const b = bins[idx];
-    const when = binLabelFor(granularity, new Date(b.t * 1000));
+    const when = binLabelFor(granularity, bucket, new Date(b.t * 1000));
     const parts = [
       `${when}`,
       `${fmtTokens(b.total)} tokens (in ${fmtTokens(b.input)} · out ${fmtTokens(b.output)} · cache ${fmtTokens(b.cache_creation + b.cache_read)})`,
@@ -291,12 +330,20 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     const fiveHour = bins.map((b) => b.five_hour_peak ?? null);
     const sevenDay = bins.map((b) => b.seven_day_peak ?? null);
 
-    const width = chartEl.clientWidth || 720;
+    // Fine bin widths make bars sub-pixel; switch to an area curve so
+    // the shape reads as a burn-rate line instead of a picket fence.
+    const asLine = bins.length > 96;
+
+    const width = chartWrap.clientWidth || 720;
     const opt: uPlot.Options = {
       width,
       height: 300,
       padding: [12, 8, 0, 8],
       cursor: { drag: { x: false, y: false } },
+      // Non-live legend: labels + show/hide toggles only. A live legend
+      // resizes itself as hover values stream in, which shifted the
+      // whole card layout on every mouse move.
+      legend: { live: false },
       scales: {
         x: { time: false, range: [-0.5, bins.length - 0.5] },
         tok: { range: (_u, _min, max) => [0, Math.max(max, 10)] },
@@ -308,10 +355,10 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
           grid: { show: false },
           ticks: { show: false },
           font: `10px ${cssVar("--font-mono") || "monospace"}`,
-          incrs: [1, 2, 3, 6],
+          space: 70,
           values: (_u, splits) =>
             splits.map((s) =>
-              Number.isInteger(s) && bins[s] ? binLabelFor(granularity, new Date(bins[s].t * 1000)) : "",
+              Number.isInteger(s) && bins[s] ? binLabelFor(granularity, bucket, new Date(bins[s].t * 1000)) : "",
             ),
         },
         {
@@ -336,21 +383,33 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       ],
       series: [
         {},
-        {
-          label: "Tokens",
-          scale: "tok",
-          stroke: orange,
-          fill: orange + "d9", // ~85% alpha over the theme background
-          paths: uPlot.paths.bars!({ size: [0.6, 100] }),
-          points: { show: false },
-        },
+        asLine
+          ? {
+              label: "Tokens",
+              scale: "tok",
+              stroke: orange,
+              width: 1.5,
+              fill: orange + "2e", // ~18% alpha area under the curve
+              paths: uPlot.paths.spline!(),
+              points: { show: false },
+            }
+          : {
+              label: "Tokens",
+              scale: "tok",
+              stroke: orange,
+              fill: orange + "d9", // ~85% alpha over the theme background
+              paths: uPlot.paths.bars!({ size: [0.6, 100] }),
+              points: { show: false },
+            },
         {
           label: "5h quota",
           scale: "pct",
           stroke: sage,
           width: 1.5,
           spanGaps: true,
-          points: { show: true, size: 4 },
+          // Point markers read well on coarse bins but fuzz the line
+          // into a caterpillar at hundreds of bins.
+          points: { show: !asLine, size: 4 },
         },
         {
           label: "7d quota",
@@ -358,7 +417,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
           stroke: mustard,
           width: 1.5,
           spanGaps: true,
-          points: { show: true, size: 4 },
+          points: { show: !asLine, size: 4 },
         },
       ],
       hooks: {
@@ -387,12 +446,17 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   }
 
   // Keep the plot sized to the card (the overlay is responsive).
+  // Observe the WRAP, not chartEl: uPlot's own DOM (canvas + legend)
+  // lives inside chartEl, so observing it feeds the observer with the
+  // chart's own resizes — the v1 grow-on-hover loop. The width guard
+  // stops redundant setSize churn from height-only changes.
   ro = new ResizeObserver(() => {
-    if (chart && chartEl.clientWidth > 0) {
-      chart.setSize({ width: chartEl.clientWidth, height: 300 });
+    const w = chartWrap.clientWidth;
+    if (chart && w > 0 && Math.abs(w - chart.width) > 1) {
+      chart.setSize({ width: w, height: 300 });
     }
   });
-  ro.observe(chartEl);
+  ro.observe(chartWrap);
 
   void refresh();
 }

@@ -203,6 +203,54 @@ func TestHistogramMonthBins(t *testing.T) {
 	}
 }
 
+func TestHistogramMinuteBins(t *testing.T) {
+	s, base := histTestStore(t)
+	// First hour at 5-minute bins: m1 sits at base+600 → bin index 2.
+	bins, err := s.Histogram(HistogramParams{
+		Bucket: "5m",
+		Since:  base,
+		Until:  base + 3600,
+	})
+	if err != nil {
+		t.Fatalf("histogram: %v", err)
+	}
+	if len(bins) != 12 {
+		t.Fatalf("want 12 five-minute bins, got %d", len(bins))
+	}
+	if bins[2].T != base+600 || bins[2].Input != 100 || bins[2].Turns != 1 {
+		t.Errorf("m1 should land in bin 2: %+v", bins[2])
+	}
+	for i, b := range bins {
+		if i != 2 && b.Turns != 0 {
+			t.Errorf("bin %d should be empty: %+v", i, b)
+		}
+	}
+	// The quota sample at base+700 peaks in the same 5-minute window
+	// (bin 2 covers 600–900).
+	if bins[2].FiveHourPeak == nil || *bins[2].FiveHourPeak != 10 {
+		t.Errorf("bin 2 five-hour peak: want 10, got %v", bins[2].FiveHourPeak)
+	}
+}
+
+func TestHistogramFourHourBins(t *testing.T) {
+	s, base := histTestStore(t)
+	bins, err := s.Histogram(HistogramParams{
+		Bucket: "4h",
+		Since:  base,
+		Until:  base + 86400,
+	})
+	if err != nil {
+		t.Fatalf("histogram: %v", err)
+	}
+	if len(bins) != 6 {
+		t.Fatalf("want 6 four-hour bins, got %d", len(bins))
+	}
+	// m1 (0:10), m2 (1:01), m3 (2:01) all land in the first 4h bin.
+	if bins[0].Turns != 3 || bins[0].Input != 700 {
+		t.Errorf("first 4h bin: want 3 turns / 700 input, got %+v", bins[0])
+	}
+}
+
 func TestHistogramEmptyDB(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -231,10 +279,12 @@ func TestHistogramValidation(t *testing.T) {
 		p    HistogramParams
 	}{
 		{"bad bucket", HistogramParams{Bucket: "week", Since: base, Until: base + 86400}},
+		{"bad grammar", HistogramParams{Bucket: "5x", Since: base, Until: base + 86400}},
+		{"zero width", HistogramParams{Bucket: "0m", Since: base, Until: base + 86400}},
 		{"inverted range", HistogramParams{Bucket: BucketDay, Since: base + 86400, Until: base}},
 		{"zero since", HistogramParams{Bucket: BucketDay, Since: 0, Until: base}},
 		{"tz out of range", HistogramParams{Bucket: BucketDay, Since: base, Until: base + 86400, TZOffsetMin: 15 * 60}},
-		{"too many bins", HistogramParams{Bucket: BucketHour, Since: base, Until: base + 2000*3600}},
+		{"too many bins", HistogramParams{Bucket: "1m", Since: base, Until: base + 20000*60}},
 	}
 	for _, tc := range cases {
 		if _, err := s.Histogram(tc.p); err == nil {

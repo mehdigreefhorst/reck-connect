@@ -38,7 +38,9 @@ Satellite (renderer)                      Station daemon (Pi)
 
 ### Daemon: `GET /usage/histogram`
 
-Params: `bucket=hour|day|month` · `since`,`until` (unix, half-open) ·
+Params: `bucket=<N>m|<N>h|<N>d|month` (fixed widths like `1m`/`30m`/`4h`/`1d`,
+calendar `month`; legacy `hour`/`day` still accepted) · `since`,`until`
+(unix, half-open) ·
 `project_id` (optional; quota is account-level and ignores it) ·
 `tz_offset_min` (minutes east of UTC so day/month bins start at the
 *caller's* midnight — the renderer sends `-new Date().getTimezoneOffset()`).
@@ -46,24 +48,41 @@ Params: `bucket=hour|day|month` · `since`,`until` (unix, half-open) ·
 Response: `{enabled, bucket, since, until, bins:[{t, input, output,
 cache_creation, cache_read, total, turns, five_hour_peak?, seven_day_peak?}]}`.
 Bins are dense (zero-filled) so the client needs no gap logic; the bin count
-is capped at 1000 (`maxHistogramBins`), so the result never truncates data the
-way the raw `/usage/series` row clamp would. Validation lives on
+is capped at 12000 (`maxHistogramBins` — densest offered ask is a week of
+1-minute bins = 10080), so the result never truncates data the way the raw
+`/usage/series` row clamp would. Validation lives on
 `usage.HistogramParams.Validate` → 400; store failures → 500.
 
 ### Renderer
 
-- `ui/usage-range.ts` — pure math, no DOM: granularity↔bucket mapping (Day
-  view = hour bins, Week/Month = day bins, Year = month bins), local-midnight
-  period snapping (ISO Monday weeks), stepping, drill ladder
-  (down: year→month→day, week→day; up: day→week→month→year), labels,
-  future-paging guard. 15 vitest cases.
+- `ui/usage-range.ts` — pure math, no DOM: per-view bin-width options
+  (`BIN_OPTIONS` — Day: 1 min–4 h, default 1 h; Week: 5 min–1 day, default
+  1 day; Month: 30 min–1 day, default 1 day; Year: 1 day/month, default
+  month), bucket↔seconds parsing, local-midnight period snapping (ISO Monday
+  weeks), stepping, drill ladder (down: year→month→day, week→day; up:
+  day→week→month→year — a drill resets the bin width to the new view's
+  default), width-aware bin labels, future-paging guard. 19 vitest cases.
 - `ui/usage-view.ts` — the overlay. Singleton; fetches its own project list;
   aborts in-flight fetches on rapid control clicks; uPlot colors read from the
   app's CSS custom properties (orange bars, sage 5h line, mustard 7d line) and
   the chart rebuilds when `data-theme` flips; ResizeObserver keeps it sized.
-  States: loading (dimmed), empty period, `enabled:false` store, unreachable
-  station. The period label is the design signature — Playfair italic, the
-  wordmark's voice.
+  A "Bins" select sits next to the project filter; above 96 bins the token
+  series renders as a spline area curve instead of bars, and the quota lines
+  drop their point markers. States: loading (dimmed), empty period,
+  `enabled:false` store, unreachable station. The period label is the design
+  signature — Playfair italic, the wordmark's voice.
+- **Hover must never change layout** (v1 field bug: the card grew on hover).
+  Three defenses: uPlot's legend is non-live (`legend.live: false` — labels
+  and toggles only), the readout line has a reserved min-height with
+  nowrap/ellipsis, and the ResizeObserver watches the chart *wrap* (not the
+  chart element, whose contents include uPlot's own DOM) with a width-delta
+  guard. Regression-tested in `e2e/usage-view.spec.ts` by sweeping the cursor
+  and asserting the card's bounding box is unchanged.
+- `renderer/usage-harness.html` + `src/usage-harness.ts` — dev/e2e-only page
+  mounting the real overlay against a deterministic synthetic API (daily
+  double-hump workload, quota ramps; no `Math.random`) so Playwright can
+  drive every granularity, bin width, and drill without a daemon. Not in the
+  production build inputs.
 - `client-core/api/client.ts` — typed `getUsageHistogram(params)`.
 - Data source: the **primary host's** daemon. Multi-host merge is out of scope
   for v1.

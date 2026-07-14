@@ -2,6 +2,8 @@ package usage
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -17,7 +19,9 @@ import (
 // Day view = hour bins, Week/Month views = day bins, Year view = month
 // bins.
 
-// HistogramBucket is the validated bin width for HistogramParams.
+// HistogramBucket is the bin width for HistogramParams. Grammar:
+// "<N>m" / "<N>h" / "<N>d" fixed widths (e.g. "1m", "30m", "4h",
+// "1d"), calendar "month", plus legacy aliases "hour" and "day".
 type HistogramBucket string
 
 const (
@@ -26,10 +30,45 @@ const (
 	BucketMonth HistogramBucket = "month"
 )
 
+// bucketPattern matches the fixed-width bucket grammar.
+var bucketPattern = regexp.MustCompile(`^(\d{1,4})([mhd])$`)
+
+// seconds resolves a bucket to its fixed width, or ok=false for the
+// calendar "month" bucket (which has no fixed width). Unknown grammar
+// returns an error.
+func (b HistogramBucket) seconds() (sec int64, fixed bool, err error) {
+	switch b {
+	case BucketMonth:
+		return 0, false, nil
+	case BucketHour:
+		return 3600, true, nil
+	case BucketDay:
+		return 86400, true, nil
+	}
+	m := bucketPattern.FindStringSubmatch(string(b))
+	if m == nil {
+		return 0, false, fmt.Errorf("usage: histogram: invalid bucket %q", b)
+	}
+	n, _ := strconv.ParseInt(m[1], 10, 64)
+	if n <= 0 {
+		return 0, false, fmt.Errorf("usage: histogram: invalid bucket %q", b)
+	}
+	switch m[2] {
+	case "m":
+		sec = n * 60
+	case "h":
+		sec = n * 3600
+	default:
+		sec = n * 86400
+	}
+	return sec, true, nil
+}
+
 // maxHistogramBins bounds the zero-filled result so a caller can't ask
-// for a decade of hours and stall the daemon. 1000 comfortably covers
-// every real view (worst legitimate case: ~370 day-bins for a year).
-const maxHistogramBins = 1000
+// for a decade of minutes and stall the daemon. 12000 comfortably
+// covers every offered view (densest real ask: a week of 1-minute bins
+// = 10080) while keeping the response around a megabyte worst-case.
+const maxHistogramBins = 12000
 
 // HistogramParams selects the range, bin width, and optional project
 // filter. Since/Until are unix seconds, half-open [Since, Until).
@@ -65,10 +104,8 @@ type HistogramBin struct {
 // HTTP handler calls it up front to map caller mistakes to 400s; a
 // Histogram error after a passing Validate is a store failure (500).
 func (p HistogramParams) Validate() error {
-	switch p.Bucket {
-	case BucketHour, BucketDay, BucketMonth:
-	default:
-		return fmt.Errorf("usage: histogram: invalid bucket %q", p.Bucket)
+	if _, _, err := p.Bucket.seconds(); err != nil {
+		return err
 	}
 	if p.Since <= 0 || p.Until <= 0 || p.Since >= p.Until {
 		return fmt.Errorf("usage: histogram: invalid range [%d, %d)", p.Since, p.Until)
@@ -89,15 +126,14 @@ func (p HistogramParams) Validate() error {
 // key, always as TEXT so both fixed-width (integer) and month (string)
 // keys scan uniformly. off is the tz offset in seconds and is injected
 // as a bound parameter by the caller (the expression contains one ?).
+// The width itself is server-derived (bucket grammar → int), never
+// caller text, so the Sprintf is injection-safe.
 func (p HistogramParams) binKeyExpr() string {
-	switch p.Bucket {
-	case BucketHour:
-		return "CAST((ts + ?) / 3600 AS TEXT)"
-	case BucketDay:
-		return "CAST((ts + ?) / 86400 AS TEXT)"
-	default: // BucketMonth
+	sec, fixed, err := p.Bucket.seconds()
+	if err != nil || !fixed {
 		return "strftime('%Y-%m', ts + ?, 'unixepoch')"
 	}
+	return fmt.Sprintf("CAST((ts + ?) / %d AS TEXT)", sec)
 }
 
 // binStarts enumerates every bin start in [Since, Until), zero-fill
@@ -107,12 +143,11 @@ func (p HistogramParams) binStarts() ([]int64, []string, error) {
 	off := int64(p.TZOffsetMin) * 60
 	var starts []int64
 	var keys []string
-	switch p.Bucket {
-	case BucketHour, BucketDay:
-		w := int64(3600)
-		if p.Bucket == BucketDay {
-			w = 86400
-		}
+	w, fixed, err := p.Bucket.seconds()
+	if err != nil {
+		return nil, nil, err
+	}
+	if fixed {
 		for k := (p.Since + off) / w; k*w-off < p.Until; k++ {
 			if len(starts) >= maxHistogramBins {
 				return nil, nil, fmt.Errorf("usage: histogram: range exceeds %d bins", maxHistogramBins)
@@ -120,7 +155,7 @@ func (p HistogramParams) binStarts() ([]int64, []string, error) {
 			starts = append(starts, k*w-off)
 			keys = append(keys, fmt.Sprintf("%d", k))
 		}
-	default: // BucketMonth
+	} else { // BucketMonth
 		loc := time.FixedZone("caller", int(off))
 		t := time.Unix(p.Since, 0).In(loc)
 		cur := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)

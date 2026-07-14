@@ -15,18 +15,53 @@ import type { UsageHistogramBucket } from "@client-core/api/client";
 /** The four user-facing views. Each renders one period of bins. */
 export type Granularity = "day" | "week" | "month" | "year";
 
-/** Server bin width backing each view: Day = 24 hour-bins, Week = 7
- * day-bins, Month = 28–31 day-bins, Year = 12 month-bins. */
-export function bucketFor(g: Granularity): UsageHistogramBucket {
+/** Selectable bin widths per view, coarse default last-but-safe. The
+ * daemon accepts any "<N>m|<N>h|<N>d" plus calendar "month"; these
+ * lists keep the densest choice around ~2000 bins so the response
+ * stays small. Fine widths turn the bars into a curve (the chart
+ * switches to a line above ~96 bins). */
+export const BIN_OPTIONS: Record<Granularity, UsageHistogramBucket[]> = {
+  day: ["1m", "2m", "5m", "10m", "30m", "1h", "4h"],
+  week: ["5m", "10m", "30m", "1h", "4h", "1d"],
+  month: ["30m", "1h", "4h", "1d"],
+  year: ["1d", "month"],
+};
+
+/** Default bin width per view: Day = hour bins, Week/Month = day bins,
+ * Year = calendar-month bins. */
+export function defaultBinFor(g: Granularity): UsageHistogramBucket {
   switch (g) {
     case "day":
-      return "hour";
+      return "1h";
     case "week":
     case "month":
-      return "day";
+      return "1d";
     case "year":
       return "month";
   }
+}
+
+/** Fixed bin width in seconds, or null for calendar "month" bins.
+ * Accepts the daemon's bucket grammar including legacy "hour"/"day". */
+export function bucketSeconds(bucket: UsageHistogramBucket): number | null {
+  if (bucket === "month") return null;
+  if (bucket === "hour") return 3600;
+  if (bucket === "day") return 86400;
+  const m = /^(\d+)([mhd])$/.exec(bucket);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = m[2] === "m" ? 60 : m[2] === "h" ? 3600 : 86400;
+  return n * unit;
+}
+
+/** Human label for a bin-width option, e.g. "5 min", "1 hour", "Month". */
+export function binOptionLabel(bucket: UsageHistogramBucket): string {
+  if (bucket === "month") return "Month";
+  const m = /^(\d+)([mhd])$/.exec(bucket);
+  if (!m) return bucket;
+  const n = Number(m[1]);
+  const unit = m[2] === "m" ? "min" : m[2] === "h" ? (n === 1 ? "hour" : "hours") : n === 1 ? "day" : "days";
+  return `${n} ${unit}`;
 }
 
 /** Half-open local period [start, until) containing `anchor`. Weeks
@@ -130,17 +165,30 @@ export function labelFor(g: Granularity, start: Date): string {
   }
 }
 
-/** Axis tick label for one bin start within a view. */
-export function binLabelFor(g: Granularity, binStart: Date): string {
+/** Axis tick / readout label for one bin start, sized to the bin
+ * width: sub-day bins show a clock time (prefixed with the day when
+ * the view spans several days), day-width bins show the date, month
+ * bins the month. */
+export function binLabelFor(
+  g: Granularity,
+  bucket: UsageHistogramBucket,
+  binStart: Date,
+): string {
+  const sec = bucketSeconds(bucket);
+  if (sec === null) return MONTHS[binStart.getMonth()].slice(0, 3);
+  if (sec < 86400) {
+    const hm = `${String(binStart.getHours()).padStart(2, "0")}:${String(binStart.getMinutes()).padStart(2, "0")}`;
+    if (g === "day") return hm;
+    if (g === "week") return `${DAYS[binStart.getDay()]} ${hm}`;
+    return `${binStart.getDate()} · ${hm}`; // month/year with sub-day bins
+  }
   switch (g) {
-    case "day":
-      return `${String(binStart.getHours()).padStart(2, "0")}:00`;
     case "week":
       return `${DAYS[binStart.getDay()]} ${binStart.getDate()}`;
-    case "month":
-      return `${binStart.getDate()}`;
     case "year":
-      return MONTHS[binStart.getMonth()].slice(0, 3);
+      return `${binStart.getDate()} ${MONTHS[binStart.getMonth()].slice(0, 3)}`;
+    default:
+      return `${binStart.getDate()}`;
   }
 }
 

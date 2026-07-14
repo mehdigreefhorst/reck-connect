@@ -52,10 +52,11 @@ export interface TranscriptChunk {
   hasMore: boolean;
 }
 
-/** Bin width for `GET /usage/histogram`. The Satellite's four view
- * granularities map onto these: Day view = hour bins, Week/Month views
- * = day bins, Year view = month bins. */
-export type UsageHistogramBucket = "hour" | "day" | "month";
+/** Bin width for `GET /usage/histogram`. Grammar: fixed widths
+ * `"<N>m" | "<N>h" | "<N>d"` (e.g. "1m", "30m", "4h", "1d"), calendar
+ * `"month"`, plus legacy aliases `"hour"`/`"day"`. The daemon rejects
+ * anything else (and any range that would exceed its bin cap). */
+export type UsageHistogramBucket = string;
 
 /**
  * One dense bin of `GET /usage/histogram`. Token sums come from the

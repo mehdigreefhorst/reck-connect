@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  bucketFor,
+  BIN_OPTIONS,
   binLabelFor,
+  binOptionLabel,
+  bucketSeconds,
+  defaultBinFor,
   drillDown,
   drillUp,
   labelFor,
@@ -13,12 +16,48 @@ import {
 // 2026-07-14 is a Tuesday.
 const TUE = new Date(2026, 6, 14, 15, 30);
 
-describe("bucketFor", () => {
-  it("maps each granularity to its server bucket", () => {
-    expect(bucketFor("day")).toBe("hour");
-    expect(bucketFor("week")).toBe("day");
-    expect(bucketFor("month")).toBe("day");
-    expect(bucketFor("year")).toBe("month");
+describe("bin widths", () => {
+  it("defaults per view", () => {
+    expect(defaultBinFor("day")).toBe("1h");
+    expect(defaultBinFor("week")).toBe("1d");
+    expect(defaultBinFor("month")).toBe("1d");
+    expect(defaultBinFor("year")).toBe("month");
+  });
+
+  it("every option list contains its default", () => {
+    for (const g of ["day", "week", "month", "year"] as const) {
+      expect(BIN_OPTIONS[g]).toContain(defaultBinFor(g));
+    }
+  });
+
+  it("parses bucket widths to seconds", () => {
+    expect(bucketSeconds("1m")).toBe(60);
+    expect(bucketSeconds("30m")).toBe(1800);
+    expect(bucketSeconds("4h")).toBe(4 * 3600);
+    expect(bucketSeconds("1d")).toBe(86400);
+    expect(bucketSeconds("hour")).toBe(3600); // legacy
+    expect(bucketSeconds("day")).toBe(86400); // legacy
+    expect(bucketSeconds("month")).toBeNull();
+  });
+
+  it("keeps every offered choice at a sane bin count for its view", () => {
+    const periodSec = { day: 86400, week: 7 * 86400, month: 31 * 86400, year: 366 * 86400 };
+    for (const g of ["day", "week", "month", "year"] as const) {
+      for (const b of BIN_OPTIONS[g]) {
+        const sec = bucketSeconds(b);
+        if (sec === null) continue; // calendar month bins
+        expect(periodSec[g] / sec).toBeLessThanOrEqual(2016);
+      }
+    }
+  });
+
+  it("labels bin options", () => {
+    expect(binOptionLabel("1m")).toBe("1 min");
+    expect(binOptionLabel("30m")).toBe("30 min");
+    expect(binOptionLabel("1h")).toBe("1 hour");
+    expect(binOptionLabel("4h")).toBe("4 hours");
+    expect(binOptionLabel("1d")).toBe("1 day");
+    expect(binOptionLabel("month")).toBe("Month");
   });
 });
 
@@ -98,11 +137,18 @@ describe("labels", () => {
     expect(labelFor("year", new Date(2026, 0, 1))).toBe("2026");
   });
 
-  it("labels bins per view", () => {
-    expect(binLabelFor("day", new Date(2026, 6, 14, 9))).toBe("09:00");
-    expect(binLabelFor("week", new Date(2026, 6, 14))).toBe("Tue 14");
-    expect(binLabelFor("month", new Date(2026, 6, 14))).toBe("14");
-    expect(binLabelFor("year", new Date(2026, 6, 1))).toBe("Jul");
+  it("labels bins by view and width", () => {
+    // Default widths.
+    expect(binLabelFor("day", "1h", new Date(2026, 6, 14, 9))).toBe("09:00");
+    expect(binLabelFor("week", "1d", new Date(2026, 6, 14))).toBe("Tue 14");
+    expect(binLabelFor("month", "1d", new Date(2026, 6, 14))).toBe("14");
+    expect(binLabelFor("year", "month", new Date(2026, 6, 1))).toBe("Jul");
+    // Fine widths keep the clock time; multi-day views prefix the day.
+    expect(binLabelFor("day", "5m", new Date(2026, 6, 14, 9, 35))).toBe("09:35");
+    expect(binLabelFor("week", "1h", new Date(2026, 6, 14, 6))).toBe("Tue 06:00");
+    expect(binLabelFor("month", "4h", new Date(2026, 6, 14, 12))).toBe("14 · 12:00");
+    // Year with day bins shows the date.
+    expect(binLabelFor("year", "1d", new Date(2026, 6, 14))).toBe("14 Jul");
   });
 });
 
