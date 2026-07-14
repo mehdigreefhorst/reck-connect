@@ -299,22 +299,6 @@ export class TtsEngine {
     }
     this.stopHeartbeat();
 
-    // Speak the sanitized text but keep the ORIGINAL in
-    // currentChunk: boundary `word` extraction, sliceChunkFrom, and every
-    // adapter's rangeMap continue to index the original string (same
-    // length by construction, so charIndex values are interchangeable).
-    const spokenText = sanitizeUtteranceText(chunk.text);
-    const utt = new this.UtteranceCtor(spokenText);
-    utt.text = spokenText;
-    utt.rate = rate;
-    if (voice) {
-      utt.voice = voice;
-      // Keep lang consistent with the voice; with both unset Chromium
-      // resolves a platform "default" that on macOS can be a novelty
-      // voice (Albert) when the system voice is Siri.
-      utt.lang = voice.lang;
-    }
-
     this.currentChunk = chunk;
     this.currentVoice = voice;
     this.rate = rate;
@@ -360,7 +344,15 @@ export class TtsEngine {
     const utt = new this.UtteranceCtor(spokenText);
     utt.text = spokenText;
     utt.rate = this.rate;
-    if (this.currentVoice) utt.voice = this.currentVoice;
+    if (this.currentVoice) {
+      utt.voice = this.currentVoice;
+      // Keep lang consistent with the voice; with both unset Chromium
+      // resolves a platform "default" that on macOS can be a novelty
+      // voice (Albert) when the system voice is Siri. (Regression: the
+      // segmentation refactor set this only on an orphan utterance that
+      // was never spoken.)
+      utt.lang = this.currentVoice.lang;
+    }
 
     this.currentUtt = utt;
 
