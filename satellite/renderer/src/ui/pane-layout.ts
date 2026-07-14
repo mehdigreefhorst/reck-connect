@@ -933,21 +933,9 @@ export class PaneLayout {
       tabEl.appendChild(dotEl);
       if (hostBadgeEl) tabEl.appendChild(hostBadgeEl);
       tabEl.appendChild(titleEl);
-      // Minimal usage glance on Claude tabs (deferred: a richer, live
-      // usage UI is a separate later pass). NOTE: this is a snapshot taken
-      // when the project is opened — it refreshes on the next project
-      // switch / pane re-fetch, not on the 2s rail poll (usage rides the
-      // ProjectDetail fetch, which the rail poll doesn't call).
-      if (t.kind === "claude") {
-        const usageText = formatPaneUsage(this.cb.getUsage?.(t.paneId));
-        if (usageText) {
-          const usageEl = document.createElement("span");
-          usageEl.className = "tab-usage";
-          usageEl.textContent = usageText;
-          usageEl.title = "Context / 5h quota used";
-          tabEl.appendChild(usageEl);
-        }
-      }
+      // (Per-tab usage badge removed — it cluttered every tab and repeated
+      // the account-level 5h quota on each one. Usage data still collects
+      // in the background; a proper usage view is a separate later pass.)
       tabEl.appendChild(closeEl);
 
       tabEl.addEventListener("mousedown", (e) => e.stopPropagation());
