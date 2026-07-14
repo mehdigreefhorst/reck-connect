@@ -200,6 +200,13 @@ export class TtsEngine {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   // Log marker: "audio actually started" (first boundary after a speak).
   private firstBoundarySeen = true;
+  // Stall watchdog state. Progress = raw boundary EVENTS (any name, even
+  // degenerate charIndex-0 streams — those are audible, just unmappable),
+  // so the watchdog never restarts a stream that is actually playing.
+  private boundaryEvents = 0;
+  private watchdogSeenEvents = 0;
+  private stallStrikes = 0;
+  private recoveries = 0;
   private currentUtt: SpeechSynthesisUtterance | null = null;
   private currentChunk: SpokenChunk | null = null;
   private currentVoice: SpeechSynthesisVoice | null = null;
@@ -270,6 +277,8 @@ export class TtsEngine {
     this.rate = rate;
     this.lastBoundaryCharIndex = 0;
     this.currentVoice = opts.voice ?? null;
+    // A fresh logical playback gets a fresh recovery budget.
+    this.recoveries = 0;
     this.speakInternal(chunk, this.currentVoice, rate);
   }
 
@@ -398,23 +407,42 @@ export class TtsEngine {
     this.stopHeartbeat();
   }
 
+  /**
+   * Pause WITHOUT synth.pause(): on macOS, Chromium implements pause()
+   * against the OS speech service in a way that progressively wedges the
+   * whole renderer process — speech works after app launch, then every
+   * utterance goes speaking=true with no audio until restart (observed
+   * live in the packaged Satellite; a bare utterance in DevTools showed
+   * the same). So pause is cancel-and-remember and resume re-speaks from
+   * the last word boundary — same machinery as a mid-flight rate change.
+   */
   pause(): void {
+    if (this.userPaused) return;
     this.userPaused = true;
     // Drop any scheduled swap — its divergence point indexes the pre-pause
     // chunk; the next render after resume recomputes a fresh one.
     this.pendingSwap = null;
-    this.synth.pause();
+    this.segmentPending = false;
+    this.stopHeartbeat();
+    if (this.currentUtt) this.detachUtterance(this.currentUtt);
+    this.currentUtt = null;
+    this.synth.cancel();
+    // Clear any stale EXTERNAL pause so resume()'s re-speak can play.
+    this.synth.resume();
   }
 
   resume(): void {
+    if (!this.userPaused) return;
     this.userPaused = false;
-    this.synth.resume();
-    // If a pause raced a segment's end, handleEnd deferred the next segment
-    // rather than speak into the paused queue. Start it now.
-    if (this.segmentPending) {
-      this.segmentPending = false;
-      this.speakSegment();
+    if (!this.currentChunk) return;
+    const remaining = sliceChunkFrom(this.currentChunk, this.lastBoundaryCharIndex);
+    if (!remaining.text) {
+      // Paused exactly at the end — nothing left; finish cleanly.
+      this.currentChunk = null;
+      for (const cb of this.endListeners) cb();
+      return;
     }
+    this.speakInternal(remaining, this.currentVoice, this.rate);
   }
 
   setRate(rate: number): void {
@@ -555,7 +583,9 @@ export class TtsEngine {
   }
 
   isPaused(): boolean {
-    return this.synth.paused;
+    // Engine-level state: pause is cancel-based (see pause()), so the
+    // global synth.paused flag is deliberately never our source of truth.
+    return this.userPaused;
   }
 
   async getVoices(): Promise<SpeechSynthesisVoice[]> {
@@ -580,6 +610,10 @@ export class TtsEngine {
   }
 
   private handleBoundary(ev: SpeechSynthesisEvent): void {
+    // Raw event count feeds the stall watchdog BEFORE any filtering:
+    // every boundary event (word, sentence, degenerate) proves audio is
+    // progressing.
+    this.boundaryEvents++;
     if (ev.name !== "word") return;
     if (!this.currentChunk) return;
     if (this.boundaryDegenerate) return;
@@ -708,14 +742,63 @@ export class TtsEngine {
     u.onresume = null;
   }
 
+  /**
+   * Stall watchdog (replaces the old pause()+resume() heartbeat, which is
+   * exactly the call sequence that wedges macOS Chromium's speech service
+   * — see pause()). Watches for boundary-event progress; after two silent
+   * intervals it cancels and re-speaks from the last spoken word, and
+   * after repeated failed recoveries it gives up with an 'error' so the
+   * controller can reset the UI instead of showing a silent "playing".
+   */
   private startHeartbeat(): void {
     this.stopHeartbeat();
-    this.heartbeatTimer = setInterval(() => {
-      if (this.userPaused) return;
-      if (!this.synth.speaking) return;
-      this.synth.pause();
+    this.watchdogSeenEvents = this.boundaryEvents;
+    this.stallStrikes = 0;
+    this.heartbeatTimer = setInterval(
+      () => this.checkProgress(),
+      this.heartbeatIntervalMs,
+    );
+  }
+
+  private checkProgress(): void {
+    if (this.userPaused) return;
+    if (!this.currentChunk || !this.currentUtt) return;
+    if (this.boundaryEvents !== this.watchdogSeenEvents) {
+      this.watchdogSeenEvents = this.boundaryEvents;
+      this.stallStrikes = 0;
+      this.recoveries = 0;
+      return;
+    }
+    this.stallStrikes++;
+    if (this.stallStrikes < 2) return;
+    this.stallStrikes = 0;
+    if (this.recoveries >= 2) {
+      console.warn(
+        "[tts] speech engine unresponsive — the OS speech service looks " +
+          "wedged; restart the app to recover",
+      );
+      this.stopHeartbeat();
+      if (this.currentUtt) this.detachUtterance(this.currentUtt);
+      this.currentUtt = null;
+      this.currentChunk = null;
+      this.segments = [];
+      this.segIndex = 0;
+      this.segBase = 0;
+      this.segmentPending = false;
+      this.pendingSwap = null;
+      this.synth.cancel();
       this.synth.resume();
-    }, this.heartbeatIntervalMs);
+      const err = new Error("speech engine unresponsive");
+      for (const cb of this.errorListeners) cb(err);
+      return;
+    }
+    this.recoveries++;
+    console.warn(
+      "[tts] no speech progress — cancelling and re-speaking from the last spoken word",
+    );
+    const remaining = sliceChunkFrom(this.currentChunk, this.lastBoundaryCharIndex);
+    if (!remaining.text) return;
+    this.speakInternal(remaining, this.currentVoice, this.rate);
   }
 
   private stopHeartbeat(): void {
