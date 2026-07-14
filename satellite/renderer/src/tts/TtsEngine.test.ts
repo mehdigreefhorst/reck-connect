@@ -117,6 +117,9 @@ function makeEngine(synth: StubSynth, opts: { restartDebounceMs?: number } = {})
     // Default to 0 so existing tests keep their synchronous semantics;
     // the dedicated rapid-drag test below opts back into the real default.
     restartDebounceMs: opts.restartDebounceMs ?? 0,
+    // Synchronous speak in tests (the real default defers 80ms after a
+    // cancel to avoid the macOS same-tick cancel→speak wedge).
+    cancelCooldownMs: 0,
   });
 }
 
@@ -576,6 +579,60 @@ describe("TtsEngine setRate debounce (rapid drag coalescing)", () => {
   });
 });
 
+describe("TtsEngine cancel→speak cooldown (macOS same-tick wedge)", () => {
+  // Same-tick cancel()+speak() intermittently wedges macOS Chromium's
+  // speech service. With a non-zero cooldown, the actual speak defers,
+  // and anything newer (another start, stop, pause) drops it.
+  let synth: StubSynth;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    synth = new StubSynth();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function mkCooldown(): TtsEngine {
+    return new TtsEngine({
+      synth: synth as unknown as SpeechSynthesis,
+      UtteranceCtor: StubUtterance as unknown as typeof SpeechSynthesisUtterance,
+      heartbeatIntervalMs: 100_000, // watchdog out of the way
+      restartDebounceMs: 0,
+      cancelCooldownMs: 50,
+    });
+  }
+
+  it("defers the speak past the cooldown", () => {
+    const engine = mkCooldown();
+    engine.start(chunkOfWords(["aa", "bb"]));
+    expect(synth.spoken).toHaveLength(0);
+    vi.advanceTimersByTime(50);
+    expect(synth.spoken).toHaveLength(1);
+    engine.dispose();
+  });
+
+  it("a rapid second start supersedes the first — only the newest speaks", () => {
+    const engine = mkCooldown();
+    engine.start(chunkOfWords(["old", "text"]));
+    engine.start(chunkOfWords(["new", "text"]));
+    vi.advanceTimersByTime(200);
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.spoken[0].text).toBe("new text");
+    engine.dispose();
+  });
+
+  it("stop() during the cooldown drops the deferred speak", () => {
+    const engine = mkCooldown();
+    engine.start(chunkOfWords(["aa"]));
+    engine.stop();
+    vi.advanceTimersByTime(200);
+    expect(synth.spoken).toHaveLength(0);
+    engine.dispose();
+  });
+});
+
 describe("TtsEngine stall watchdog (no-progress recovery)", () => {
   // Replaces the old pause()+resume() heartbeat: synth.pause() is exactly
   // the call that progressively wedges macOS Chromium's speech service, so
@@ -902,6 +959,7 @@ describe("utterance segmentation (long tool payloads must not wedge)", () => {
       UtteranceCtor: StubUtterance as unknown as typeof SpeechSynthesisUtterance,
       heartbeatIntervalMs: 100,
       restartDebounceMs: 0,
+      cancelCooldownMs: 0,
       maxUtteranceChars: max,
     });
   }
@@ -1022,6 +1080,7 @@ describe("TtsEngine — reswap (recompute upcoming words on scroll)", () => {
       UtteranceCtor: StubUtterance as unknown as typeof SpeechSynthesisUtterance,
       heartbeatIntervalMs: 100,
       restartDebounceMs: 0,
+      cancelCooldownMs: 0,
       respliceMode,
     });
   }

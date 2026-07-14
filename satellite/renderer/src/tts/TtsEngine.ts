@@ -36,6 +36,13 @@ export interface TtsEngineOptions {
    * a typical drag. Set to 0 in tests for synchronous semantics.
    */
   restartDebounceMs?: number;
+  /**
+   * Delay between a cancel() and the next speak(). Same-tick cancel→speak
+   * intermittently wedges macOS Chromium's speech service for the whole
+   * process (only an app restart recovers), so real playback waits one
+   * breath. Default 80ms; tests set 0 for synchronous semantics.
+   */
+  cancelCooldownMs?: number;
   /** Override the per-utterance char cap (see MAX_UTTERANCE_CHARS). Tests
    *  set a small value to exercise multi-segment speech cheaply. */
   maxUtteranceChars?: number;
@@ -188,6 +195,10 @@ export class TtsEngine {
   private readonly restartDebounceMs: number;
   private readonly maxUtteranceChars: number;
   private readonly respliceMode: "scheduled" | "immediate";
+  private readonly cancelCooldownMs: number;
+  // Bumped on every speakInternal/stop/pause; a deferred post-cooldown
+  // speak aborts when its captured generation is stale.
+  private speakGeneration = 0;
   private rateRestartTimer: ReturnType<typeof setTimeout> | null = null;
   // A recomputed chunk awaiting a scheduled swap: playback continues on the
   // current chunk until lastBoundaryCharIndex reaches `divCharOld` (or the
@@ -253,6 +264,7 @@ export class TtsEngine {
     this.restartDebounceMs = opts.restartDebounceMs ?? 60;
     this.maxUtteranceChars = opts.maxUtteranceChars ?? MAX_UTTERANCE_CHARS;
     this.respliceMode = opts.respliceMode ?? "scheduled";
+    this.cancelCooldownMs = opts.cancelCooldownMs ?? 80;
   }
 
   on<K extends keyof EventMap>(event: K, cb: Listener<EventMap[K]>): () => void {
@@ -325,6 +337,22 @@ export class TtsEngine {
       for (const cb of this.endListeners) cb();
       return;
     }
+    // cancel() → speak() in the same tick is the OTHER sequence (besides
+    // pause(), see pause()) that intermittently wedges macOS Chromium's
+    // speech service — rapid ⌘⇧S restarts and reswap churn eventually
+    // kill audio for the whole process. Give the service one breath
+    // between cancel and the next speak. A generation counter drops the
+    // deferred speak if anything newer (start/stop/pause) intervened.
+    if (this.cancelCooldownMs > 0) {
+      const gen = ++this.speakGeneration;
+      setTimeout(() => {
+        if (gen !== this.speakGeneration) return;
+        if (!this.currentChunk) return;
+        this.speakSegment();
+      }, this.cancelCooldownMs);
+      return;
+    }
+    this.speakGeneration++;
     this.speakSegment();
   }
 
@@ -385,6 +413,7 @@ export class TtsEngine {
   }
 
   stop(): void {
+    this.speakGeneration++; // drop any deferred post-cooldown speak
     if (this.rateRestartTimer) {
       clearTimeout(this.rateRestartTimer);
       this.rateRestartTimer = null;
@@ -418,6 +447,7 @@ export class TtsEngine {
    */
   pause(): void {
     if (this.userPaused) return;
+    this.speakGeneration++; // drop any deferred post-cooldown speak
     this.userPaused = true;
     // Drop any scheduled swap — its divergence point indexes the pre-pause
     // chunk; the next render after resume recomputes a fresh one.
