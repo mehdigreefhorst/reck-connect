@@ -52,6 +52,52 @@ export interface TranscriptChunk {
   hasMore: boolean;
 }
 
+/** Bin width for `GET /usage/histogram`. Grammar: fixed widths
+ * `"<N>m" | "<N>h" | "<N>d"` (e.g. "1m", "30m", "4h", "1d"), calendar
+ * `"month"`, plus legacy aliases `"hour"`/`"day"`. The daemon rejects
+ * anything else (and any range that would exceed its bin cap). */
+export type UsageHistogramBucket = string;
+
+/**
+ * One dense bin of `GET /usage/histogram`. Token sums come from the
+ * daemon's authoritative per-turn counts; the quota peaks are the MAX
+ * 5h/7d used-% sampled inside the bin (absent when no quota sample
+ * landed there — quota is account-level and ignores the project
+ * filter). `t` is the bin start in unix seconds.
+ */
+export interface UsageHistogramBin {
+  t: number;
+  input: number;
+  output: number;
+  cache_creation: number;
+  cache_read: number;
+  total: number;
+  turns: number;
+  five_hour_peak?: number;
+  seven_day_peak?: number;
+}
+
+/** Envelope for `GET /usage/histogram`. `enabled: false` means the
+ * daemon runs without a usage store (bins/bucket absent). */
+export interface UsageHistogramResponse {
+  enabled: boolean;
+  bucket?: UsageHistogramBucket;
+  since?: number;
+  until?: number;
+  bins?: UsageHistogramBin[];
+}
+
+/** Caller-side params for `getUsageHistogram`. `tzOffsetMin` is minutes
+ * east of UTC (i.e. `-new Date().getTimezoneOffset()`), so day/month
+ * bins align to the caller's local midnight rather than the station's. */
+export interface UsageHistogramParams {
+  bucket: UsageHistogramBucket;
+  since: number; // unix seconds, inclusive
+  until: number; // unix seconds, exclusive
+  projectId?: string;
+  tzOffsetMin?: number;
+}
+
 /**
  * Raised when the daemon returns a 2xx response but the body doesn't
  * look like JSON — typically a proxy/CDN intercepting the request
@@ -172,6 +218,24 @@ export class ApiClient {
       fetchInit = rest;
     }
     return this.fetch<ProjectDetail>(path, fetchInit);
+  }
+
+  /**
+   * Server-binned usage histogram for the usage view (issue #88). The
+   * daemon does the aggregation, so the response is always a small,
+   * dense series (≤1000 bins) regardless of range length.
+   */
+  getUsageHistogram(params: UsageHistogramParams, init?: RequestInit) {
+    const q = new URLSearchParams({
+      bucket: params.bucket,
+      since: String(params.since),
+      until: String(params.until),
+    });
+    if (params.projectId) q.set("project_id", params.projectId);
+    if (params.tzOffsetMin !== undefined) {
+      q.set("tz_offset_min", String(params.tzOffsetMin));
+    }
+    return this.fetch<UsageHistogramResponse>(`/usage/histogram?${q}`, init);
   }
 
   createPane(

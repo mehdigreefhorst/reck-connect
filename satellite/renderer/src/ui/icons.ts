@@ -28,6 +28,10 @@ export const iconMic = base(
   `<rect x="6" y="1.5" width="4" height="8" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/><line x1="5.5" y1="14.5" x2="10.5" y2="14.5"/>`,
 );
 
+export const iconChart = base(
+  `<line x1="2.5" y1="13.5" x2="13.5" y2="13.5"/><rect x="3.5" y="8.5" width="2.5" height="5" rx="0.5"/><rect x="7" y="5" width="2.5" height="8.5" rx="0.5"/><rect x="10.5" y="7" width="2.5" height="6.5" rx="0.5"/>`,
+);
+
 export const iconClear = base(
   `<path d="M3 5h10M5 5V3.5a1 1 0 011-1h4a1 1 0 011 1V5M4.5 5l.7 8a1 1 0 001 .9h3.6a1 1 0 001-.9l.7-8"/>`,
 );
