@@ -6,6 +6,7 @@ import (
 	"io"
 	nethttp "net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,4 +194,80 @@ func TestUsageHistogramPlanDaysWithNoSamples(t *testing.T) {
 	if got.PlanSummary[usage.PlanUnknown] != 3 {
 		t.Errorf("plan_summary = %v, want unknown:3", got.PlanSummary)
 	}
+}
+
+func TestUsageExportCsv(t *testing.T) {
+	srv, store := planTestServer(t)
+	base := time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	if err := store.InsertQuotaSample(usage.QuotaSample{
+		TS: base, Source: "poll", FiveHour: usage.Bucket{Pct: f64p(86)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	since := base.Add(-time.Hour).Unix()
+	until := base.Add(time.Hour).Unix()
+
+	t.Run("serves csv with a download filename", func(t *testing.T) {
+		url := fmt.Sprintf("%s/usage/export.csv?dataset=quota&since=%d&until=%d", srv.URL, since, until)
+		resp, err := nethttp.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+			t.Errorf("Content-Type = %q, want text/csv", ct)
+		}
+		if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "reck-usage-quota-") {
+			t.Errorf("Content-Disposition = %q", cd)
+		}
+		// The renderer reads this header to name the save dialog.
+		if fn := resp.Header.Get("X-Reck-Export-Filename"); !strings.HasSuffix(fn, ".csv") {
+			t.Errorf("X-Reck-Export-Filename = %q", fn)
+		}
+		if !strings.HasPrefix(string(body), "ts,ts_unix,five_hour_pct") {
+			t.Errorf("body starts with %.60q", body)
+		}
+		if !strings.Contains(string(body), "poll") {
+			t.Error("expected the poll row in the body")
+		}
+	})
+
+	t.Run("defaults to the binned dataset", func(t *testing.T) {
+		url := fmt.Sprintf("%s/usage/export.csv?since=%d&until=%d&bucket=hour", srv.URL, since, until)
+		resp, err := nethttp.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+		}
+		if !strings.HasPrefix(string(body), "bin_start,") {
+			t.Errorf("body starts with %.40q, want the binned header", body)
+		}
+	})
+
+	t.Run("rejects caller mistakes with 400", func(t *testing.T) {
+		for _, q := range []string{
+			fmt.Sprintf("dataset=nonsense&since=%d&until=%d", since, until),
+			fmt.Sprintf("dataset=binned&since=%d&until=%d", since, until), // no bucket
+			fmt.Sprintf("dataset=quota&since=%d&until=%d", until, since),  // reversed
+			"dataset=quota&since=abc&until=def",
+		} {
+			resp, err := nethttp.Get(srv.URL + "/usage/export.csv?" + q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != 400 {
+				t.Errorf("%s: status=%d, want 400", q, resp.StatusCode)
+			}
+		}
+	})
 }

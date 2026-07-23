@@ -5018,6 +5018,89 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   margin-left: auto;
 }
 
+/* Export dialog ---------------------------------------------------------
+   Sits on the shared .confirm-overlay / .confirm-card chrome; only the
+   form layout is specific to it. */
+.usage-export-card {
+  width: min(30rem, 92vw);
+  text-align: left;
+}
+
+.usage-export-modes {
+  margin: 0.75rem 0 0.5rem;
+  justify-content: flex-start;
+}
+
+.usage-export-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.25rem 0 0.5rem;
+}
+
+.usage-export-summary,
+.usage-export-hint {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--app-text-muted);
+}
+
+.usage-export-hint {
+  margin-top: -0.35rem;
+}
+
+.usage-export-row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.usage-export-row .usage-export-field {
+  flex: 1;
+}
+
+.usage-export-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--claude-mid);
+}
+
+.usage-export-field select,
+.usage-export-field input[type="date"] {
+  font-family: inherit;
+  font-size: 0.8rem;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--app-text);
+  background: var(--app-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+  padding: 0.35rem 0.45rem;
+}
+
+.usage-export-field select:focus-visible,
+.usage-export-field input[type="date"]:focus-visible {
+  outline: 2px solid var(--claude-orange);
+  outline-offset: 1px;
+}
+
+/* Reserved height so a message appearing doesn't shift the buttons out
+   from under the cursor mid-click. */
+.usage-export-status {
+  min-height: 1.15rem;
+  font-size: 0.78rem;
+  line-height: 1.15rem;
+  color: var(--app-text-muted);
+}
+
+.usage-export-status.is-error {
+  color: var(--wes-rose);
+}
+
 .usage-chip {
   font-family: var(--font-mono);
   font-size: 0.7rem;

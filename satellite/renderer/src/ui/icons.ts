@@ -32,6 +32,12 @@ export const iconChart = base(
   `<line x1="2.5" y1="13.5" x2="13.5" y2="13.5"/><rect x="3.5" y="8.5" width="2.5" height="5" rx="0.5"/><rect x="7" y="5" width="2.5" height="8.5" rx="0.5"/><rect x="10.5" y="7" width="2.5" height="6.5" rx="0.5"/>`,
 );
 
+// Tray-with-down-arrow: the download affordance in the usage view's
+// header. Drawn on the same 16-unit grid and stroke weight as the rest.
+export const iconDownload = base(
+  `<path d="M8 2.5v7.5M5 7.5L8 10.5l3-3"/><path d="M2.5 11v1.5a1 1 0 001 1h9a1 1 0 001-1V11"/>`,
+);
+
 export const iconClear = base(
   `<path d="M3 5h10M5 5V3.5a1 1 0 011-1h4a1 1 0 011 1V5M4.5 5l.7 8a1 1 0 001 .9h3.6a1 1 0 001-.9l.7-8"/>`,
 );
