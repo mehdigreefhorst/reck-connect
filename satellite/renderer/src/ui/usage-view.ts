@@ -42,6 +42,7 @@ import {
 } from "./usage-range";
 import { planRangeLabel } from "./usage-plan";
 import { iconClose, iconDownload } from "./icons";
+import { confirmDialogOpen } from "./confirmDialog";
 import { openUsageExportDialog } from "./usage-export-dialog";
 
 export interface UsageOverlayOpts {
@@ -253,6 +254,12 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     prevFocus?.focus?.();
   };
   const onKey = (e: KeyboardEvent) => {
+    // A modal on top of us (the CSV export dialog) owns its own Escape.
+    // This listener is on `window`, whose capture phase runs BEFORE the
+    // dialog's on `document` — without this guard Escape would close the
+    // whole view out from under the dialog and stopPropagation would keep
+    // the dialog's own handler from ever running, stranding it on screen.
+    if (confirmDialogOpen()) return;
     if (e.key === "Escape") {
       e.stopPropagation();
       close();
