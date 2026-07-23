@@ -1,6 +1,9 @@
-// Subscription-plan formatting. Pure functions, no DOM — the usage-view
-// header and the app-bar badge both render the tier, so the wording lives
-// here once rather than being reinvented in each place.
+// Subscription-plan formatting for the usage view. Pure functions, no
+// DOM, so the tier wording and the day-composition rules are testable on
+// their own and stay in one place if another surface ever needs them.
+//
+// Deliberately NOT shown in the app bar: the tier is slow-moving context,
+// not something worth a permanent badge next to the live controls.
 
 /** Tiers the daemon can report, mapped to display text. Anything not
  * listed is title-cased as-is, so a tier Anthropic adds later shows up
