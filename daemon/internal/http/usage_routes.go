@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	nethttp "net/http"
 	"strconv"
 
@@ -170,6 +171,67 @@ func (s *Server) handleUsageSeries(w nethttp.ResponseWriter, r *nethttp.Request)
 		writeJSON(w, map[string]any{"kind": "quota", "points": points})
 	default:
 		nethttp.Error(w, "unknown kind (want context or quota)", nethttp.StatusBadRequest)
+	}
+}
+
+// handleUsageExport streams the usage store as CSV for the Satellite's
+// download button. Query params:
+//
+//	dataset       = "binned" (default) | "turns" | "quota"
+//	since, until  = unix seconds, half-open [since, until) (required)
+//	bucket        = bin width, required for dataset=binned
+//	project_id    = optional filter (binned + turns; quota is account-level)
+//	tz_offset_min = caller's zone, for bin alignment and readable timestamps
+//
+// Validation lives on usage.ExportParams so it is unit-tested once; a
+// caller mistake is a 400 and a store failure a 500.
+func (s *Server) handleUsageExport(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if s.UsageStore == nil {
+		nethttp.Error(w, "usage tracking is not enabled on this station", nethttp.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	since, errSince := strconv.ParseInt(q.Get("since"), 10, 64)
+	until, errUntil := strconv.ParseInt(q.Get("until"), 10, 64)
+	if errSince != nil || errUntil != nil {
+		nethttp.Error(w, "since and until must be unix seconds", nethttp.StatusBadRequest)
+		return
+	}
+	tzOffsetMin := 0
+	if v := q.Get("tz_offset_min"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			nethttp.Error(w, "tz_offset_min must be an integer", nethttp.StatusBadRequest)
+			return
+		}
+		tzOffsetMin = n
+	}
+	dataset := usage.ExportDataset(q.Get("dataset"))
+	if dataset == "" {
+		dataset = usage.DatasetBinned
+	}
+	params := usage.ExportParams{
+		Dataset:     dataset,
+		Since:       since,
+		Until:       until,
+		Bucket:      usage.HistogramBucket(q.Get("bucket")),
+		ProjectID:   q.Get("project_id"),
+		TZOffsetMin: tzOffsetMin,
+	}
+	if err := params.Validate(); err != nil {
+		nethttp.Error(w, err.Error(), nethttp.StatusBadRequest)
+		return
+	}
+
+	// Headers before the first byte: once ExportCSV starts streaming we
+	// can no longer change the status code, so a mid-stream store failure
+	// can only be logged and the response truncated.
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+params.Filename()+"\"")
+	w.Header().Set("X-Reck-Export-Filename", params.Filename())
+
+	if _, err := s.UsageStore.ExportCSV(w, params); err != nil {
+		slog.Warn("usage: csv export failed mid-stream", "err", err, "dataset", dataset)
 	}
 }
 

@@ -160,6 +160,7 @@ func (s *Server) Router() *chi.Mux {
 	r.Get("/usage/summary", s.handleUsageSummary)
 	r.Get("/usage/series", s.handleUsageSeries)
 	r.Get("/usage/histogram", s.handleUsageHistogram)
+	r.Get("/usage/export.csv", s.handleUsageExport)
 	r.Post("/panes/{pane_id}/input", s.handlePaneInput)
 	r.Get("/panes/{pane_id}/output", s.handlePaneOutput)
 	// Image-paste upload endpoint (phase 1). Writes a posted

@@ -41,7 +41,8 @@ import {
   type Granularity,
 } from "./usage-range";
 import { planRangeLabel } from "./usage-plan";
-import { iconClose } from "./icons";
+import { iconClose, iconDownload } from "./icons";
+import { openUsageExportDialog } from "./usage-export-dialog";
 
 export interface UsageOverlayOpts {
   api: ApiClient;
@@ -101,6 +102,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         <h2 class="usage-title">Usage</h2>
         <span class="usage-plan" hidden></span>
         <div class="usage-chips" role="tablist"></div>
+        <button class="icon-btn usage-download" title="Export usage data as CSV">${iconDownload}</button>
         <button class="icon-btn usage-close" title="Close (Esc)">${iconClose}</button>
       </div>
       <div class="usage-nav">
@@ -139,6 +141,10 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   const legendEl = overlay.querySelector(".usage-legend") as HTMLElement;
   const binsSel = overlay.querySelector(".usage-bins") as HTMLSelectElement;
   const projectSel = overlay.querySelector(".usage-project:not(.usage-bins)") as HTMLSelectElement;
+  const downloadBtn = overlay.querySelector(".usage-download") as HTMLButtonElement;
+  // Mirrors projectSel's options so the export dialog can offer the
+  // same filter without refetching the project list.
+  const projectOptions: Array<{ id: string; name: string }> = [{ id: "", name: "All projects" }];
 
   // Series toggles: one pill per data series (swatch + label). State
   // lives in `shown`; an existing chart is flipped in place via
@@ -277,9 +283,27 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         o.value = p.id;
         o.textContent = p.name;
         projectSel.appendChild(o);
+        projectOptions.push({ id: p.id, name: p.name });
       }
     })
     .catch(() => {});
+
+  // Export: hand the dialog exactly the range/bin/project on screen, so
+  // "current view" means what it says even after paging or a drag-zoom.
+  downloadBtn.addEventListener("click", () => {
+    const { start, until } = currentRange();
+    void openUsageExportDialog({
+      api: opts.api,
+      view: {
+        since: Math.floor(start.getTime() / 1000),
+        until: Math.floor(until.getTime() / 1000),
+        bucket,
+        projectId,
+        tzOffsetMin: tzOffsetMin(start),
+      },
+      projects: projectOptions,
+    });
+  });
 
   // ---- data + chart ------------------------------------------------
   function note(msg: string) {

@@ -700,11 +700,41 @@ ipcMain.handle("dialog:pickFolder", async () => {
   return res.filePaths[0];
 });
 
+// --- IPC: CSV export save dialog (usage view download button) ---
+
+/**
+ * Write a renderer-supplied CSV to a user-chosen path.
+ *
+ * The renderer sends a suggested FILENAME, never a path: `basename` it so
+ * a crafted value ("../../.zshrc") can't steer the dialog's starting
+ * location. Where the file actually lands is the user's choice in the
+ * native dialog, which is the security boundary here.
+ */
+ipcMain.handle("dialog:saveCsv", async (_e, filename: unknown, content: unknown) => {
+  if (!mainWindow) return { ok: false, canceled: false, error: "no window" };
+  if (typeof filename !== "string" || typeof content !== "string") {
+    return { ok: false, canceled: false, error: "invalid arguments" };
+  }
+  const suggested = path.basename(filename) || "reck-usage.csv";
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: "Export usage data",
+    defaultPath: path.join(app.getPath("downloads"), suggested),
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+  });
+  if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+  try {
+    await writeFile(res.filePath, content, "utf8");
+    return { ok: true, canceled: false, path: res.filePath };
+  } catch (e: unknown) {
+    return { ok: false, canceled: false, error: e instanceof Error ? e.message : String(e) };
+  }
+});
+
 // --- IPC: Finder / mount ---
 
 import { homedir } from "node:os";
 import { statSync, readFileSync, unlinkSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import {
   parseTailscaleStatus,

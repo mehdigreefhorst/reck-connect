@@ -80,6 +80,15 @@ contextBridge.exposeInMainWorld("reckAPI", {
   },
   dialog: {
     pickFolder: () => ipcRenderer.invoke("dialog:pickFolder"),
+    // Usage-view CSV export: the renderer holds the file body, the main
+    // process owns the native save dialog and the write.
+    saveCsv: (filename: string, content: string) =>
+      ipcRenderer.invoke("dialog:saveCsv", filename, content) as Promise<{
+        ok: boolean;
+        canceled: boolean;
+        path?: string;
+        error?: string;
+      }>,
   },
   shell: {
     openPath: (slug: string) =>
