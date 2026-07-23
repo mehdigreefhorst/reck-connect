@@ -103,21 +103,6 @@ export interface UsageHistogramResponse {
   plan_summary?: Record<string, number>;
 }
 
-/** The account's current subscription, as reported by `GET /usage/summary`.
- * Absent until the daemon's plan probe has recorded one. */
-export interface UsagePlan {
-  subscription: string;
-  rate_limit_tier: string;
-  ts: number;
-}
-
-/** Envelope for `GET /usage/summary`. `enabled: false` means the daemon
- * runs without a usage store, in which case every other field is absent. */
-export interface UsageSummaryResponse {
-  enabled: boolean;
-  install_id?: string;
-  plan?: UsagePlan;
-}
 
 /** Caller-side params for `getUsageHistogram`. `tzOffsetMin` is minutes
  * east of UTC (i.e. `-new Date().getTimezoneOffset()`), so day/month
@@ -270,14 +255,6 @@ export class ApiClient {
     return this.fetch<UsageHistogramResponse>(`/usage/histogram?${q}`, init);
   }
 
-  /**
-   * Account-level usage glance: latest quota reading, per-session totals,
-   * and the current subscription plan. Used by the app bar, which needs
-   * the tier without opening the usage overlay.
-   */
-  getUsageSummary(init?: RequestInit) {
-    return this.fetch<UsageSummaryResponse>("/usage/summary", init);
-  }
 
   createPane(
     projectId: string,
