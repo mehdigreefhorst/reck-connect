@@ -103,7 +103,6 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         <h2 class="usage-title">Usage</h2>
         <span class="usage-plan" hidden></span>
         <div class="usage-chips" role="tablist"></div>
-        <button class="icon-btn usage-download" title="Export usage data as CSV">${iconDownload}</button>
         <button class="icon-btn usage-close" title="Close (Esc)">${iconClose}</button>
       </div>
       <div class="usage-nav">
@@ -122,6 +121,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       <div class="usage-chart-wrap">
         <div class="usage-chart"></div>
         <div class="usage-note" hidden></div>
+        <button class="icon-btn usage-download" title="Export usage data as CSV">${iconDownload}</button>
       </div>
       <div class="usage-legend" role="group" aria-label="Series"></div>
       <div class="usage-readout" aria-live="polite"></div>
@@ -509,6 +509,15 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     const asLine = bins.length > 96;
 
     const width = chartWrap.clientWidth || 720;
+
+    // The export button floats at the plot area's top-right corner. Its inset
+    // mirrors the right padding below plus the pct axis, which only exists
+    // while a quota series is shown — same condition as the axis itself.
+    chartWrap.style.setProperty(
+      "--usage-plot-right",
+      `${8 + (shown.fiveHour || shown.sevenDay ? 40 : 0)}px`,
+    );
+
     const opt: uPlot.Options = {
       width,
       height: 300,
