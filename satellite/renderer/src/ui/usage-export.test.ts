@@ -4,7 +4,6 @@ import {
   datasetDescription,
   isRawDataset,
   localMidnight,
-  paramsForCurrentView,
   supportsProjectFilter,
   toDateInputValue,
 } from "./usage-export";
@@ -62,37 +61,6 @@ describe("dataset predicates", () => {
     for (const d of ["binned", "turns", "quota"] as const) {
       expect(datasetDescription(d).length).toBeGreaterThan(20);
     }
-  });
-});
-
-describe("paramsForCurrentView", () => {
-  it("mirrors the chart exactly", () => {
-    const params = paramsForCurrentView({
-      since: 1000,
-      until: 2000,
-      bucket: "1h",
-      projectId: "proj-1",
-      tzOffsetMin: CET,
-    });
-    expect(params).toEqual({
-      dataset: "binned",
-      since: 1000,
-      until: 2000,
-      bucket: "1h",
-      projectId: "proj-1",
-      tzOffsetMin: CET,
-    });
-  });
-
-  it("omits an empty project filter rather than sending a blank one", () => {
-    const params = paramsForCurrentView({
-      since: 1000,
-      until: 2000,
-      bucket: "1h",
-      projectId: "",
-      tzOffsetMin: 0,
-    });
-    expect(params.projectId).toBeUndefined();
   });
 });
 

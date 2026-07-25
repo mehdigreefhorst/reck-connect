@@ -5026,26 +5026,18 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   text-align: left;
 }
 
-.usage-export-modes {
-  margin: 0.75rem 0 0.5rem;
-  justify-content: flex-start;
-}
-
-.usage-export-pane {
+.usage-export-form {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  padding: 0.25rem 0 0.5rem;
+  padding: 0.75rem 0 0.5rem;
 }
 
-.usage-export-summary,
 .usage-export-hint {
   font-size: 0.8rem;
   line-height: 1.45;
   color: var(--app-text-muted);
-}
-
-.usage-export-hint {
+  /* Pulls the description up under its select, inside the form's row gap. */
   margin-top: -0.35rem;
 }
 

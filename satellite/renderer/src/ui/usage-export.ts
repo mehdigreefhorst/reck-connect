@@ -9,12 +9,8 @@ import type {
   UsageHistogramBucket,
 } from "@client-core/api/client";
 
-/** The two ways into an export. "current" is a one-click dump of what's
- * on screen; "advanced" lets the user pick dataset, range, and interval. */
-export type ExportMode = "current" | "advanced";
-
-/** What the chart is currently showing — the basis for a "current view"
- * export, and the defaults the advanced form opens with. */
+/** What the chart is currently showing — the defaults the export form
+ * opens with. */
 export interface CurrentView {
   since: number; // unix seconds
   until: number; // unix seconds
@@ -57,19 +53,6 @@ export function datasetDescription(dataset: UsageExportDataset): string {
     default:
       return "Every 5h/7d quota reading, polled and statusline alike, with its source.";
   }
-}
-
-/** Params for a one-click "current view" export: the binned series over
- * exactly the range and bin width on screen. */
-export function paramsForCurrentView(view: CurrentView): UsageExportParams {
-  return {
-    dataset: "binned",
-    since: view.since,
-    until: view.until,
-    bucket: view.bucket,
-    projectId: view.projectId || undefined,
-    tzOffsetMin: view.tzOffsetMin,
-  };
 }
 
 /**
