@@ -24,7 +24,7 @@ function fakeSurface(initial: ScrollMetrics, ownsScrollInit = false) {
       };
     },
     ownsScroll: () => owns,
-    pageScroll: vi.fn(() => true),
+    lineScroll: vi.fn(() => true),
   };
   return {
     surface,
@@ -200,11 +200,10 @@ describe("OverlayScrollbar — drag", () => {
 });
 
 describe("OverlayScrollbar — mouse-tracking TUI pane (Claude / less / vim)", () => {
-  // No exact position exists: Claude runs on the alternate screen (no xterm
-  // scrollback) and 2.1.150+ repurposes the wheel to arrow keys. So we DON'T
-  // fake a thumb — we translate the wheel to PgUp/PgDn (surface.pageScroll)
-  // and keep the bar out of the way, swallowing the event so xterm's broken
-  // wheel path never runs.
+  // No exact position exists: the TUI runs on the alternate screen (no xterm
+  // scrollback). So we DON'T fake a thumb — we re-emit the wheel as a line
+  // report (surface.lineScroll) and keep the bar out of the way, swallowing
+  // the event so xterm's alt-screen wheel→arrow-keys path never runs.
   const FROZEN = { scrollTop: 0, scrollHeight: 25, clientHeight: 25 };
 
   it("keeps the bar disabled — never draws a guessed thumb", () => {
@@ -214,36 +213,67 @@ describe("OverlayScrollbar — mouse-tracking TUI pane (Claude / less / vim)", (
     expect(disabled()).toBe(true);
   });
 
-  it("wheel-up pages up (dir -1), wheel-down pages down (dir +1)", () => {
+  it("wheel-up scrolls up (dir -1), wheel-down scrolls down (dir +1)", () => {
     const f = fakeSurface(FROZEN, true);
-    // Pin the page step so the test is independent of the default.
-    sb = createOverlayScrollbar({ host, surface: f.surface, pageStepPx: 100 });
+    // Pin the line step so the test is independent of the default.
+    sb = createOverlayScrollbar({ host, surface: f.surface, lineStepPx: 16 });
     host.dispatchEvent(wheelEvent(-100));
-    expect(f.surface.pageScroll).toHaveBeenCalledWith(-1);
+    expect(f.surface.lineScroll).toHaveBeenCalledWith(-1);
     host.dispatchEvent(wheelEvent(100));
-    expect(f.surface.pageScroll).toHaveBeenCalledWith(1);
+    expect(f.surface.lineScroll).toHaveBeenCalledWith(1);
   });
 
-  it("accumulates sub-page wheel deltas — one page per pageStepPx, not per event", () => {
+  it("moves at most ONE line per wheel event, however coarse the notch", () => {
+    // The bug this replaced: a single event moved a whole page (half a
+    // viewport in Claude Code). A naive per-step loop would be just as wrong
+    // in the other direction — 100px / 16px = 6 lines for one mouse notch.
     const f = fakeSurface(FROZEN, true);
-    sb = createOverlayScrollbar({ host, surface: f.surface, pageStepPx: 100 });
-    host.dispatchEvent(wheelEvent(-40));
-    host.dispatchEvent(wheelEvent(-40)); // -80, still below the page step
-    expect(f.surface.pageScroll).not.toHaveBeenCalled();
-    host.dispatchEvent(wheelEvent(-40)); // -120 → crosses one page
-    expect(f.surface.pageScroll).toHaveBeenCalledTimes(1);
-    expect(f.surface.pageScroll).toHaveBeenCalledWith(-1);
+    sb = createOverlayScrollbar({ host, surface: f.surface, lineStepPx: 16 });
+    host.dispatchEvent(wheelEvent(-400));
+    expect(f.surface.lineScroll).toHaveBeenCalledTimes(1);
+    host.dispatchEvent(wheelEvent(-400));
+    expect(f.surface.lineScroll).toHaveBeenCalledTimes(2);
   });
 
-  it("honours a larger pageStepPx — needs more wheel travel per page (slower scroll)", () => {
+  it("accumulates sub-line wheel deltas — jitter doesn't scroll, travel does", () => {
     const f = fakeSurface(FROZEN, true);
-    sb = createOverlayScrollbar({ host, surface: f.surface, pageStepPx: 300 });
+    sb = createOverlayScrollbar({ host, surface: f.surface, lineStepPx: 16 });
+    host.dispatchEvent(wheelEvent(-5));
+    host.dispatchEvent(wheelEvent(-5)); // -10, still below the line step
+    expect(f.surface.lineScroll).not.toHaveBeenCalled();
+    host.dispatchEvent(wheelEvent(-8)); // -18 → crosses one line
+    expect(f.surface.lineScroll).toHaveBeenCalledTimes(1);
+    expect(f.surface.lineScroll).toHaveBeenCalledWith(-1);
+  });
+
+  it("does not carry the remainder — a big notch can't bank travel for later", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface, lineStepPx: 16 });
+    host.dispatchEvent(wheelEvent(-100)); // one line; 84px of leftover discarded
+    expect(f.surface.lineScroll).toHaveBeenCalledTimes(1);
+    host.dispatchEvent(wheelEvent(-5)); // below the step from a clean slate
+    expect(f.surface.lineScroll).toHaveBeenCalledTimes(1);
+  });
+
+  it("honours a larger lineStepPx — needs more wheel travel per line (slower scroll)", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface, lineStepPx: 300 });
     host.dispatchEvent(wheelEvent(-100));
     host.dispatchEvent(wheelEvent(-100)); // -200, below the 300px step
-    expect(f.surface.pageScroll).not.toHaveBeenCalled();
-    host.dispatchEvent(wheelEvent(-100)); // -300 → crosses exactly one page
-    expect(f.surface.pageScroll).toHaveBeenCalledTimes(1);
-    expect(f.surface.pageScroll).toHaveBeenCalledWith(-1);
+    expect(f.surface.lineScroll).not.toHaveBeenCalled();
+    host.dispatchEvent(wheelEvent(-100)); // -300 → crosses one line
+    expect(f.surface.lineScroll).toHaveBeenCalledTimes(1);
+    expect(f.surface.lineScroll).toHaveBeenCalledWith(-1);
+  });
+
+  it("a reversal responds at once instead of burning off the old travel", () => {
+    const f = fakeSurface(FROZEN, true);
+    sb = createOverlayScrollbar({ host, surface: f.surface, lineStepPx: 100 });
+    host.dispatchEvent(wheelEvent(-90)); // banked upward travel, no step yet
+    expect(f.surface.lineScroll).not.toHaveBeenCalled();
+    host.dispatchEvent(wheelEvent(100)); // flip down: must step down, not cancel out
+    expect(f.surface.lineScroll).toHaveBeenCalledTimes(1);
+    expect(f.surface.lineScroll).toHaveBeenCalledWith(1);
   });
 
   it("swallows the wheel (preventDefault + stopImmediatePropagation) so xterm never sees it", () => {
@@ -261,7 +291,7 @@ describe("OverlayScrollbar — mouse-tracking TUI pane (Claude / less / vim)", (
     const f = fakeSurface(FROZEN, true);
     sb = createOverlayScrollbar({ host, surface: f.surface });
     host.dispatchEvent(wheelEvent(0));
-    expect(f.surface.pageScroll).not.toHaveBeenCalled();
+    expect(f.surface.lineScroll).not.toHaveBeenCalled();
   });
 
   it("the thumb drag is inert (no scrollToFraction — the bar is passive)", () => {
@@ -287,7 +317,7 @@ describe("OverlayScrollbar — mouse-tracking TUI pane (Claude / less / vim)", (
     const pd = vi.spyOn(e, "preventDefault");
     const si = vi.spyOn(e, "stopImmediatePropagation");
     inner.dispatchEvent(e);
-    expect(f.surface.pageScroll).not.toHaveBeenCalled();
+    expect(f.surface.lineScroll).not.toHaveBeenCalled();
     expect(pd).not.toHaveBeenCalled();
     expect(si).not.toHaveBeenCalled();
   });
@@ -301,7 +331,7 @@ describe("OverlayScrollbar — truthful (plain shell) wheel is untouched", () =>
     const spy = vi.spyOn(e, "preventDefault");
     host.dispatchEvent(e);
     expect(spy).not.toHaveBeenCalled();
-    expect(f.surface.pageScroll).not.toHaveBeenCalled();
+    expect(f.surface.lineScroll).not.toHaveBeenCalled();
   });
 });
 
