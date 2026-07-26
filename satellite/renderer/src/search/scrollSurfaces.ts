@@ -22,15 +22,16 @@ export interface ScrollSurface {
   /** Optional: true when the SURFACE owns scrolling and xterm's viewportY
    *  won't track it — i.e. a mouse-tracking TUI (Claude Code, less, vim) that
    *  grabs the wheel and redraws in place. The scrollbar then can't read a
-   *  real position from metrics and falls back to a simulated (cumulative
-   *  wheel-delta) thumb. Absent/false → the metrics are truthful. */
+   *  real position from metrics, so it hides the thumb and routes the wheel
+   *  to `lineScroll`. Absent/false → the metrics are truthful. */
   ownsScroll?(): boolean;
-  /** Optional: page the surface by one screenful in `dir` (-1 = up, +1 =
-   *  down) and return true if handled. Used for mouse-tracking TUIs (Claude
-   *  Code, less, vim) whose transcript can't be scrolled from xterm at all —
-   *  we inject PgUp/PgDn into the PTY instead. DOM / plain-shell surfaces
-   *  leave this unset and scroll natively. */
-  pageScroll?(dir: -1 | 1): boolean;
+  /** Optional: scroll the surface by ONE line in `dir` (-1 = up, +1 = down)
+   *  and return true if handled. Used for mouse-tracking TUIs (Claude Code,
+   *  less, vim) whose transcript can't be scrolled from xterm at all — we
+   *  inject a mouse-wheel report into the PTY instead and let the TUI move
+   *  its own view. DOM / plain-shell surfaces leave this unset and scroll
+   *  natively. */
+  lineScroll?(dir: -1 | 1): boolean;
   /** Optional: fires when the surface re-renders without a scroll (new
    *  output, in-place TUI redraw, font/size change). The scrollbar uses this
    *  to recompute geometry — e.g. clear its disabled state once scrollback
@@ -70,17 +71,22 @@ interface ScrollableTerminal {
   onRender?(cb: () => void): { dispose(): void };
 }
 
-// PTY key sequences that scroll a mouse-tracking TUI's own transcript. The
-// wheel-as-mouse path is unreliable (Claude 2.1.150+ turns it into arrow keys);
-// keyboard PgUp/PgDn works regardless of the terminal's mouse mode.
-const PGUP = "\x1b[5~";
-const PGDN = "\x1b[6~";
+// SGR mouse-wheel reports (DECSET 1006 encoding) — what a terminal sends a
+// mouse-tracking app when the wheel turns. Button 64 = wheel up, 65 = wheel
+// down; the `1;1` cell coordinates are inert here (the TUIs we target read
+// only the button code). We emit these rather than PgUp/PgDn because a page
+// key is far too coarse: Claude Code binds pageup/pagedown to
+// `scroll:pageUp`/`scroll:pageDown`, which move HALF A VIEWPORT per press,
+// while the wheel maps to `scroll:lineUp`/`scroll:lineDown` — exactly one
+// line, which is what a scroll gesture should do.
+const WHEEL_UP = "\x1b[<64;1;1M";
+const WHEEL_DOWN = "\x1b[<65;1;1M";
 
 /** An xterm terminal. Scroll position is line-based: `viewportY` is the
  *  top visible absolute line, `baseY` the max scroll-top (scrollback
  *  size), `length` the total buffer height, `rows` the viewport height.
  *  `sendInput`, when provided, writes raw bytes to the PTY — used by
- *  `pageScroll` to drive a mouse-tracking TUI via PgUp/PgDn. */
+ *  `lineScroll` to drive a mouse-tracking TUI via wheel reports. */
 export function terminalScrollSurface(
   term: ScrollableTerminal,
   sendInput?: (bytes: Uint8Array) => void,
@@ -98,13 +104,17 @@ export function terminalScrollSurface(
     // A mouse-tracking TUI (Claude Code, less, vim) grabs the mouse and runs on
     // the alternate screen — no xterm scrollback, so a truthful thumb is
     // impossible. Report that so the scrollbar hides its thumb and routes the
-    // wheel to `pageScroll` instead. Default "none" (truthful) when unmodelled.
+    // wheel to `lineScroll` instead. Default "none" (truthful) when unmodelled.
+    //
+    // This is also exactly the right gate for `lineScroll`: a non-"none" mouse
+    // tracking mode means the app asked the terminal for mouse reports, so it
+    // has a parser ready for the wheel sequences we synthesize.
     ownsScroll: () => (term.modes?.mouseTrackingMode ?? "none") !== "none",
-    // Wheel over such a pane → PgUp/PgDn into the PTY so the TUI scrolls its
-    // own transcript. No-op (returns false) when no PTY sink is wired.
-    pageScroll: (dir) => {
+    // Wheel over such a pane → a wheel report into the PTY so the TUI scrolls
+    // its own transcript by a line. No-op (false) when no PTY sink is wired.
+    lineScroll: (dir) => {
       if (!sendInput) return false;
-      sendInput(new TextEncoder().encode(dir < 0 ? PGUP : PGDN));
+      sendInput(new TextEncoder().encode(dir < 0 ? WHEEL_UP : WHEEL_DOWN));
       return true;
     },
     onScroll: (cb) => {

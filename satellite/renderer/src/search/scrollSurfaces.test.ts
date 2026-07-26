@@ -111,10 +111,11 @@ describe("terminalScrollSurface — ownsScroll (mouse-tracking detection)", () =
   });
 });
 
-describe("terminalScrollSurface — pageScroll (wheel → PgUp/PgDn into the PTY)", () => {
-  // A mouse-tracking TUI (Claude 2.1.150+) ignores wheel-as-mouse for scroll,
-  // but keyboard PgUp/PgDn scrolls its transcript reliably. pageScroll injects
-  // those keys into the PTY via the wired `sendInput` sink.
+describe("terminalScrollSurface — lineScroll (wheel report into the PTY)", () => {
+  // A mouse-tracking TUI runs on the alt screen, so it has to scroll its own
+  // view. lineScroll injects an SGR wheel report via the wired `sendInput`
+  // sink; the TUI moves ONE line per report. (PgUp/PgDn, which this replaced,
+  // moves half a viewport in Claude Code — far too coarse for a scroll.)
   const term = {
     rows: 24,
     buffer: { active: { length: 100, baseY: 76, viewportY: 0 } },
@@ -122,23 +123,31 @@ describe("terminalScrollSurface — pageScroll (wheel → PgUp/PgDn into the PTY
     onScroll: () => ({ dispose: () => {} }),
   };
 
-  it("wheel-up (dir -1) injects PgUp (ESC[5~)", () => {
+  it("wheel-up (dir -1) injects an SGR wheel-up report (button 64)", () => {
     const sent: string[] = [];
     const s = terminalScrollSurface(term, (b) => sent.push(new TextDecoder().decode(b)));
-    expect(s.pageScroll?.(-1)).toBe(true);
-    expect(sent).toEqual(["\x1b[5~"]);
+    expect(s.lineScroll?.(-1)).toBe(true);
+    expect(sent).toEqual(["\x1b[<64;1;1M"]);
   });
 
-  it("wheel-down (dir +1) injects PgDn (ESC[6~)", () => {
+  it("wheel-down (dir +1) injects an SGR wheel-down report (button 65)", () => {
     const sent: string[] = [];
     const s = terminalScrollSurface(term, (b) => sent.push(new TextDecoder().decode(b)));
-    expect(s.pageScroll?.(1)).toBe(true);
-    expect(sent).toEqual(["\x1b[6~"]);
+    expect(s.lineScroll?.(1)).toBe(true);
+    expect(sent).toEqual(["\x1b[<65;1;1M"]);
+  });
+
+  it("emits exactly one report per call — one line, never a batch", () => {
+    const sent: string[] = [];
+    const s = terminalScrollSurface(term, (b) => sent.push(new TextDecoder().decode(b)));
+    s.lineScroll?.(1);
+    s.lineScroll?.(1);
+    expect(sent).toHaveLength(2);
   });
 
   it("returns false and injects nothing when no PTY sink is wired", () => {
     const s = terminalScrollSurface(term); // no sendInput
-    expect(s.pageScroll?.(1)).toBe(false);
+    expect(s.lineScroll?.(1)).toBe(false);
   });
 });
 
@@ -147,7 +156,7 @@ describe("domScrollSurface — ownsScroll", () => {
     expect(domScrollSurface(document.createElement("div")).ownsScroll).toBeUndefined();
   });
 
-  it("leaves pageScroll unset — DOM scrollers scroll natively", () => {
-    expect(domScrollSurface(document.createElement("div")).pageScroll).toBeUndefined();
+  it("leaves lineScroll unset — DOM scrollers scroll natively", () => {
+    expect(domScrollSurface(document.createElement("div")).lineScroll).toBeUndefined();
   });
 });

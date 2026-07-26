@@ -58,6 +58,32 @@ in-place redraw) so it reflects growing scrollback — but `onRender` updates
 geometry **without** flashing the bar into view; only a real scroll or wheel
 gesture pops it.
 
+### Scrolling a mouse-tracking TUI pane
+
+A full-screen TUI (Claude Code, `less`, vim) runs on the alternate screen, so
+there is no xterm scrollback to move and no truthful position to draw — the bar
+hides itself (`ownsScroll()` → `reck-scrollbar--disabled`, no fake thumb) and
+the app has to scroll its own view instead.
+
+`OverlayScrollbar` takes the wheel in the **capture** phase and re-emits it as an
+SGR mouse-wheel report into the PTY (`surface.lineScroll` →
+`ESC[<64;1;1M` / `ESC[<65;1;1M`). It must keep swallowing the original event:
+on an alt-screen buffer xterm translates the wheel into **arrow keys**, which
+navigates Claude's prompt history rather than scrolling and trips its
+*"Scroll wheel is sending arrow keys"* warning.
+
+One report moves the TUI exactly one line (Claude binds `wheelup`/`wheeldown` to
+`scroll:lineUp`/`scroll:lineDown`). At most **one** line is emitted per wheel
+event, gated by `lineStepPx` (~one line height) so sub-line trackpad jitter
+doesn't scroll and the remainder of a coarse notch is never banked. A trackpad
+swipe therefore glides because the OS fires many events per second, not because
+any one of them moves far.
+
+This replaced an earlier wheel → PgUp/PgDn remap, which was written when Claude
+2.1.150 ignored wheel-as-mouse. It was far too coarse: Claude binds
+`pageup`/`pagedown` to `scroll:pageUp`/`scroll:pageDown`, which move **half a
+viewport** per press.
+
 ## Wiring
 
 `boot.ts` (main-window terminals), `popout.ts` (detached panes), and
