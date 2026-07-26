@@ -108,6 +108,36 @@ export function railDragRelease(width: number, mini: boolean): RailDragRelease {
   return { kind: "settle-mini" };
 }
 
+export interface WiggleGateState {
+  /** The `railWiggleEnabled` preference — governs the project-switch wiggle. */
+  enabled: boolean;
+  /** True for triggers that wiggle regardless of the preference (tab switch). */
+  force: boolean;
+  /** A wiggle is already in flight. */
+  wiggleActive: boolean;
+  /** The user is dragging the divider — the pointer owns the width. */
+  railDragActive: boolean;
+}
+
+/**
+ * True iff a wiggle may start now.
+ *
+ * An in-flight wiggle and a live divider drag always win, forced or not:
+ * stacking wiggles would make rapid tab cycling stutter, and the pointer
+ * is authoritative over the width for the duration of a drag.
+ *
+ * `force` exists because the two triggers have different contracts. A
+ * project switch is decorative-ish and honours the user's preference; a
+ * tab switch relies on the wiggle's trailing refit to resize the terminal
+ * it just revealed, so it runs even with the preference off. Both still
+ * use the user's tuned pixels/legMs and both no-op visually under
+ * reduced motion (see createWidthAnimator).
+ */
+export function shouldStartWiggle(s: WiggleGateState): boolean {
+  if (s.wiggleActive || s.railDragActive) return false;
+  return s.force || s.enabled;
+}
+
 export type RailEasing = "easeOut" | "spring";
 
 function easeOutCubic(t: number): number {
