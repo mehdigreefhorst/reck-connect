@@ -33,9 +33,13 @@ test("hovering the chart never resizes the card", async ({ page }) => {
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await expect(page.locator(".usage-readout")).not.toHaveText("");
 
+  // Precision 2 (±0.005px), not 0: the original ±0.5px tolerance was wider
+  // than the bug it was written for — .usage-readout reserved 1.2em against
+  // a line box that renders at ~1.32em, so the card grew by well under half
+  // a pixel and this assertion passed anyway.
   const after = await card.boundingBox();
-  expect(after!.width).toBeCloseTo(before!.width, 0);
-  expect(after!.height).toBeCloseTo(before!.height, 0);
+  expect(after!.width).toBeCloseTo(before!.width, 2);
+  expect(after!.height).toBeCloseTo(before!.height, 2);
 });
 
 test("bin selector offers per-view widths and re-renders", async ({ page }) => {

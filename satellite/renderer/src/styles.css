@@ -5215,7 +5215,16 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   font-family: var(--font-mono);
   font-size: 0.72rem;
   color: var(--app-text-dim);
-  min-height: 1.2em;
+  /* Pinned, not min-height: the box reserved while the readout is empty has
+     to equal the box a filled line occupies, and `line-height: normal` is
+     font-metric driven (~1.32em for JetBrains Mono). A min-height of 1.2em
+     is therefore smaller than the rendered line, so the row grew the instant
+     text landed — and .usage-overlay centres the card, so that fraction of a
+     pixel moved the whole modal on every hover. Stating both from one number
+     makes the reservation exact and font-independent; overflow: hidden below
+     means a taller line clips rather than resizing the card. */
+  line-height: 1.35;
+  height: 1.35em;
   margin-top: 0.4rem;
   white-space: nowrap;
   overflow: hidden;
