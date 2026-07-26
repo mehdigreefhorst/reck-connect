@@ -237,6 +237,10 @@ func (p *QuotaPoller) sampleFrom(body []byte, now time.Time) (QuotaSample, bool,
 		SevenDayOpus:   windowToBucket(w.SevenDayOpus),
 		SevenDaySonnet: windowToBucket(w.SevenDaySonnet),
 	}
+	// Around a rollover the endpoint can still answer with the window
+	// that just closed; that reading belongs to the old window, not to
+	// now. See quota_stale.go.
+	qs = dropExpiredWindows(qs, now)
 	if qs.FiveHour.Pct == nil && qs.SevenDay.Pct == nil &&
 		qs.SevenDayOpus.Pct == nil && qs.SevenDaySonnet.Pct == nil {
 		return QuotaSample{}, false, nil

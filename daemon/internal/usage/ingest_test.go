@@ -9,6 +9,12 @@ import (
 func itoa(v int64) string   { return strconv.FormatInt(v, 10) }
 func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
+// liveResetsAt is a quota window that is still open at the fake clock's
+// start instant. Fixtures need a real future reset because the ingester
+// drops buckets whose window has already reset (see quota_stale.go); a
+// placeholder like 1 would make every payload look like a dead window.
+const liveResetsAt int64 = 1_700_003_600 // fake clock start + 1h
+
 // fakeClock lets tests advance time deterministically.
 type fakeClock struct{ t time.Time }
 
@@ -94,7 +100,7 @@ func TestIngest_MissingRateLimits_OnlyContext(t *testing.T) {
 func TestIngest_MissingContextWindow_OnlyQuota(t *testing.T) {
 	ing, s, _ := newTestIngester(t)
 	payload := `{"session_id":"s","model":{"id":"claude-opus-4-8"},
-	  "rate_limits":{"five_hour":{"used_percentage":5,"resets_at":1}}}`
+	  "rate_limits":{"five_hour":{"used_percentage":5,"resets_at":` + itoa(liveResetsAt) + `}}}`
 	res, err := ing.Ingest(meta(), []byte(payload))
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
@@ -132,6 +138,92 @@ func TestIngest_IdleReRender_NoDuplicateRows(t *testing.T) {
 	}
 	if n, _ := s.CountQuotaSamples(); n != 1 {
 		t.Fatalf("idle quota re-renders wrote %d rows, want 1", n)
+	}
+}
+
+// quotaPayload builds a statusline payload whose 5h/7d windows reset at
+// the given instants, so a test can put a window either side of now.
+func quotaPayload(fiveHourPct float64, fiveHourResets, sevenDayResets time.Time) string {
+	return `{"session_id":"sess-1","model":{"id":"claude-opus-4-8"},
+	 "rate_limits":{
+	   "five_hour":{"used_percentage":` + ftoa(fiveHourPct) + `,"resets_at":` + itoa(fiveHourResets.Unix()) + `},
+	   "seven_day":{"used_percentage":11,"resets_at":` + itoa(sevenDayResets.Unix()) + `}}}`
+}
+
+// Regression for the phantom quota spikes seen on a live station: an idle
+// pane keeps re-rendering its statusline, and Claude Code keeps serving
+// the rate_limits block cached from that session's last API response. Once
+// the window it names has reset, that block is a reading of a window that
+// no longer exists — but it was still written with ts=now, so a 72% ghost
+// from a window 24h dead landed between live samples reading 17%. Because
+// the histogram bins quota with MAX(pct), one such row owned its whole bin.
+func TestIngest_ExpiredQuotaWindow_NotWritten(t *testing.T) {
+	ing, s, clk := newTestIngester(t)
+	now := clk.now()
+
+	// A live sample establishes the series.
+	live := quotaPayload(17, now.Add(2*time.Hour), now.Add(3*24*time.Hour))
+	if _, err := ing.Ingest(meta(), []byte(live)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.CountQuotaSamples(); n != 1 {
+		t.Fatalf("live sample wrote %d rows, want 1", n)
+	}
+
+	// The idle pane redraws a day later, still holding yesterday's block:
+	// a high utilization against a window that reset 24h ago. (Its 7d
+	// window has not reset, so a row may still be written for that half —
+	// what must never happen is the dead 5h reading landing in the series.)
+	clk.add(24 * time.Hour)
+	stale := quotaPayload(72, now.Add(2*time.Hour), now.Add(3*24*time.Hour))
+	if _, err := ing.Ingest(meta(), []byte(stale)); err != nil {
+		t.Fatal(err)
+	}
+
+	series, err := s.QuotaSeries(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range series {
+		if q.FiveHour.Pct != nil && *q.FiveHour.Pct == 72 {
+			t.Fatalf("the ghost 72%% reading from a reset window reached the series: %+v", q.FiveHour)
+		}
+	}
+	// The only 5h reading on record must be the live one.
+	var readings []float64
+	for _, q := range series {
+		if q.FiveHour.Pct != nil {
+			readings = append(readings, *q.FiveHour.Pct)
+		}
+	}
+	if len(readings) != 1 || readings[0] != 17 {
+		t.Fatalf("5h readings = %v, want exactly [17]", readings)
+	}
+}
+
+// The 5h and 7d windows reset independently, so an expired 5h bucket must
+// not discard a 7d bucket that is still perfectly live.
+func TestIngest_ExpiredFiveHour_KeepsLiveSevenDay(t *testing.T) {
+	ing, s, clk := newTestIngester(t)
+	now := clk.now()
+
+	p := quotaPayload(72, now.Add(-time.Hour), now.Add(3*24*time.Hour))
+	res, err := ing.Ingest(meta(), []byte(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.QuotaWritten {
+		t.Fatal("a payload with a live 7d window should still write")
+	}
+	q, _ := s.LatestQuota()
+	if q == nil {
+		t.Fatal("no quota row stored")
+	}
+	if q.FiveHour.Pct != nil {
+		t.Errorf("expired 5h bucket survived: %v", *q.FiveHour.Pct)
+	}
+	if q.SevenDay.Pct == nil || *q.SevenDay.Pct != 11 {
+		t.Errorf("live 7d bucket = %+v, want 11", q.SevenDay)
 	}
 }
 
@@ -212,10 +304,10 @@ func TestIngest_MultiAgentQuotaCoalesced(t *testing.T) {
 	p2 := IngestMeta{PaneID: "pane-2", ProjectID: "proj-b", Agent: "claude-code"}
 	a := `{"session_id":"sA","model":{"id":"claude-opus-4-8"},
 	  "context_window":{"total_input_tokens":10,"context_window_size":200000,"used_percentage":0},
-	  "rate_limits":{"five_hour":{"used_percentage":50,"resets_at":1}}}`
+	  "rate_limits":{"five_hour":{"used_percentage":50,"resets_at":` + itoa(liveResetsAt) + `}}}`
 	b := `{"session_id":"sB","model":{"id":"claude-opus-4-8"},
 	  "context_window":{"total_input_tokens":20,"context_window_size":200000,"used_percentage":0},
-	  "rate_limits":{"five_hour":{"used_percentage":50,"resets_at":1}}}`
+	  "rate_limits":{"five_hour":{"used_percentage":50,"resets_at":` + itoa(liveResetsAt) + `}}}`
 	if _, err := ing.Ingest(p1, []byte(a)); err != nil {
 		t.Fatal(err)
 	}
