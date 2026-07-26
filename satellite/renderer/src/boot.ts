@@ -1549,6 +1549,10 @@ export async function boot(splash?: StartupSplashController) {
       if (isRetrying()) return;
       const tree = layout.getTree();
       if (!tree) return;
+      // Sampled before setTree: re-clicking the already-active tab reveals
+      // nothing, so there's no pane to re-fit and the wiggle would just be
+      // noise. Only a real switch nudges the divider.
+      const switched = findLeaf(tree, leafId)?.activeTabId !== tabId;
       layout.setTree(switchTab(tree, leafId, tabId));
       layout.focusLeaf(leafId);
       const t = findTab(layout.getTree(), tabId);
@@ -1556,10 +1560,8 @@ export async function boot(splash?: StartupSplashController) {
       // The revealed terminal may have identical geometry to the one it
       // replaced, so nothing triggers its ResizeObserver — the wiggle's
       // trailing refit is what sizes it. Forced: this is a correctness
-      // refit, not the decorative project-switch nudge. Deliberately not
-      // gated on "did the active tab actually change" — re-clicking the
-      // current tab is then a usable manual re-fit gesture.
-      wiggleSeparator({ force: true });
+      // refit, not the decorative project-switch nudge.
+      if (switched) wiggleSeparator({ force: true });
     },
     onCloseTab: (leafId, tabId) => {
       if (isRetrying()) return;
