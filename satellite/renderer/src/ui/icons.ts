@@ -66,3 +66,11 @@ export const iconHistory = base(
   `<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2.2 1.6"/>`,
 );
 
+// Cog for the usage view's polling settings (#98). Six teeth, not eight:
+// at 16px on a 1.5 stroke, eight stubs around a small hub read as a sun
+// (and would be mistaken for the theme toggle). A r=4 body with teeth long
+// enough to be teeth keeps it unambiguous at this size.
+export const iconGear = base(
+  `<circle cx="8" cy="8" r="4"/><circle cx="8" cy="8" r="1.5"/><path d="M12 8h2.2M3.8 8H1.6M10 11.46l1.1 1.91M5.9 4.54L4.8 2.63M6 11.46l-1.1 1.91M10.1 4.54l1.1-1.91"/>`,
+);
+

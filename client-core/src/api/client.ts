@@ -141,6 +141,39 @@ export interface UsageHistogramParams {
   tzOffsetMin?: number;
 }
 
+/** How often the station polls account quota. `intervalSec` is kept even
+ * while `enabled` is false, so switching polling off and back on restores
+ * the period the user chose rather than resetting it to a default. */
+export interface UsagePollSettings {
+  enabled: boolean;
+  intervalSec: number;
+}
+
+/** `GET`/`PUT /usage/poll-settings`. The daemon reports the bounds it
+ * enforces alongside the value, so callers can validate against the real
+ * clamp rather than keeping their own copy of the numbers in sync. */
+export interface UsagePollSettingsResponse extends UsagePollSettings {
+  minIntervalSec: number;
+  maxIntervalSec: number;
+}
+
+/** Wire shape of the above, snake_case as the daemon sends it. */
+interface UsagePollSettingsWire {
+  enabled: boolean;
+  interval_sec: number;
+  min_interval_sec: number;
+  max_interval_sec: number;
+}
+
+function pollSettingsFromWire(w: UsagePollSettingsWire): UsagePollSettingsResponse {
+  return {
+    enabled: w.enabled,
+    intervalSec: w.interval_sec,
+    minIntervalSec: w.min_interval_sec,
+    maxIntervalSec: w.max_interval_sec,
+  };
+}
+
 /**
  * Raised when the daemon returns a 2xx response but the body doesn't
  * look like JSON — typically a proxy/CDN intercepting the request
@@ -340,6 +373,34 @@ export class ApiClient {
     return this.fetch<UsageHistogramResponse>(`/usage/histogram?${q}`, init);
   }
 
+  /**
+   * How often the station polls account quota (issue #98). Throws
+   * `HttpError` with status 404 when telemetry is disabled on the station
+   * — this route deliberately 404s rather than returning the
+   * `{enabled: false}` body the other usage reads use, because `enabled`
+   * here means "polling is on" and the two would be indistinguishable.
+   */
+  async getUsagePollSettings(init?: RequestInit): Promise<UsagePollSettingsResponse> {
+    return pollSettingsFromWire(
+      await this.fetch<UsagePollSettingsWire>("/usage/poll-settings", init),
+    );
+  }
+
+  /**
+   * Saves the poll settings and applies them to the running poller — no
+   * daemon restart. An interval outside the station's bounds is clamped
+   * rather than refused, so the returned value is the one that actually
+   * took effect and is what callers should render.
+   */
+  async putUsagePollSettings(settings: UsagePollSettings): Promise<UsagePollSettingsResponse> {
+    const body = { enabled: settings.enabled, interval_sec: settings.intervalSec };
+    return pollSettingsFromWire(
+      await this.fetch<UsagePollSettingsWire>("/usage/poll-settings", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
+    );
+  }
 
   createPane(
     projectId: string,

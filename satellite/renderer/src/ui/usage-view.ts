@@ -41,9 +41,10 @@ import {
   type Granularity,
 } from "./usage-range";
 import { planRangeLabel } from "./usage-plan";
-import { iconClose, iconDownload } from "./icons";
+import { iconClose, iconDownload, iconGear } from "./icons";
 import { confirmDialogOpen } from "./confirmDialog";
 import { openUsageExportDialog } from "./usage-export-dialog";
+import { openUsagePollDialog } from "./usage-poll-dialog";
 
 export interface UsageOverlayOpts {
   api: ApiClient;
@@ -121,7 +122,10 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       <div class="usage-chart-wrap">
         <div class="usage-chart"></div>
         <div class="usage-note" hidden></div>
-        <button class="icon-btn usage-download" title="Export usage data as CSV">${iconDownload}</button>
+        <div class="usage-chart-actions">
+          <button class="icon-btn usage-poll-settings" title="Quota polling…">${iconGear}</button>
+          <button class="icon-btn usage-download" title="Export usage data as CSV">${iconDownload}</button>
+        </div>
       </div>
       <div class="usage-legend" role="group" aria-label="Series"></div>
       <div class="usage-readout" aria-live="polite"></div>
@@ -143,6 +147,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   const binsSel = overlay.querySelector(".usage-bins") as HTMLSelectElement;
   const projectSel = overlay.querySelector(".usage-project:not(.usage-bins)") as HTMLSelectElement;
   const downloadBtn = overlay.querySelector(".usage-download") as HTMLButtonElement;
+  const pollSettingsBtn = overlay.querySelector(".usage-poll-settings") as HTMLButtonElement;
   // Mirrors projectSel's options so the export dialog can offer the
   // same filter without refetching the project list.
   const projectOptions: Array<{ id: string; name: string }> = [{ id: "", name: "All projects" }];
@@ -310,6 +315,13 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       },
       projects: projectOptions,
     });
+  });
+
+  // Polling settings. A saved change alters what lands in the store from
+  // now on, not what is already plotted, so there is nothing to refresh
+  // here — the next refresh() picks up whatever the new cadence wrote.
+  pollSettingsBtn.addEventListener("click", () => {
+    void openUsagePollDialog({ api: opts.api });
   });
 
   // ---- data + chart ------------------------------------------------
