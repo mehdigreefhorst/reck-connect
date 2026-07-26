@@ -10,8 +10,10 @@ import {
   projectInitials,
   railDragDecision,
   railDragRelease,
+  shouldStartWiggle,
   type RailDragDecision,
   type RailDragRelease,
+  type WiggleGateState,
 } from "./rail-collapse";
 
 /** Damped width the elastic zone shows for a given raw pointer width. */
@@ -100,6 +102,34 @@ describe("railDragRelease", () => {
   for (const c of cases) {
     it(c.desc, () => {
       expect(railDragRelease(c.width, c.mini)).toEqual(c.want);
+    });
+  }
+});
+
+describe("shouldStartWiggle", () => {
+  const idle: WiggleGateState = {
+    enabled: true,
+    force: false,
+    wiggleActive: false,
+    railDragActive: false,
+  };
+  const cases: Array<{ desc: string; state: WiggleGateState; want: boolean }> = [
+    { desc: "preference on, unforced → starts", state: idle, want: true },
+    // A project switch respects the preference; a tab switch does not.
+    { desc: "preference off, unforced → skipped", state: { ...idle, enabled: false }, want: false },
+    { desc: "preference off, forced → starts anyway", state: { ...idle, enabled: false, force: true }, want: true },
+    { desc: "preference on, forced → starts", state: { ...idle, force: true }, want: true },
+    // An in-flight wiggle and a live divider drag both outrank a force:
+    // rapid tab cycling must not stack wiggles, and the pointer owns the
+    // width for the duration of a drag.
+    { desc: "forced while a wiggle is in flight → skipped", state: { ...idle, force: true, wiggleActive: true }, want: false },
+    { desc: "forced while the divider is being dragged → skipped", state: { ...idle, force: true, railDragActive: true }, want: false },
+    { desc: "unforced while a wiggle is in flight → skipped", state: { ...idle, wiggleActive: true }, want: false },
+    { desc: "unforced while the divider is being dragged → skipped", state: { ...idle, railDragActive: true }, want: false },
+  ];
+  for (const c of cases) {
+    it(c.desc, () => {
+      expect(shouldStartWiggle(c.state)).toBe(c.want);
     });
   }
 });

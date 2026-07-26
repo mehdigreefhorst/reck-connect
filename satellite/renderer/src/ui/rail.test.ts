@@ -599,16 +599,97 @@ describe("Rail", () => {
       expect(expanded).toBe(2);
     });
 
-    it("empty-area click does nothing while expanded", () => {
+    it("empty-area click in expanded mode fires onCollapse, not onExpand", () => {
       let expanded = 0;
+      let collapsed = 0;
       new Rail({
         root,
         onSelect: () => {},
         onAddProject: () => {},
         onExpand: () => expanded++,
+        onCollapse: () => collapsed++,
       });
       (root.querySelector(".rail-list") as HTMLElement).click();
+      expect(collapsed).toBe(1);
+      (root.querySelector(".rail-header") as HTMLElement).click();
+      expect(collapsed).toBe(2);
       expect(expanded).toBe(0);
+    });
+
+    it("row and button clicks in expanded mode do not fire onCollapse", () => {
+      let collapsed = 0;
+      let selected = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => selected++,
+        onAddProject: () => {},
+        onCollapse: () => collapsed++,
+      });
+      r.setProjects([mkProject("a", "Alpha", "gray")]);
+      (root.querySelector(".rail-item") as HTMLElement).click();
+      expect(selected).toBe(1);
+      root.querySelector<HTMLElement>("#rail-add")!.click();
+      root.querySelector<HTMLElement>("#rail-archive-header")!.click();
+      expect(collapsed).toBe(0);
+    });
+
+    it("a click ending a drag-selection inside the rail does not fire onCollapse", () => {
+      let collapsed = 0;
+      new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onCollapse: () => collapsed++,
+      });
+      const header = root.querySelector<HTMLElement>(".rail-header-text")!;
+      const range = document.createRange();
+      range.selectNodeContents(header);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      header.click();
+      expect(collapsed).toBe(0);
+      sel.removeAllRanges();
+    });
+
+    it("a live selection OUTSIDE the rail does not swallow the collapse click", () => {
+      let collapsed = 0;
+      // A leftover selection elsewhere in the app (transcript, markdown
+      // viewer) is unrelated to the rail and must not gate its clicks.
+      const elsewhere = document.createElement("p");
+      elsewhere.textContent = "selected text in some other pane";
+      document.body.appendChild(elsewhere);
+      new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onCollapse: () => collapsed++,
+      });
+      const range = document.createRange();
+      range.selectNodeContents(elsewhere);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      (root.querySelector(".rail-list") as HTMLElement).click();
+      expect(collapsed).toBe(1);
+      sel.removeAllRanges();
+      elsewhere.remove();
+    });
+
+    it("overlay-scrollbar clicks in expanded mode do not fire onCollapse", () => {
+      let collapsed = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onCollapse: () => collapsed++,
+      });
+      r.setProjects([mkProject("a", "Alpha", "gray")]);
+      // Releasing a scrollbar drag lands a click on the thumb — inside the
+      // rail root but outside any row/button, so it needs its own guard.
+      root.querySelector<HTMLElement>(".rail-list-scroll .reck-scrollbar-thumb")!.click();
+      root.querySelector<HTMLElement>(".rail-list-scroll .reck-scrollbar")!.click();
+      expect(collapsed).toBe(0);
     });
 
     it("row and button clicks in mini mode do not also fire onExpand", () => {
