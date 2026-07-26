@@ -31,7 +31,8 @@ import (
 // NOT EXISTS) so a fresh open of an old DB just adds the missing objects.
 //
 // v2 added plan_samples (the account's subscription tier over time).
-const schemaVersion = 2
+// v3 added settings (user-set daemon config that must survive restarts).
+const schemaVersion = 3
 
 // DBFilename is the SQLite file name inside the store directory.
 const DBFilename = "usage.db"
@@ -233,6 +234,17 @@ CREATE TABLE IF NOT EXISTS plan_samples (
   rate_limit_tier TEXT    NOT NULL DEFAULT '' -- e.g. 'default_claude_max_20x'
 );
 CREATE INDEX IF NOT EXISTS idx_plan_ts ON plan_samples(ts);
+
+-- User-set daemon configuration that has to survive a restart. A key/value
+-- table rather than a column per setting: settings are read at startup and
+-- on change, never joined or aggregated, and this store has no ALTER TABLE
+-- path — every migration so far has been an additive CREATE IF NOT EXISTS.
+-- A new setting is a new row, not a schema change.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `
 
 func (s *Store) migrate() error {
@@ -368,6 +380,43 @@ func (s *Store) UpsertSession(sessionID, projectID, agent, model, displayName st
 	)
 	if err != nil {
 		return fmt.Errorf("usage: upsert session: %w", err)
+	}
+	return nil
+}
+
+// Setting reads a persisted setting. The bool reports whether the key was
+// present at all, which callers need in order to tell "the user chose this
+// value" from "nobody has ever set it" — the two have different precedence
+// against a startup default.
+func (s *Store) Setting(key string) (string, bool, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("usage: read setting %q: %w", key, err)
+	}
+	return value, true, nil
+}
+
+// SetSetting writes a setting, replacing any previous value.
+func (s *Store) SetSetting(key, value string) error {
+	if key == "" {
+		return errors.New("usage: setting key required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT INTO settings (key, value, updated_at)
+		VALUES (?,?,?)
+		ON CONFLICT(key) DO UPDATE SET
+		  value      = excluded.value,
+		  updated_at = excluded.updated_at`,
+		key, value, time.Now().UTC().Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("usage: write setting %q: %w", key, err)
 	}
 	return nil
 }
