@@ -16,9 +16,8 @@
 //   • TUI pane  (mouse-tracking TUI — Claude Code, less, vim): there is NO
 //     exact position to draw — the app runs on the alternate screen (no xterm
 //     scrollback) and grabs the wheel. We do NOT fake a thumb; we keep the bar
-//     hidden and translate the wheel into PgUp/PgDn keystrokes sent to the PTY
-//     (`surface.pageScroll`) so the app scrolls its own transcript. (Claude
-//     2.1.150+ ignores wheel-as-mouse for scroll; PgUp/PgDn works regardless.)
+//     hidden and re-emit the wheel as a mouse report into the PTY
+//     (`surface.lineScroll`) so the app scrolls its own transcript by a line.
 
 import type { ScrollSurface } from "./scrollSurfaces";
 
@@ -31,10 +30,10 @@ export interface OverlayScrollbarOptions {
   hideDelayMs?: number;
   /** Minimum thumb size as a percentage of the track. Default 8. */
   minThumbPct?: number;
-  /** Accumulated wheel delta (px) required to emit one PgUp/PgDn in a
-   *  mouse-tracking TUI pane. Higher → fewer page jumps per swipe (slower
-   *  scroll). Default DEFAULT_PAGE_STEP_PX. */
-  pageStepPx?: number;
+  /** Wheel travel (px) that must accumulate before one line-scroll is emitted
+   *  in a mouse-tracking TUI pane. Higher → more travel per line (slower
+   *  scroll). Default DEFAULT_LINE_STEP_PX. */
+  lineStepPx?: number;
 }
 
 export interface OverlayScrollbar {
@@ -51,13 +50,13 @@ export interface OverlayScrollbar {
 const DEFAULT_HIDE_DELAY_MS = 1400;
 const DEFAULT_MIN_THUMB_PCT = 8;
 
-// Wheel → PgUp/PgDn stepping for a mouse-tracking TUI pane. A TUI only scrolls
-// by whole pages (PgUp/PgDn — Claude Code 2.1.150+ ignores line-scroll), so we
-// accumulate normalized wheel delta and emit one page key per this many px of
-// wheel travel. Higher = fewer page jumps per swipe (a page is a lot of lines,
-// so pacing it out is the only sensitivity lever available in this mode).
-// Overridable via OverlayScrollbarOptions.pageStepPx.
-const DEFAULT_PAGE_STEP_PX = 220;
+// Wheel → line stepping for a mouse-tracking TUI pane. Roughly one line height
+// at the pane's default font (13px × 1.25 line-height), so sub-line trackpad
+// jitter doesn't scroll but any real gesture does. At most ONE line is emitted
+// per wheel event (see onWheel) — a mouse notch moves a line, and a trackpad
+// swipe glides because the OS fires many events per second, not because any
+// single one moves far. Overridable via OverlayScrollbarOptions.lineStepPx.
+const DEFAULT_LINE_STEP_PX = 16;
 const WHEEL_LINE_PX = 16; // deltaMode 1 (lines) → px
 const WHEEL_PAGE_PX = 800; // deltaMode 2 (pages) → px
 
@@ -66,7 +65,7 @@ export function createOverlayScrollbar(
 ): OverlayScrollbar {
   const hideDelayMs = opts.hideDelayMs ?? DEFAULT_HIDE_DELAY_MS;
   const minThumbPct = opts.minThumbPct ?? DEFAULT_MIN_THUMB_PCT;
-  const pageStepPx = opts.pageStepPx ?? DEFAULT_PAGE_STEP_PX;
+  const lineStepPx = opts.lineStepPx ?? DEFAULT_LINE_STEP_PX;
 
   const track = document.createElement("div");
   track.className = "reck-scrollbar";
@@ -81,7 +80,7 @@ export function createOverlayScrollbar(
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   let dragging = false;
   let disposed = false;
-  // Accumulated normalized wheel delta for TUI-pane page stepping (px).
+  // Accumulated normalized wheel delta for TUI-pane line stepping (px).
   let wheelAcc = 0;
 
   /** True when the surface owns scrolling — a mouse-tracking TUI (Claude Code,
@@ -150,22 +149,28 @@ export function createOverlayScrollbar(
     if (isTuiPane()) {
       // Opt-out: overlays mounted INSIDE the pane wrapper (the transcript
       // "History" view, #51) scroll their own DOM natively. Remapping
-      // their wheel would freeze the overlay and page the hidden TUI
+      // their wheel would freeze the overlay and scroll the hidden TUI
       // beneath it.
       const target = e.target as Element | null;
       if (target?.closest?.(".reck-native-scroll")) return;
-      // Claude 2.1.150+ turns the wheel into arrow keys, and the alt-screen has
-      // no scrollback to move. Drive the robust keyboard scroll instead: wheel
-      // → PgUp/PgDn into the PTY, accumulated so one notch ≈ one page (a
-      // trackpad swipe doesn't fly through). Swallow the event (capture phase)
-      // so xterm's broken wheel handler never runs.
+      // The alt-screen has no xterm scrollback to move, so we re-emit the
+      // gesture as a mouse wheel report into the PTY and let the TUI scroll
+      // its own view (one line per report). We must still swallow the event
+      // (capture phase) so xterm's own handler never runs: on an alt-screen
+      // buffer it translates the wheel into ARROW KEYS, which navigates
+      // Claude's prompt history instead of scrolling and trips its
+      // "Scroll wheel is sending arrow keys" warning.
       const dy = wheelDeltaPx(e);
       if (dy === 0) return; // horizontal / empty — leave it alone
+      // A reversal starts a fresh accumulation, so flicking back the other way
+      // responds immediately instead of first burning off the old travel.
+      if (Math.sign(dy) !== Math.sign(wheelAcc)) wheelAcc = 0;
       wheelAcc += dy;
-      const dir = wheelAcc < 0 ? -1 : 1;
-      while (Math.abs(wheelAcc) >= pageStepPx) {
-        opts.surface.pageScroll?.(dir);
-        wheelAcc -= dir * pageStepPx;
+      // At most ONE line per wheel event, and never carry the remainder: a
+      // single coarse notch (~100px on a mouse) must move one line, not six.
+      if (Math.abs(wheelAcc) >= lineStepPx) {
+        opts.surface.lineScroll?.(wheelAcc < 0 ? -1 : 1);
+        wheelAcc = 0;
       }
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -179,8 +184,8 @@ export function createOverlayScrollbar(
 
   function onPointerDown(e: Event): void {
     // Drag-to-drive is only meaningful in truthful mode. In a mouse-tracking
-    // pane the bar is hidden and the wheel pages via PgUp/PgDn, so there's
-    // nothing to drag — swallow the grab.
+    // pane the bar is hidden and the wheel scrolls via line reports, so
+    // there's nothing to drag — swallow the grab.
     if (isTuiPane()) return;
     dragging = true;
     track.classList.add("reck-scrollbar--dragging");

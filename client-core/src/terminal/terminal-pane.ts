@@ -19,7 +19,7 @@ export type PaneTheme = "light" | "dark";
  * xterm multiplies the wheel's line-delta by this factor; its default of
  * 1 scrolls too many lines per notch on high-resolution trackpads/mice, so
  * we damp it. Only governs xterm's own scrollback scroll — alt-screen TUIs
- * forward the wheel elsewhere (see OverlayScrollbar's pageStepPx). A
+ * forward the wheel elsewhere (see OverlayScrollbar's lineStepPx). A
  * device-agnostic value; a future user setting can override it.
  */
 const SCROLL_SENSITIVITY = 0.5;
@@ -343,10 +343,10 @@ export class TerminalPane {
 
   /**
    * Inject raw bytes into the PTY as if the user had typed them. Used by the
-   * overlay scrollbar to translate a wheel gesture over a mouse-tracking TUI
-   * into PgUp/PgDn keystrokes: Claude Code 2.1.150+ repurposes the wheel to
-   * arrow keys and its alt-screen has no xterm scrollback, but keyboard
-   * PgUp/PgDn scrolls its transcript reliably.
+   * overlay scrollbar to re-emit a wheel gesture over a mouse-tracking TUI as
+   * an SGR mouse wheel report: the TUI's alt-screen has no xterm scrollback,
+   * so the app has to scroll its own view, and a wheel report moves it one
+   * line (PgUp/PgDn, the previous approach, jumps half a viewport).
    */
   public sendInput(bytes: Uint8Array): void {
     this.ws.send({ type: "input", data: encodeBytes(bytes) });
