@@ -325,6 +325,11 @@ func (i *Ingester) quotaCandidate(p *wire, now time.Time) (QuotaSample, bool) {
 		SevenDayOpus:      bucketOf(rl.SevenDayOpus),
 		SevenDaySonnet:    bucketOf(rl.SevenDaySonnet),
 	}
+	// Claude Code serves this block from the session's last API response
+	// and keeps serving it on every later render, so an idle pane's
+	// redraw carries a snapshot of a window that has since reset. See
+	// quota_stale.go.
+	qs = dropExpiredWindows(qs, now)
 	// A rate_limits block with no usable bucket is not worth a row.
 	if qs.FiveHour.Pct == nil && qs.SevenDay.Pct == nil &&
 		qs.SevenDayOpus.Pct == nil && qs.SevenDaySonnet.Pct == nil {
