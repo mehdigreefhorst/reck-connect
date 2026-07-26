@@ -76,6 +76,7 @@ func newTestPoller(t *testing.T, srvURL string, store quotaWriter) *QuotaPoller 
 		client:   &http.Client{Timeout: 2 * time.Second},
 		now:      func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 		logger:   slog.New(slog.DiscardHandler),
+		wake:     make(chan struct{}, 1),
 	}
 }
 
@@ -296,7 +297,10 @@ func TestPollRespectsContextCancellation(t *testing.T) {
 
 func TestRunQuotaPollerIsSafeWhenDisabled(t *testing.T) {
 	// nil poller and interval <= 0 must both park on ctx rather than spin
-	// or panic, so main.go can start it unconditionally.
+	// or panic, so main.go can start it unconditionally. The two literal
+	// pollers also have a nil wake channel, which must park rather than
+	// deadlock — a poller built without NewQuotaPoller is exactly the shape
+	// a test or a future caller might hand in.
 	tests := []struct {
 		name     string
 		poller   *QuotaPoller
@@ -341,4 +345,71 @@ func TestRunQuotaPollerPollsImmediately(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestRunQuotaPollerReArmsOnSetInterval(t *testing.T) {
+	// The whole point of the reconfig path: a poller started with polling
+	// OFF must start polling when the user turns it on, without a restart.
+	url, _ := serve(t, http.StatusOK, realUsageResponse)
+	store := &fakeQuotaStore{}
+	p := newTestPoller(t, url, store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { RunQuotaPoller(ctx, p, 0); close(done) }()
+
+	// Off means off: nothing written while parked.
+	time.Sleep(50 * time.Millisecond)
+	if n := store.count(); n != 0 {
+		t.Fatalf("disabled poller wrote %d rows, want 0", n)
+	}
+
+	// Turning it on arms the ticker and polls straight away.
+	p.SetInterval(time.Hour)
+	deadline := time.After(2 * time.Second)
+	for store.count() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("no poll within 2s of SetInterval turning polling on")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// And turning it back off stops it again.
+	p.SetInterval(0)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunQuotaPoller did not return on context cancellation")
+	}
+}
+
+func TestSetIntervalNeverBlocks(t *testing.T) {
+	// SetInterval is called from an HTTP handler, so it must not depend on
+	// a runner being there to drain the wake channel.
+	p := newTestPoller(t, "http://127.0.0.1:1", &fakeQuotaStore{})
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			p.SetInterval(time.Duration(i+1) * time.Second)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SetInterval blocked with no runner draining wake")
+	}
+	if got := time.Duration(p.interval.Load()); got != 100*time.Second {
+		t.Errorf("interval = %v, want 100s (the last value must win)", got)
+	}
+}
+
+func TestSetIntervalOnNilPollerIsSafe(t *testing.T) {
+	// main.go leaves the poller nil when telemetry is off, and the HTTP
+	// handler must not have to know that.
+	var p *QuotaPoller
+	p.SetInterval(time.Minute)
 }

@@ -89,6 +89,10 @@ function synthHistogram(params: UsageHistogramParams): UsageHistogramResponse {
   return { enabled: true, bucket: params.bucket, since: params.since, until: params.until, bins };
 }
 
+// Poll settings live in memory for the harness, so the gear dialog can be
+// opened, edited and saved without a daemon.
+let pollSettings = { enabled: true, intervalSec: 60, minIntervalSec: 5, maxIntervalSec: 86_400 };
+
 const stubApi = {
   getUsageHistogram: async (params: UsageHistogramParams) => synthHistogram(params),
   listProjects: async () => ({
@@ -97,6 +101,17 @@ const stubApi = {
       { id: "tokenwarden", name: "tokenwarden" },
     ],
   }),
+  getUsagePollSettings: async () => pollSettings,
+  putUsagePollSettings: async (next: { enabled: boolean; intervalSec: number }) => {
+    // Clamp like the daemon does, so the harness exercises the same
+    // "echo back what was accepted" path the real client sees.
+    const intervalSec = Math.min(
+      Math.max(next.intervalSec, pollSettings.minIntervalSec),
+      pollSettings.maxIntervalSec,
+    );
+    pollSettings = { ...pollSettings, enabled: next.enabled, intervalSec };
+    return pollSettings;
+  },
 } as unknown as ApiClient;
 
 document.documentElement.setAttribute(

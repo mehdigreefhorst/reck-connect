@@ -33,9 +33,13 @@ test("hovering the chart never resizes the card", async ({ page }) => {
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await expect(page.locator(".usage-readout")).not.toHaveText("");
 
+  // Precision 2 (±0.005px), not 0: the original ±0.5px tolerance was wider
+  // than the bug it was written for — .usage-readout reserved 1.2em against
+  // a line box that renders at ~1.32em, so the card grew by well under half
+  // a pixel and this assertion passed anyway.
   const after = await card.boundingBox();
-  expect(after!.width).toBeCloseTo(before!.width, 0);
-  expect(after!.height).toBeCloseTo(before!.height, 0);
+  expect(after!.width).toBeCloseTo(before!.width, 2);
+  expect(after!.height).toBeCloseTo(before!.height, 2);
 });
 
 test("bin selector offers per-view widths and re-renders", async ({ page }) => {
@@ -177,4 +181,58 @@ test("close button hovers orange in both themes", async ({ page }) => {
     await closeBtn.hover();
     await expect(closeBtn).toHaveCSS("color", orange);
   }
+});
+
+test("the gear opens polling settings and saves an interval", async ({ page }) => {
+  await openHarness(page);
+
+  await page.locator(".usage-poll-settings").click();
+  const card = page.locator(".usage-poll-card");
+  await expect(card).toBeVisible();
+
+  // Opens on what the station reports: 60s, shown as "1 min".
+  await expect(page.locator(".usage-poll-input")).toHaveValue("1");
+  await expect(page.locator('.usage-poll-unit .slide-switch-opt[data-value="min"]')).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(page.locator(".usage-poll-summary")).toContainText("every minute");
+
+  // The summary states the storage cost, live, as the value changes.
+  await page.locator('.usage-poll-unit .slide-switch-opt[data-value="sec"]').click();
+  await page.locator(".usage-poll-input").fill("30");
+  await expect(page.locator(".usage-poll-summary")).toContainText("every 30 seconds");
+  await expect(page.locator(".usage-poll-summary")).toContainText("a month");
+
+  await page.locator(".usage-poll-save").click();
+  await expect(card).toBeHidden();
+
+  // Reopening shows what was saved, not the default.
+  await page.locator(".usage-poll-settings").click();
+  await expect(page.locator(".usage-poll-input")).toHaveValue("30");
+});
+
+test("turning polling off dims the interval but keeps its value", async ({ page }) => {
+  await openHarness(page);
+  await page.locator(".usage-poll-settings").click();
+  await expect(page.locator(".usage-poll-card")).toBeVisible();
+
+  await page.locator('.usage-poll-switches .slide-switch-opt[data-value="off"]').click();
+  await expect(page.locator(".usage-poll-interval")).toHaveClass(/is-disabled/);
+  await expect(page.locator(".usage-poll-input")).toBeDisabled();
+  // The number stays on screen: turning polling back on resumes at it.
+  await expect(page.locator(".usage-poll-input")).toHaveValue("1");
+  await expect(page.locator(".usage-poll-summary")).toContainText("Polling is off");
+});
+
+test("Escape closes the polling dialog without closing the usage view", async ({ page }) => {
+  await openHarness(page);
+  await page.locator(".usage-poll-settings").click();
+  await expect(page.locator(".usage-poll-card")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".usage-poll-card")).toBeHidden();
+  // The view underneath must survive — this is what confirmDialogOpen()
+  // guards, and it only works because the dialog root is .confirm-overlay.
+  await expect(page.locator(".usage-card")).toBeVisible();
 });
