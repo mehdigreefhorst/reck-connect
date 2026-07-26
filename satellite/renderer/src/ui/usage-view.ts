@@ -41,7 +41,9 @@ import {
   type Granularity,
 } from "./usage-range";
 import { planRangeLabel } from "./usage-plan";
-import { iconClose } from "./icons";
+import { iconClose, iconDownload } from "./icons";
+import { confirmDialogOpen } from "./confirmDialog";
+import { openUsageExportDialog } from "./usage-export-dialog";
 
 export interface UsageOverlayOpts {
   api: ApiClient;
@@ -119,6 +121,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       <div class="usage-chart-wrap">
         <div class="usage-chart"></div>
         <div class="usage-note" hidden></div>
+        <button class="icon-btn usage-download" title="Export usage data as CSV">${iconDownload}</button>
       </div>
       <div class="usage-legend" role="group" aria-label="Series"></div>
       <div class="usage-readout" aria-live="polite"></div>
@@ -139,6 +142,10 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   const legendEl = overlay.querySelector(".usage-legend") as HTMLElement;
   const binsSel = overlay.querySelector(".usage-bins") as HTMLSelectElement;
   const projectSel = overlay.querySelector(".usage-project:not(.usage-bins)") as HTMLSelectElement;
+  const downloadBtn = overlay.querySelector(".usage-download") as HTMLButtonElement;
+  // Mirrors projectSel's options so the export dialog can offer the
+  // same filter without refetching the project list.
+  const projectOptions: Array<{ id: string; name: string }> = [{ id: "", name: "All projects" }];
 
   // Series toggles: one pill per data series (swatch + label). State
   // lives in `shown`; an existing chart is flipped in place via
@@ -247,6 +254,12 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     prevFocus?.focus?.();
   };
   const onKey = (e: KeyboardEvent) => {
+    // A modal on top of us (the CSV export dialog) owns its own Escape.
+    // This listener is on `window`, whose capture phase runs BEFORE the
+    // dialog's on `document` — without this guard Escape would close the
+    // whole view out from under the dialog and stopPropagation would keep
+    // the dialog's own handler from ever running, stranding it on screen.
+    if (confirmDialogOpen()) return;
     if (e.key === "Escape") {
       e.stopPropagation();
       close();
@@ -277,9 +290,27 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         o.value = p.id;
         o.textContent = p.name;
         projectSel.appendChild(o);
+        projectOptions.push({ id: p.id, name: p.name });
       }
     })
     .catch(() => {});
+
+  // Export: hand the dialog exactly the range/bin/project on screen, so
+  // "current view" means what it says even after paging or a drag-zoom.
+  downloadBtn.addEventListener("click", () => {
+    const { start, until } = currentRange();
+    void openUsageExportDialog({
+      api: opts.api,
+      view: {
+        since: Math.floor(start.getTime() / 1000),
+        until: Math.floor(until.getTime() / 1000),
+        bucket,
+        projectId,
+        tzOffsetMin: tzOffsetMin(start),
+      },
+      projects: projectOptions,
+    });
+  });
 
   // ---- data + chart ------------------------------------------------
   function note(msg: string) {
@@ -478,6 +509,15 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     const asLine = bins.length > 96;
 
     const width = chartWrap.clientWidth || 720;
+
+    // The export button floats at the plot area's top-right corner. Its inset
+    // mirrors the right padding below plus the pct axis, which only exists
+    // while a quota series is shown — same condition as the axis itself.
+    chartWrap.style.setProperty(
+      "--usage-plot-right",
+      `${8 + (shown.fiveHour || shown.sevenDay ? 40 : 0)}px`,
+    );
+
     const opt: uPlot.Options = {
       width,
       height: 300,
