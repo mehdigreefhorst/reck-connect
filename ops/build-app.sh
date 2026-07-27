@@ -2,16 +2,16 @@
 # build-app.sh — one-shot Satellite app builder.
 #
 # Sources ~/.config/reck/satellite.env, exports RECK_STATION_ROOT and
-# the matching VITE_* mirror, runs `pnpm install && pnpm dist`, and
+# the matching VITE_* mirror, runs `pnpm install && pnpm package`, and
 # (optionally) copies the built bundle into /Applications.
 #
 # Why a wrapper exists: the build needs the same value injected in
 # three different places — Vite's renderer-side `import.meta.env.VITE_*`
 # (compiled into the bundle), the main process's runtime `process.env`,
 # and electron-builder's `extendInfo.LSEnvironment` block (baked into
-# Info.plist via `${env.RECK_STATION_ROOT}` substitution). Running
-# `pnpm dist` by hand without setting all of these correctly is the
-# easy way to ship a broken .app, so this script does it for you.
+# Info.plist via `${env.RECK_STATION_ROOT}` substitution). Running the
+# build by hand without setting all of these correctly is the easy way
+# to ship a broken .app, so this script does it for you.
 #
 # Usage:
 #   ./ops/build-app.sh                  # build only, leave .app in release/
@@ -87,7 +87,13 @@ echo "==> VITE_RECK_STATION_ROOT=$VITE_RECK_STATION_ROOT"
 
 cd "$SATELLITE_DIR"
 "$PNPM_BIN" install
-"$PNPM_BIN" dist
+# `package`, not `dist`: dist builds a DMG, whose codesign step fails on
+# macOS 26 with a libexpat ABI clash. `package` is the same build with
+# electron-builder's --dir, producing the .app on its own — which is all
+# this script installs. (The Makefile and INSTALL.md switched in #58;
+# this script was missed.) Note `pnpm dist -- --dir` is NOT a substitute:
+# pnpm 11 swallows the `--` and electron-builder still builds the DMG.
+"$PNPM_BIN" package
 
 BUILT_APP="$SATELLITE_DIR/release/mac-arm64/$APP_NAME.app"
 if [[ ! -d "$BUILT_APP" ]]; then
