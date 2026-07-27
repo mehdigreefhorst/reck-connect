@@ -65,18 +65,19 @@ set +a
 # value from RECK_STATION_ROOT so the .env stays single-source.
 export VITE_RECK_STATION_ROOT="$RECK_STATION_ROOT"
 
-# pnpm 11 requires interactive `pnpm approve-builds` even when
-# package.json's `pnpm.onlyBuiltDependencies` lists the relevant
-# packages. pnpm 10 respects the package.json field directly. Prefer
-# pnpm 10 from `brew install pnpm@10` if available; otherwise use
-# whatever `pnpm` resolves to. Override by exporting PNPM_BIN.
+# Use whatever `pnpm` is on PATH. This used to prefer a pinned pnpm@10,
+# because pnpm 11 ignores package.json's `pnpm.onlyBuiltDependencies`
+# and would stop for an interactive `pnpm approve-builds`. That was
+# fixed by moving the allowlist to satellite/pnpm-workspace.yaml
+# (`allowBuilds`), which pnpm 11 reads directly — so the pin is stale,
+# and now does harm: pnpm 10 does not recognise a node_modules laid down
+# by pnpm 11 and aborts trying to purge it, non-interactively
+# (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY). Override with PNPM_BIN.
 if [[ -z "${PNPM_BIN:-}" ]]; then
-  if [[ -x /opt/homebrew/opt/pnpm@10/bin/pnpm ]]; then
-    PNPM_BIN=/opt/homebrew/opt/pnpm@10/bin/pnpm
-  elif command -v pnpm >/dev/null 2>&1; then
+  if command -v pnpm >/dev/null 2>&1; then
     PNPM_BIN=$(command -v pnpm)
   else
-    echo "ERROR: no pnpm on PATH. Install via 'brew install pnpm@10'." >&2
+    echo "ERROR: no pnpm on PATH. Install via 'brew install pnpm'." >&2
     exit 1
   fi
 fi
