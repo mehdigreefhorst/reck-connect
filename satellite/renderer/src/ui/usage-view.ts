@@ -8,6 +8,13 @@
 // binning happens on the daemon (GET /usage/histogram); this module
 // owns only view state and chrome.
 //
+// The x axis is owned by usage-axis.ts and is deliberately NOT derived
+// from the bin width (issue #106): a calendar view ticks on its own
+// unit — hours for Day, days for Week/Month, months for Year — so
+// changing bin width redraws the data at a different density without
+// relabelling the axis under you. Drag-zoomed ranges are the exception
+// and still label per bin, having no calendar unit to pin to.
+//
 // Charting is uPlot: tiny, fast, and unopinionated enough to inherit
 // the reck look — every color is read from the app's CSS custom
 // properties at build time, and the chart is rebuilt when the theme
@@ -40,6 +47,7 @@ import {
   widthsForSpan,
   type Granularity,
 } from "./usage-range";
+import { MIN_TICK_PX, axisTicksFor } from "./usage-axis";
 import { planRangeLabel } from "./usage-plan";
 import { iconClose, iconDownload, iconGear } from "./icons";
 import { confirmDialogOpen } from "./confirmDialog";
@@ -522,6 +530,54 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
 
     const width = chartWrap.clientWidth || 720;
 
+    // Room the plot area itself gets, once the y axes and padding are
+    // taken off — the budget the tick count is fitted to. Mirrors the
+    // `padding` and axis `size` values set below; an estimate is fine,
+    // it only decides how many labels we ask for.
+    const plotWidthPx =
+      width -
+      (shown.tokens ? 52 + 8 : 28) -
+      (shown.fiveHour || shown.sevenDay ? 40 + 8 : 8);
+
+    // Calendar ticks for the four standard views. A drag-zoomed range
+    // gets `null` and falls back to labelling whatever bins uPlot's own
+    // splits land on, since an arbitrary span has no calendar unit.
+    const range = currentRange();
+    const calendarTicks =
+      custom === null
+        ? axisTicksFor({
+            granularity,
+            start: range.start,
+            until: range.until,
+            binStartsSec: bins.map((b) => b.t),
+            binWidthSec: bucketSeconds(bucket),
+            plotWidthPx,
+          })
+        : null;
+
+    const xAxis: uPlot.Axis = {
+      stroke: textDim,
+      grid: { show: false },
+      ticks: { show: false },
+      font: `10px ${cssVar("--font-mono") || "monospace"}`,
+      space: MIN_TICK_PX,
+    };
+    if (calendarTicks) {
+      // Keyed by the split value rather than by position: uPlot hands
+      // `values` whatever `splits` returned, and keying on identity
+      // survives it filtering or reordering the array on us.
+      const labelByIdx = new Map(calendarTicks.map((t) => [t.idx, t.label]));
+      xAxis.splits = () => calendarTicks.map((t) => t.idx);
+      xAxis.values = (_u, splits) => splits.map((s) => labelByIdx.get(s) ?? "");
+    } else {
+      xAxis.values = (_u, splits) =>
+        splits.map((s) =>
+          Number.isInteger(s) && bins[s]
+            ? binLabelFor(labelGranularity(), bucket, new Date(bins[s].t * 1000))
+            : "",
+        );
+    }
+
     // The export button floats at the plot area's top-right corner. Its inset
     // mirrors the right padding below plus the pct axis, which only exists
     // while a quota series is shown — same condition as the axis itself.
@@ -550,19 +606,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         pct: { range: [0, 100] },
       },
       axes: [
-        {
-          stroke: textDim,
-          grid: { show: false },
-          ticks: { show: false },
-          font: `10px ${cssVar("--font-mono") || "monospace"}`,
-          space: 70,
-          values: (_u, splits) =>
-            splits.map((s) =>
-              Number.isInteger(s) && bins[s]
-                ? binLabelFor(labelGranularity(), bucket, new Date(bins[s].t * 1000))
-                : "",
-            ),
-        },
+        xAxis,
         {
           scale: "tok",
           show: shown.tokens,
