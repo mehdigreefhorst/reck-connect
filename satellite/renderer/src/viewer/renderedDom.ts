@@ -9,6 +9,7 @@
 // no new injection surface, but it is not itself a sanitizer.
 
 import { detectPathsInLine } from "./LinkDetector";
+import { attachLightbox, type LightboxHandle } from "./Lightbox";
 
 const INTERNAL_LINK_CLASS = "reck-internal-link";
 const PATH_LINK_TOOLTIP = "⌘+click to open";
@@ -109,11 +110,14 @@ export function createRenderedDom(
 ): RenderedDomHandle {
   let attachedContainer: HTMLElement | null = null;
   let attachedHandler: ((ev: MouseEvent) => void) | null = null;
+  let lightbox: LightboxHandle | null = null;
 
   const detach = (): void => {
     if (attachedContainer && attachedHandler) {
       attachedContainer.removeEventListener("click", attachedHandler);
     }
+    lightbox?.dispose();
+    lightbox = null;
     attachedContainer = null;
     attachedHandler = null;
   };
@@ -142,6 +146,10 @@ export function createRenderedDom(
       container.addEventListener("click", handler);
       attachedContainer = container;
       attachedHandler = handler;
+      // Registered here so the same detach() tears it down. The two handlers
+      // cannot conflict: this one acts only on anchors, the lightbox only on
+      // images that are NOT inside an anchor.
+      lightbox = attachLightbox(container);
     },
     dispose(): void {
       detach();

@@ -100,3 +100,52 @@ describe("isInsideSvg", () => {
     expect(isInsideSvg(prose, root)).toBe(false);
   });
 });
+
+describe("createRenderedDom — lightbox lifecycle", () => {
+  it("opens the lightbox on a plain image click", () => {
+    const dom = createRenderedDom();
+    const el = document.createElement("div");
+    dom.mount(el, '<img src="a.png" alt="pic">');
+    el.querySelector("img")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    expect(el.querySelector(".reck-lightbox")).not.toBeNull();
+    dom.dispose();
+  });
+
+  it("Cmd+click on a linked image still routes to onLinkActivate", () => {
+    const onLinkActivate = vi.fn();
+    const dom = createRenderedDom({ onLinkActivate });
+    const el = document.createElement("div");
+    dom.mount(el, '<a href="./x.md"><img src="a.png" alt="pic"></a>');
+    el.querySelector("img")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }),
+    );
+    expect(onLinkActivate).toHaveBeenCalledWith("./x.md", expect.anything());
+    expect(el.querySelector(".reck-lightbox")).toBeNull();
+    dom.dispose();
+  });
+
+  it("re-mounting does not stack lightbox listeners", () => {
+    const dom = createRenderedDom();
+    const el = document.createElement("div");
+    dom.mount(el, '<img src="a.png" alt="pic">');
+    dom.mount(el, '<img src="b.png" alt="pic2">');
+    el.querySelector("img")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    expect(el.querySelectorAll(".reck-lightbox")).toHaveLength(1);
+    dom.dispose();
+  });
+
+  it("dispose closes an open lightbox", () => {
+    const dom = createRenderedDom();
+    const el = document.createElement("div");
+    dom.mount(el, '<img src="a.png" alt="pic">');
+    el.querySelector("img")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    dom.dispose();
+    expect(el.querySelector(".reck-lightbox")).toBeNull();
+  });
+});
