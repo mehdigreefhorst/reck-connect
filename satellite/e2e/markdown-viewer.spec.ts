@@ -18,7 +18,7 @@ const HARNESS = "/markdown-harness.html";
 
 async function openHarness(
   page: Page,
-  opts: { fixture?: "rich" | "plain"; theme?: "light" | "dark" } = {},
+  opts: { fixture?: "rich" | "plain" | "bare"; theme?: "light" | "dark" } = {},
 ): Promise<void> {
   const fixture = opts.fixture ?? "rich";
   const theme = opts.theme ?? "dark";
@@ -166,6 +166,91 @@ test.describe("console health", () => {
     expect(
       errors.filter((e) => /Content Security Policy|mermaid|katex/i.test(e)),
     ).toEqual([]);
+  });
+});
+
+test.describe("TOC sidebar", () => {
+  test("is collapsed by default and the body still scrolls", async ({ page }) => {
+    await openHarness(page);
+    // The popup is small and most files are short: the TOC must not steal
+    // width until asked.
+    await expect(page.locator(".file-viewer-toc")).toBeHidden();
+    await expect(page.locator(".file-viewer-toc-toggle-slot button")).toBeVisible();
+
+    // The whole point of keeping `body` as the sole scroll container.
+    const scrollers = await page.evaluate(() =>
+      Array.from(document.querySelectorAll(".file-viewer-root *"))
+        .filter((el) => el.scrollHeight > el.clientHeight + 1)
+        .filter((el) => {
+          const o = getComputedStyle(el).overflowY;
+          return o === "auto" || o === "scroll";
+        })
+        .map((el) => el.className),
+    );
+    expect(scrollers).toEqual(["file-viewer-body"]);
+  });
+
+  test("the chip opens it and lists the document's headings", async ({ page }) => {
+    await openHarness(page);
+    await page.locator(".file-viewer-toc-toggle-slot button").click();
+
+    const toc = page.locator(".file-viewer-toc");
+    await expect(toc).toBeVisible();
+    await expect(toc.locator("a").first()).toHaveText("Markdown viewer harness");
+    // h1-h4 from the rich fixture, and no h5+.
+    expect(await toc.locator("a").count()).toBeGreaterThanOrEqual(6);
+
+    // Animated open to a real width, not a 0px sliver.
+    await expect
+      .poll(async () => (await toc.boundingBox())!.width)
+      .toBeGreaterThan(100);
+  });
+
+  test("clicking an entry scrolls to that heading", async ({ page }) => {
+    await openHarness(page);
+    await page.locator(".file-viewer-toc-toggle-slot button").click();
+    await expect(page.locator(".file-viewer-toc")).toBeVisible();
+
+    const body = page.locator(".file-viewer-body");
+    expect(await body.evaluate((el) => el.scrollTop)).toBe(0);
+
+    await page.locator(".file-viewer-toc a", { hasText: "Image" }).click();
+    await expect.poll(async () => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(50);
+  });
+
+  test("scroll-spy marks the heading currently in view", async ({ page }) => {
+    await openHarness(page);
+    await page.locator(".file-viewer-toc-toggle-slot button").click();
+    await expect(page.locator(".file-viewer-toc")).toBeVisible();
+
+    await page.locator(".file-viewer-body").evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    await expect
+      .poll(async () => page.locator(".file-viewer-toc a.active").count())
+      .toBeGreaterThan(0);
+  });
+
+  test("its open state survives a reload", async ({ page }) => {
+    await openHarness(page);
+    await page.locator(".file-viewer-toc-toggle-slot button").click();
+    await expect(page.locator(".file-viewer-toc")).toBeVisible();
+
+    await page.reload();
+    await expect(page.locator("body[data-enhanced='true']")).toBeAttached();
+    await expect(page.locator(".file-viewer-toc")).toBeVisible();
+  });
+
+  test("a document with no headings gets no chip at all", async ({ page }) => {
+    // A control that opens an empty panel is worse than no control.
+    await openHarness(page, { fixture: "bare" });
+    await expect(page.locator(".file-viewer-toc-toggle-slot button")).toHaveCount(0);
+    await expect(page.locator(".file-viewer-toc")).toBeHidden();
+    // And the body keeps the full width.
+    const cols = await page
+      .locator(".file-viewer-content")
+      .evaluate((el) => getComputedStyle(el).gridTemplateColumns);
+    expect(cols.startsWith("0px")).toBe(true);
   });
 });
 

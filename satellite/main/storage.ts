@@ -55,6 +55,10 @@ export const CONFIG_KEYS = [
   "railWiggleEnabled",
   "railWigglePixels",
   "railWiggleLegMs",
+  // File-viewer table of contents — same mode+width pair as the rail, for the
+  // popup's collapsible TOC sidebar. Default mode is "mini" (collapsed).
+  "fileViewerTocMode",
+  "fileViewerTocWidth",
   "theme",
   "projectNames",
   "projectOrder",
