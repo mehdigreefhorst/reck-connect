@@ -45,21 +45,32 @@ test("hovering the chart never resizes the card", async ({ page }) => {
 test("bin selector offers per-view widths and re-renders", async ({ page }) => {
   await openHarness(page);
 
-  // Week view default: 1-day bins.
-  await expect(page.locator(".usage-bins")).toHaveValue("1d");
+  // Week view default: 30-minute bins.
+  await expect(page.locator(".usage-bins")).toHaveValue("30m");
   const weekOptions = await page.locator(".usage-bins option").allTextContents();
   expect(weekOptions).toEqual(["5 min", "10 min", "30 min", "1 hour", "4 hours", "1 day"]);
 
   // Fine bins → curve (uPlot still draws one canvas; assert data volume
   // via the readout after hover, and take a screenshot for the eye).
-  await page.locator(".usage-bins").selectOption("30m");
-  await expect(page.locator(".usage-bins")).toHaveValue("30m");
+  await page.locator(".usage-bins").selectOption("5m");
+  await expect(page.locator(".usage-bins")).toHaveValue("5m");
   await page.waitForTimeout(150);
-  await page.screenshot({ path: "e2e/artifacts/usage-week-30m-curve.png" });
+  await page.screenshot({ path: "e2e/artifacts/usage-week-5m-curve.png" });
 
-  // Day view: defaults to 1 hour, offers down to 1 minute.
+  // Bin width is a density control, not an axis control (issue #106):
+  // these two shots are 12× apart in bin count and their x-axis rows
+  // must read identically — "Mon 13 … Sun 19" either way. The label
+  // logic itself is pinned in usage-axis.test.ts; these are for the eye.
+  await page.locator(".usage-bins").selectOption("4h");
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: "e2e/artifacts/usage-week-axis-4h.png" });
+  await page.locator(".usage-bins").selectOption("5m");
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: "e2e/artifacts/usage-week-axis-5m.png" });
+
+  // Day view: defaults to 5 minutes, offers 1 minute up to 4 hours.
   await page.locator('.usage-chip[data-g="day"]').click();
-  await expect(page.locator(".usage-bins")).toHaveValue("1h");
+  await expect(page.locator(".usage-bins")).toHaveValue("5m");
   const dayOptions = await page.locator(".usage-bins option").allTextContents();
   expect(dayOptions).toEqual(["1 min", "2 min", "5 min", "10 min", "30 min", "1 hour", "4 hours"]);
   await page.locator(".usage-bins").selectOption("1m");
@@ -78,12 +89,16 @@ test("drill-down resets the bin width to the finer view's default", async ({ pag
   await page.locator('.usage-chip[data-g="year"]').click();
   await expect(page.locator(".usage-bins")).toHaveValue("month");
 
-  // Click mid-chart → month view at 1-day bins.
+  // Click mid-chart → month view at 4-hour bins.
   const chart = page.locator(".usage-chart .u-over");
   const box = (await chart.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.8);
   await expect(page.locator('.usage-chip[data-g="month"]')).toHaveClass(/active/);
-  await expect(page.locator(".usage-bins")).toHaveValue("1d");
+  await expect(page.locator(".usage-bins")).toHaveValue("4h");
+  // Month's axis row is bare dates — no clock times, and no weekday
+  // names either (30 of them is noise; the space buys more dates).
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: "e2e/artifacts/usage-month-4h-axis.png" });
 
   // ↑ drills back up (month → year on the ladder) with year's default.
   await page.locator(".usage-drill-up").click();
@@ -140,12 +155,20 @@ test("drag-selecting a span zooms into that time frame", async ({ page }) => {
   await page.mouse.up();
 
   // Now in a zoomed range: the label shows a time range (– between
-  // endpoints), granularity chips deactivate, the bin width auto-picks
-  // something finer than the week default.
+  // endpoints), granularity chips deactivate, and the bin width is
+  // re-derived from the span rather than kept from the week view.
   await expect(page.locator(".usage-period")).toContainText("–");
   await expect(page.locator(".usage-chip.active")).toHaveCount(0);
+  // ~30% of a week is ~50 h, for which defaultWidthForSpan aims at
+  // ≤240 bins. (Asserting "not the week default" stopped meaning
+  // anything once that default became 30m — which is also what this
+  // span picks.)
   const zoomBucket = await page.locator(".usage-bins").inputValue();
-  expect(zoomBucket).not.toBe("1d");
+  expect(["2m", "5m", "10m", "30m"]).toContain(zoomBucket);
+  // The menu is rebuilt from the span too, so day-wide bins — two of
+  // them across 50 hours — drop off it.
+  const zoomOptions = await page.locator(".usage-bins option").allTextContents();
+  expect(zoomOptions).not.toContain("1 day");
   await page.waitForTimeout(150);
   await page.screenshot({ path: "e2e/artifacts/usage-drag-zoom.png" });
 
@@ -162,7 +185,7 @@ test("drag-selecting a span zooms into that time frame", async ({ page }) => {
   await page.locator(".usage-drill-up").click();
   await expect(page.locator(".usage-period")).toContainText("Week of");
   await expect(page.locator('.usage-chip[data-g="week"]')).toHaveClass(/active/);
-  await expect(page.locator(".usage-bins")).toHaveValue("1d");
+  await expect(page.locator(".usage-bins")).toHaveValue("30m");
 });
 
 test("dark theme renders and looks right", async ({ page }) => {

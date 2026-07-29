@@ -63,12 +63,38 @@ holds until the next sample) rather than linear interpolation.
 ### Renderer
 
 - `ui/usage-range.ts` — pure math, no DOM: per-view bin-width options
-  (`BIN_OPTIONS` — Day: 1 min–4 h, default 1 h; Week: 5 min–1 day, default
-  1 day; Month: 30 min–1 day, default 1 day; Year: 1 day/month, default
+  (`BIN_OPTIONS` — Day: 1 min–4 h, default 5 min; Week: 5 min–1 day, default
+  30 min; Month: 30 min–1 day, default 4 h; Year: 1 day/month, default
   month), bucket↔seconds parsing, local-midnight period snapping (ISO Monday
   weeks), stepping, drill ladder (down: year→month→day, week→day; up:
   day→week→month→year — a drill resets the bin width to the new view's
-  default), width-aware bin labels, future-paging guard. 19 vitest cases.
+  default), width-aware bin labels for the hover readout, future-paging
+  guard.
+
+  The defaults are deliberately fine (issue #106): the plot exists to show
+  *when* tokens burned, and day-wide bins answer that with one bar per day.
+  Each default lands the period in the low hundreds of bins — past the
+  96-bin threshold, so Day/Week/Month open as the area curve and only Year
+  still reads as bars.
+- `ui/usage-axis.ts` — pure math for the x axis, and the one rule it exists
+  to enforce: **the axis is a property of the view, not of the bin width.**
+  A view ticks on its own calendar unit — hours for Day, days for
+  Week/Month, months for Year — and labels accordingly (`09:00`, `Tue 14`,
+  `14`, `Jul`), identically at every width the view offers. Bin width is a
+  density control; it changes how finely the data is drawn, not what the
+  axis measures. (Before #106 both the axis and the readout came from
+  `binLabelFor`, so the same week relabelled itself from `Tue 14` to
+  `Tue 06:00` when you picked finer bins.)
+
+  Ticks sit on real local calendar boundaries, converted back to
+  (fractional) bin indices — uPlot's own splits are round numbers in *index*
+  space, which puts the "Wed 15" tick at Wed 02:00 at 30-minute bins. A bin
+  start maps to index `i`, not `i - 0.5`: exact for the area curve, and
+  centred under the bar for bar mode, matching the old integer splits.
+  Boundaries past the last bin are dropped, which is also what trims ticks
+  for the rest of today in a partial current period. Drag-zoomed ranges are
+  the exception and still label per bin — an arbitrary span has no calendar
+  unit to pin to.
 - `ui/usage-view.ts` — the overlay. Singleton; fetches its own project list;
   aborts in-flight fetches on rapid control clicks; uPlot colors read from the
   app's CSS custom properties (orange bars, sage 5h line, mustard 7d line) and

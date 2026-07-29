@@ -27,17 +27,22 @@ export const BIN_OPTIONS: Record<Granularity, UsageHistogramBucket[]> = {
   year: ["1d", "month"],
 };
 
-/** Default bin width per view: Day = hour bins, Week/Month = day bins,
- * Year = calendar-month bins. */
+/** Default bin width per view. Deliberately fine: the point of the plot
+ * is *when* tokens burned, and day-wide bins answer that with one bar
+ * per day. Each default keeps the period a few hundred bins — past the
+ * 96-bin bar/curve threshold, so Day/Week/Month open as the area curve
+ * (Year still reads as bars). The axis labels do NOT follow the bin
+ * width; see usage-axis.ts. */
 export function defaultBinFor(g: Granularity): UsageHistogramBucket {
   switch (g) {
     case "day":
-      return "1h";
+      return "5m"; // 288 bins
     case "week":
+      return "30m"; // 336 bins
     case "month":
-      return "1d";
+      return "4h"; // 168–186 bins
     case "year":
-      return "month";
+      return "month"; // 12 bins
   }
 }
 
@@ -188,7 +193,10 @@ export function drillUp(g: Granularity): Granularity | null {
   }
 }
 
-const MONTHS = [
+/** Month names, full — slice(0, 3) for the abbreviated form. Exported
+ * so usage-axis.ts labels ticks from the same vocabulary the period
+ * headings and readout use. */
+export const MONTHS = [
   "January",
   "February",
   "March",
@@ -202,7 +210,8 @@ const MONTHS = [
   "November",
   "December",
 ];
-const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** Weekday abbreviations indexed by Date#getDay() (0 = Sunday). */
+export const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** Human label for the current period, e.g. "Tue 14 Jul 2026",
  * "Week of 13 Jul 2026", "July 2026", "2026". */
@@ -221,10 +230,16 @@ export function labelFor(g: Granularity, start: Date): string {
   }
 }
 
-/** Axis tick / readout label for one bin start, sized to the bin
- * width: sub-day bins show a clock time (prefixed with the day when
- * the view spans several days), day-width bins show the date, month
- * bins the month. */
+/** Readout label for one bin start, sized to the bin width: sub-day
+ * bins show a clock time (prefixed with the day when the view spans
+ * several days), day-width bins show the date, month bins the month.
+ *
+ * Bin-granular on purpose — the readout's job is to say WHICH bin the
+ * cursor is on, so it must sharpen as the bins do. The x-axis is the
+ * opposite (fixed to the view, see usage-axis.ts); the two used to
+ * share this function, which is why picking finer bins used to relabel
+ * the whole axis. Drag-zoomed ranges still label their axis from here,
+ * since an arbitrary span has no calendar unit to pin to. */
 export function binLabelFor(
   g: Granularity,
   bucket: UsageHistogramBucket,

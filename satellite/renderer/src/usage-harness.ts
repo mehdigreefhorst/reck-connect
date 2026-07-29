@@ -59,8 +59,14 @@ function synthHistogram(params: UsageHistogramParams): UsageHistogramResponse {
   const sec = bucketSeconds(params.bucket);
   const bins: UsageHistogramBin[] = [];
   if (sec !== null) {
-    for (let t = Math.floor(params.since / sec) * sec; t < params.until; t += sec) {
-      bins.push(makeBin(t, sec));
+    // Align to the caller's local midnight, exactly as the daemon does
+    // (binStarts in daemon/internal/usage/histogram.go). Aligning to
+    // the UTC epoch instead is invisible at widths that divide an hour
+    // but puts 4-hour bins two hours off local midnight in UTC+2 — and
+    // the day-boundary axis ticks would then sit inside a bin.
+    const off = (params.tzOffsetMin ?? 0) * 60;
+    for (let k = Math.floor((params.since + off) / sec); k * sec - off < params.until; k++) {
+      bins.push(makeBin(k * sec - off, sec));
     }
   } else {
     // Calendar months in the local zone, matching the daemon.
