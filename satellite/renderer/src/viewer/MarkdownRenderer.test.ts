@@ -478,3 +478,55 @@ describe("createMarkdownRenderer", () => {
     });
   });
 });
+
+describe("createMarkdownRenderer — post-mount enhancement", () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  it("passes a mermaid fence through render() with its language class intact", () => {
+    // highlight.js has no "mermaid" grammar, so the fence falls through to
+    // markdown-it's default renderer. The enhancer's selector depends on both
+    // the `language-mermaid` class and DOMPurify keeping `class`.
+    const r = createMarkdownRenderer();
+    const html = r.render("```mermaid\nflowchart TD\nA-->B\n```");
+    expect(html).toContain('<code class="language-mermaid">');
+    expect(html).toContain("flowchart TD");
+  });
+
+  it("leaves math delimiters untouched in render() — KaTeX runs post-mount", () => {
+    const r = createMarkdownRenderer();
+    expect(r.render("energy is $E=mc^2$ exactly")).toContain("$E=mc^2$");
+  });
+
+  it("whenEnhanced() resolves for a document with neither diagrams nor math", async () => {
+    const r = createMarkdownRenderer();
+    r.mount(container, r.render("# plain\n\njust prose"));
+    await expect(r.whenEnhanced()).resolves.toBeUndefined();
+  });
+
+  it("whenEnhanced() resolves before any mount()", async () => {
+    const r = createMarkdownRenderer();
+    await expect(r.whenEnhanced()).resolves.toBeUndefined();
+  });
+
+  it("whenEnhanced() tracks the most recent mount()", async () => {
+    const r = createMarkdownRenderer();
+    r.mount(container, r.render("first"));
+    await r.whenEnhanced();
+    const second = document.createElement("div");
+    document.body.appendChild(second);
+    r.mount(second, r.render("second"));
+    await expect(r.whenEnhanced()).resolves.toBeUndefined();
+  });
+
+  it("whenEnhanced() still resolves after dispose()", async () => {
+    const r = createMarkdownRenderer();
+    r.mount(container, r.render("prose"));
+    r.dispose();
+    await expect(r.whenEnhanced()).resolves.toBeUndefined();
+  });
+});

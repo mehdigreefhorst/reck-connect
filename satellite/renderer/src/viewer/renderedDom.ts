@@ -32,6 +32,29 @@ export function isInternalLinkHref(href: string): boolean {
   return true;
 }
 
+/**
+ * True when `node` sits inside an `<svg>` subtree at or below `root`.
+ *
+ * Mermaid replaces each fence with inline SVG whose `<text>` elements hold the
+ * diagram's node labels. Those are graphics, not prose: the surfaces that walk
+ * this container's text nodes — in-popup search (`MarkdownSearchAdapter`) and
+ * TTS (`MarkdownSurfaceAdapter`) — must skip them, or a search matches text the
+ * highlight API can't paint and Speak reads a flowchart out loud.
+ *
+ * Checked by tag name rather than `instanceof SVGElement` so it holds for
+ * documents from another realm (and in jsdom).
+ */
+export function isInsideSvg(node: Node, root: HTMLElement): boolean {
+  let cur: Node | null = node;
+  while (cur && cur !== root) {
+    if (cur.nodeType === 1 && (cur as Element).tagName.toLowerCase() === "svg") {
+      return true;
+    }
+    cur = cur.parentNode;
+  }
+  return false;
+}
+
 export function wrapFreeTextPaths(root: HTMLElement): void {
   const skipAncestor = (node: Node): boolean => {
     let cur: Node | null = node.parentNode;

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+  <!-- Dev/e2e fixture only: a stand-in image for the markdown harness, so the
+       viewer's image handling (lazy attributes, lightbox) can be exercised
+       without reaching the network. -->
+  <rect width="320" height="180" fill="#2b2b33" />
+  <circle cx="90" cy="90" r="46" fill="#d97757" />
+  <rect x="160" y="52" width="120" height="76" rx="8" fill="#6a9fb5" />
+  <text x="160" y="164" font-family="system-ui, sans-serif" font-size="16" fill="#e8e8ea" text-anchor="middle">sample image</text>
+</svg>

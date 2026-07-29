@@ -2974,6 +2974,24 @@ html, body, #app {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
 }
 
+/* Mermaid diagrams. The ```mermaid fence is unwrapped out of its <pre><code>
+   before rendering (see markdownEnhancers.ts) precisely so the SVG does NOT
+   inherit the code-block treatment below — a diagram is a figure, not source.
+
+   `white-space: pre-wrap` is the fallback path: when mermaid can't parse a
+   definition it leaves the source text in place, and this keeps that text
+   readable with its line breaks instead of collapsing it into one run-on line. */
+.file-viewer-body .reck-mermaid {
+  margin: 1.2em 0;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.file-viewer-body .reck-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* Static HTML preview: baseline layout for structural/media tags the
    markdown renderer never emits. Keeps pages readable and prevents wide
    media/tables from breaking the popup's horizontal scroll. */
