@@ -114,6 +114,20 @@ test.describe("KaTeX", () => {
   });
 });
 
+test.describe("images", () => {
+  test("carry the native lazy-loading hints through sanitization", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const img = page.locator(".file-viewer-body img").first();
+    await expect(img).toHaveAttribute("loading", "lazy");
+    await expect(img).toHaveAttribute("decoding", "async");
+    // And they survive as live DOM properties, not just as markup — i.e.
+    // DOMPurify's ALLOWED_ATTR really does keep them.
+    expect(await img.evaluate((el: HTMLImageElement) => el.loading)).toBe("lazy");
+  });
+});
+
 test.describe("lazy loading", () => {
   test("a document with diagrams and math fetches both libraries", async ({
     page,
