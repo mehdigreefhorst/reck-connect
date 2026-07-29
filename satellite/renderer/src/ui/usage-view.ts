@@ -8,6 +8,13 @@
 // binning happens on the daemon (GET /usage/histogram); this module
 // owns only view state and chrome.
 //
+// The x axis is owned by usage-axis.ts and is deliberately NOT derived
+// from the bin width (issue #106): a calendar view ticks on its own
+// unit — hours for Day, days for Week/Month, months for Year — so
+// changing bin width redraws the data at a different density without
+// relabelling the axis under you. Drag-zoomed ranges are the exception
+// and still label per bin, having no calendar unit to pin to.
+//
 // Charting is uPlot: tiny, fast, and unopinionated enough to inherit
 // the reck look — every color is read from the app's CSS custom
 // properties at build time, and the chart is rebuilt when the theme
@@ -40,8 +47,12 @@ import {
   widthsForSpan,
   type Granularity,
 } from "./usage-range";
+import { MIN_TICK_PX, axisTicksFor } from "./usage-axis";
 import { planRangeLabel } from "./usage-plan";
-import { iconClose } from "./icons";
+import { iconClose, iconDownload, iconGear } from "./icons";
+import { confirmDialogOpen } from "./confirmDialog";
+import { openUsageExportDialog } from "./usage-export-dialog";
+import { openUsagePollDialog } from "./usage-poll-dialog";
 
 export interface UsageOverlayOpts {
   api: ApiClient;
@@ -119,6 +130,10 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       <div class="usage-chart-wrap">
         <div class="usage-chart"></div>
         <div class="usage-note" hidden></div>
+        <div class="usage-chart-actions">
+          <button class="icon-btn usage-poll-settings" title="Quota polling…">${iconGear}</button>
+          <button class="icon-btn usage-download" title="Export usage data as CSV">${iconDownload}</button>
+        </div>
       </div>
       <div class="usage-legend" role="group" aria-label="Series"></div>
       <div class="usage-readout" aria-live="polite"></div>
@@ -139,6 +154,11 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   const legendEl = overlay.querySelector(".usage-legend") as HTMLElement;
   const binsSel = overlay.querySelector(".usage-bins") as HTMLSelectElement;
   const projectSel = overlay.querySelector(".usage-project:not(.usage-bins)") as HTMLSelectElement;
+  const downloadBtn = overlay.querySelector(".usage-download") as HTMLButtonElement;
+  const pollSettingsBtn = overlay.querySelector(".usage-poll-settings") as HTMLButtonElement;
+  // Mirrors projectSel's options so the export dialog can offer the
+  // same filter without refetching the project list.
+  const projectOptions: Array<{ id: string; name: string }> = [{ id: "", name: "All projects" }];
 
   // Series toggles: one pill per data series (swatch + label). State
   // lives in `shown`; an existing chart is flipped in place via
@@ -247,6 +267,12 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     prevFocus?.focus?.();
   };
   const onKey = (e: KeyboardEvent) => {
+    // A modal on top of us (the CSV export dialog) owns its own Escape.
+    // This listener is on `window`, whose capture phase runs BEFORE the
+    // dialog's on `document` — without this guard Escape would close the
+    // whole view out from under the dialog and stopPropagation would keep
+    // the dialog's own handler from ever running, stranding it on screen.
+    if (confirmDialogOpen()) return;
     if (e.key === "Escape") {
       e.stopPropagation();
       close();
@@ -277,9 +303,34 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         o.value = p.id;
         o.textContent = p.name;
         projectSel.appendChild(o);
+        projectOptions.push({ id: p.id, name: p.name });
       }
     })
     .catch(() => {});
+
+  // Export: hand the dialog exactly the range/bin/project on screen, so
+  // "current view" means what it says even after paging or a drag-zoom.
+  downloadBtn.addEventListener("click", () => {
+    const { start, until } = currentRange();
+    void openUsageExportDialog({
+      api: opts.api,
+      view: {
+        since: Math.floor(start.getTime() / 1000),
+        until: Math.floor(until.getTime() / 1000),
+        bucket,
+        projectId,
+        tzOffsetMin: tzOffsetMin(start),
+      },
+      projects: projectOptions,
+    });
+  });
+
+  // Polling settings. A saved change alters what lands in the store from
+  // now on, not what is already plotted, so there is nothing to refresh
+  // here — the next refresh() picks up whatever the new cadence wrote.
+  pollSettingsBtn.addEventListener("click", () => {
+    void openUsagePollDialog({ api: opts.api });
+  });
 
   // ---- data + chart ------------------------------------------------
   function note(msg: string) {
@@ -478,6 +529,63 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     const asLine = bins.length > 96;
 
     const width = chartWrap.clientWidth || 720;
+
+    // Room the plot area itself gets, once the y axes and padding are
+    // taken off — the budget the tick count is fitted to. Mirrors the
+    // `padding` and axis `size` values set below; an estimate is fine,
+    // it only decides how many labels we ask for.
+    const plotWidthPx =
+      width -
+      (shown.tokens ? 52 + 8 : 28) -
+      (shown.fiveHour || shown.sevenDay ? 40 + 8 : 8);
+
+    // Calendar ticks for the four standard views. A drag-zoomed range
+    // gets `null` and falls back to labelling whatever bins uPlot's own
+    // splits land on, since an arbitrary span has no calendar unit.
+    const range = currentRange();
+    const calendarTicks =
+      custom === null
+        ? axisTicksFor({
+            granularity,
+            start: range.start,
+            until: range.until,
+            binStartsSec: bins.map((b) => b.t),
+            binWidthSec: bucketSeconds(bucket),
+            plotWidthPx,
+          })
+        : null;
+
+    const xAxis: uPlot.Axis = {
+      stroke: textDim,
+      grid: { show: false },
+      ticks: { show: false },
+      font: `10px ${cssVar("--font-mono") || "monospace"}`,
+      space: MIN_TICK_PX,
+    };
+    if (calendarTicks) {
+      // Keyed by the split value rather than by position: uPlot hands
+      // `values` whatever `splits` returned, and keying on identity
+      // survives it filtering or reordering the array on us.
+      const labelByIdx = new Map(calendarTicks.map((t) => [t.idx, t.label]));
+      xAxis.splits = () => calendarTicks.map((t) => t.idx);
+      xAxis.values = (_u, splits) => splits.map((s) => labelByIdx.get(s) ?? "");
+    } else {
+      xAxis.values = (_u, splits) =>
+        splits.map((s) =>
+          Number.isInteger(s) && bins[s]
+            ? binLabelFor(labelGranularity(), bucket, new Date(bins[s].t * 1000))
+            : "",
+        );
+    }
+
+    // The export button floats at the plot area's top-right corner. Its inset
+    // mirrors the right padding below plus the pct axis, which only exists
+    // while a quota series is shown — same condition as the axis itself.
+    chartWrap.style.setProperty(
+      "--usage-plot-right",
+      `${8 + (shown.fiveHour || shown.sevenDay ? 40 : 0)}px`,
+    );
+
     const opt: uPlot.Options = {
       width,
       height: 300,
@@ -498,19 +606,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         pct: { range: [0, 100] },
       },
       axes: [
-        {
-          stroke: textDim,
-          grid: { show: false },
-          ticks: { show: false },
-          font: `10px ${cssVar("--font-mono") || "monospace"}`,
-          space: 70,
-          values: (_u, splits) =>
-            splits.map((s) =>
-              Number.isInteger(s) && bins[s]
-                ? binLabelFor(labelGranularity(), bucket, new Date(bins[s].t * 1000))
-                : "",
-            ),
-        },
+        xAxis,
         {
           scale: "tok",
           show: shown.tokens,

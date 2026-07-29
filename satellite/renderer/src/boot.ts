@@ -138,6 +138,7 @@ import {
   createWidthAnimator,
   railDragDecision,
   railDragRelease,
+  shouldStartWiggle,
 } from "./ui/rail-collapse";
 import type { Pane, PaneKind, PaneUsage, Project, Stoplight } from "@proto/proto";
 import { mergeHybridProjects } from "./hybrid-merge";
@@ -503,10 +504,12 @@ export async function boot(splash?: StartupSplashController) {
   }
 
   // --- Separator wiggle ------------------------------------------------
-  // After a project switch the divider auto-nudges out and back through
-  // the shared animator (railWidth → applyGrid each frame), then forces
-  // a terminal refit — replacing the manual divider jiggle previously
-  // needed to unstick a stale grid after a switch.
+  // After a project switch — and after any in-project tab switch — the
+  // divider auto-nudges out and back through the shared animator
+  // (railWidth → applyGrid each frame), then forces a terminal refit —
+  // replacing the manual divider jiggle previously needed to unstick a
+  // stale grid after a switch. Tab switches pass `force` so they wiggle
+  // even with the preference off; see shouldStartWiggle.
   let wiggleActive = false;
   let wiggleBase = 0;
   let wiggleRetryTimer: number | null = null;
@@ -526,16 +529,22 @@ export async function boot(splash?: StartupSplashController) {
     }
   }
 
-  function wiggleSeparator(attempt = 0) {
-    if (!railWiggle.enabled || wiggleActive || railDragActive) return;
+  function wiggleSeparator(opts: { force?: boolean; attempt?: number } = {}) {
+    const force = opts.force === true;
+    const attempt = opts.attempt ?? 0;
+    if (!shouldStartWiggle({ enabled: railWiggle.enabled, force, wiggleActive, railDragActive })) {
+      return;
+    }
     if (railAnimator.isAnimating()) {
       // A collapse/expand is mid-flight (e.g. a mini-avatar click just
       // expanded the rail) — retry once after it settles. Tracked so a
-      // later drag or mode change can cancel the stale retry.
+      // later drag or mode change can cancel the stale retry. `force`
+      // rides along: a queued tab-switch wiggle must not silently
+      // downgrade into a preference-gated one when it finally fires.
       if (attempt === 0 && wiggleRetryTimer === null) {
         wiggleRetryTimer = window.setTimeout(() => {
           wiggleRetryTimer = null;
-          wiggleSeparator(1);
+          wiggleSeparator({ force, attempt: 1 });
         }, RAIL_SNAP_MS + 40);
       }
       return;
@@ -918,6 +927,9 @@ export async function boot(splash?: StartupSplashController) {
       void selectProject(projectId);
     },
     onExpand: () => setRailMode("expanded"),
+    // Mirror of onExpand: an empty-area click on the expanded rail
+    // retracts it, so clicking the sidebar toggles the mode either way.
+    onCollapse: () => setRailMode("mini"),
     onAddProject: () => void handleAddProject(),
     onRename: (projectId, newName) => {
       // Optimistic: paint the new name right away, then persist on the
@@ -1537,10 +1549,19 @@ export async function boot(splash?: StartupSplashController) {
       if (isRetrying()) return;
       const tree = layout.getTree();
       if (!tree) return;
+      // Sampled before setTree: re-clicking the already-active tab reveals
+      // nothing, so there's no pane to re-fit and the wiggle would just be
+      // noise. Only a real switch nudges the divider.
+      const switched = findLeaf(tree, leafId)?.activeTabId !== tabId;
       layout.setTree(switchTab(tree, leafId, tabId));
       layout.focusLeaf(leafId);
       const t = findTab(layout.getTree(), tabId);
       if (t && currentProjectId) acknowledgeSeen(currentProjectId, t.tab.paneId);
+      // The revealed terminal may have identical geometry to the one it
+      // replaced, so nothing triggers its ResizeObserver — the wiggle's
+      // trailing refit is what sizes it. Forced: this is a correctness
+      // refit, not the decorative project-switch nudge.
+      if (switched) wiggleSeparator({ force: true });
     },
     onCloseTab: (leafId, tabId) => {
       if (isRetrying()) return;
@@ -2143,6 +2164,11 @@ export async function boot(splash?: StartupSplashController) {
       dir === "next" ? (idx + 1) % l.tabs.length : (idx - 1 + l.tabs.length) % l.tabs.length;
     layout.setTree(switchTab(tree, leafId, l.tabs[nextIdx].id));
     layout.focusLeaf(leafId);
+    // Same contract as the tab-click path — see onSwitchTab. The
+    // `tabs.length < 2` guard above means this only runs when a switch
+    // really happened. Holding the shortcut is safe: wiggleActive makes
+    // every call during an in-flight wiggle a no-op.
+    wiggleSeparator({ force: true });
   }
 
   function clearActiveTerminal() {

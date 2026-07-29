@@ -1,8 +1,10 @@
 package http
 
 import (
+	"log/slog"
 	nethttp "net/http"
 	"strconv"
+	"time"
 
 	"github.com/rudie-verweij/reck-connect/daemon/internal/usage"
 )
@@ -173,6 +175,67 @@ func (s *Server) handleUsageSeries(w nethttp.ResponseWriter, r *nethttp.Request)
 	}
 }
 
+// handleUsageExport streams the usage store as CSV for the Satellite's
+// download button. Query params:
+//
+//	dataset       = "binned" (default) | "turns" | "quota"
+//	since, until  = unix seconds, half-open [since, until) (required)
+//	bucket        = bin width, required for dataset=binned
+//	project_id    = optional filter (binned + turns; quota is account-level)
+//	tz_offset_min = caller's zone, for bin alignment and readable timestamps
+//
+// Validation lives on usage.ExportParams so it is unit-tested once; a
+// caller mistake is a 400 and a store failure a 500.
+func (s *Server) handleUsageExport(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if s.UsageStore == nil {
+		nethttp.Error(w, "usage tracking is not enabled on this station", nethttp.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	since, errSince := strconv.ParseInt(q.Get("since"), 10, 64)
+	until, errUntil := strconv.ParseInt(q.Get("until"), 10, 64)
+	if errSince != nil || errUntil != nil {
+		nethttp.Error(w, "since and until must be unix seconds", nethttp.StatusBadRequest)
+		return
+	}
+	tzOffsetMin := 0
+	if v := q.Get("tz_offset_min"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			nethttp.Error(w, "tz_offset_min must be an integer", nethttp.StatusBadRequest)
+			return
+		}
+		tzOffsetMin = n
+	}
+	dataset := usage.ExportDataset(q.Get("dataset"))
+	if dataset == "" {
+		dataset = usage.DatasetBinned
+	}
+	params := usage.ExportParams{
+		Dataset:     dataset,
+		Since:       since,
+		Until:       until,
+		Bucket:      usage.HistogramBucket(q.Get("bucket")),
+		ProjectID:   q.Get("project_id"),
+		TZOffsetMin: tzOffsetMin,
+	}
+	if err := params.Validate(); err != nil {
+		nethttp.Error(w, err.Error(), nethttp.StatusBadRequest)
+		return
+	}
+
+	// Headers before the first byte: once ExportCSV starts streaming we
+	// can no longer change the status code, so a mid-stream store failure
+	// can only be logged and the response truncated.
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+params.Filename()+"\"")
+	w.Header().Set("X-Reck-Export-Filename", params.Filename())
+
+	if _, err := s.UsageStore.ExportCSV(w, params); err != nil {
+		slog.Warn("usage: csv export failed mid-stream", "err", err, "dataset", dataset)
+	}
+}
+
 // handleUsageHistogram returns dense, server-binned token sums + per-bin
 // quota peaks for the Satellite's usage view (issue #88). Query params:
 //
@@ -266,4 +329,73 @@ func (s *Server) handleUsageHistogram(w nethttp.ResponseWriter, r *nethttp.Reque
 		resp["plan_summary"] = usage.PlanSummary(days)
 	}
 	writeJSON(w, resp)
+}
+
+// --- poll settings ---------------------------------------------------
+//
+// Both verbs 404 when telemetry is disabled, matching handleUsageExport
+// rather than the {"enabled": false} body the other usage GETs return.
+// That convention would be actively misleading here: this route has its
+// own `enabled` field meaning "polling is on", and a client could not tell
+// the two apart.
+
+// usagePollSettingsRequest is the PUT body. interval_sec is honoured even
+// when enabled is false, so switching polling off and back on restores the
+// period the user picked rather than resetting it.
+type usagePollSettingsRequest struct {
+	Enabled     bool `json:"enabled"`
+	IntervalSec int  `json:"interval_sec"`
+}
+
+// pollSettingsWire renders settings plus the bounds the daemon enforces,
+// so the client can validate against the real clamp instead of keeping its
+// own copy of the numbers in sync.
+func pollSettingsWire(s usage.PollSettings) map[string]any {
+	return map[string]any{
+		"enabled":          s.Enabled,
+		"interval_sec":     int(s.Interval / time.Second),
+		"min_interval_sec": int(usage.MinQuotaPollInterval / time.Second),
+		"max_interval_sec": int(usage.MaxQuotaPollInterval / time.Second),
+	}
+}
+
+// handleUsagePollSettings reports the station's current quota-poll choice.
+func (s *Server) handleUsagePollSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if s.UsageStore == nil {
+		nethttp.Error(w, "usage tracking is not enabled on this station", nethttp.StatusNotFound)
+		return
+	}
+	writeJSON(w, pollSettingsWire(usage.LoadPollSettings(s.UsageStore, usage.DefaultQuotaPollInterval)))
+}
+
+// handleSetUsagePollSettings persists a new choice and applies it to the
+// running poller. Out-of-range intervals are clamped rather than refused,
+// and the accepted value is echoed back so the caller can show what
+// actually took effect.
+func (s *Server) handleSetUsagePollSettings(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if s.UsageStore == nil {
+		nethttp.Error(w, "usage tracking is not enabled on this station", nethttp.StatusNotFound)
+		return
+	}
+	var req usagePollSettingsRequest
+	if err := decodeJSONBody(w, r, maxJSONBody, &req); err != nil {
+		return
+	}
+	if req.IntervalSec <= 0 {
+		nethttp.Error(w, "interval_sec must be a positive number of seconds", nethttp.StatusBadRequest)
+		return
+	}
+	saved, err := usage.SavePollSettings(s.UsageStore, usage.PollSettings{
+		Enabled:  req.Enabled,
+		Interval: time.Duration(req.IntervalSec) * time.Second,
+	})
+	if err != nil {
+		nethttp.Error(w, "could not save poll settings", nethttp.StatusInternalServerError)
+		return
+	}
+	// Persist first, then reconfigure: a poller running at a period that
+	// isn't on disk would silently revert on the next restart, which is
+	// the harder failure to notice.
+	s.UsageQuotaPoller.SetInterval(saved.Effective())
+	writeJSON(w, pollSettingsWire(saved))
 }

@@ -105,9 +105,14 @@ type Server struct {
 	// reck-statusline.sh shim. Nil when telemetry is disabled (e.g. the DB
 	// couldn't open) — the endpoint then authenticates but no-ops.
 	Usage *usage.Ingester
-	// UsageStore backs the read-only GET /usage/* routes. Nil when
-	// telemetry is disabled.
+	// UsageStore backs the GET /usage/* routes and persists the poll
+	// settings written by PUT /usage/poll-settings. Nil when telemetry is
+	// disabled.
 	UsageStore *usage.Store
+	// UsageQuotaPoller is the running quota poller, so a saved interval
+	// takes effect without a daemon restart. Nil when telemetry is
+	// disabled; the settings routes 404 in that case.
+	UsageQuotaPoller *usage.QuotaPoller
 }
 
 // hookNonceStore returns the server's nonce store, lazily creating one
@@ -160,6 +165,11 @@ func (s *Server) Router() *chi.Mux {
 	r.Get("/usage/summary", s.handleUsageSummary)
 	r.Get("/usage/series", s.handleUsageSeries)
 	r.Get("/usage/histogram", s.handleUsageHistogram)
+	r.Get("/usage/export.csv", s.handleUsageExport)
+	// The one mutable usage route: how often the station polls account
+	// quota, and whether it polls at all.
+	r.Get("/usage/poll-settings", s.handleUsagePollSettings)
+	r.Put("/usage/poll-settings", s.handleSetUsagePollSettings)
 	r.Post("/panes/{pane_id}/input", s.handlePaneInput)
 	r.Get("/panes/{pane_id}/output", s.handlePaneOutput)
 	// Image-paste upload endpoint (phase 1). Writes a posted

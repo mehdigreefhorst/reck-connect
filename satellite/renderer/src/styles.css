@@ -5018,6 +5018,83 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   margin-left: auto;
 }
 
+/* Export dialog ---------------------------------------------------------
+   Sits on the shared .confirm-overlay / .confirm-card chrome; only the
+   form layout is specific to it. */
+.usage-export-card {
+  width: min(30rem, 92vw);
+  text-align: left;
+}
+
+.usage-export-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem 0 0.5rem;
+}
+
+.usage-export-hint {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--app-text-muted);
+  /* Pulls the description up under its select, inside the form's row gap. */
+  margin-top: -0.35rem;
+}
+
+.usage-export-row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.usage-export-row .usage-export-field {
+  flex: 1;
+}
+
+.usage-export-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--claude-mid);
+}
+
+.usage-export-field select,
+.usage-export-field input[type="date"],
+.usage-export-field input[type="number"] {
+  font-family: inherit;
+  font-size: 0.8rem;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--app-text);
+  background: var(--app-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+  padding: 0.35rem 0.45rem;
+}
+
+.usage-export-field select:focus-visible,
+.usage-export-field input[type="date"]:focus-visible,
+.usage-export-field input[type="number"]:focus-visible {
+  outline: 2px solid var(--claude-orange);
+  outline-offset: 1px;
+}
+
+/* Reserved height so a message appearing doesn't shift the buttons out
+   from under the cursor mid-click. */
+.usage-export-status {
+  min-height: 1.15rem;
+  font-size: 0.78rem;
+  line-height: 1.15rem;
+  color: var(--app-text-muted);
+}
+
+.usage-export-status.is-error {
+  color: var(--wes-rose);
+}
+
 .usage-chip {
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -5140,7 +5217,16 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   font-family: var(--font-mono);
   font-size: 0.72rem;
   color: var(--app-text-dim);
-  min-height: 1.2em;
+  /* Pinned, not min-height: the box reserved while the readout is empty has
+     to equal the box a filled line occupies, and `line-height: normal` is
+     font-metric driven (~1.32em for JetBrains Mono). A min-height of 1.2em
+     is therefore smaller than the rendered line, so the row grew the instant
+     text landed — and .usage-overlay centres the card, so that fraction of a
+     pixel moved the whole modal on every hover. Stating both from one number
+     makes the reservation exact and font-independent; overflow: hidden below
+     means a taller line clips rather than resizing the card. */
+  line-height: 1.35;
+  height: 1.35em;
   margin-top: 0.4rem;
   white-space: nowrap;
   overflow: hidden;
@@ -5217,4 +5303,175 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
 .usage-close:hover {
   color: var(--claude-orange);
   background: var(--app-hover);
+}
+
+/* Chart actions (polling settings, export) — float at the plot area's
+   top-right corner rather than in the header, so they read as actions on
+   the diagram rather than as modal chrome. The right inset tracks the pct
+   axis, which usage-view.ts keeps in sync (the axis is only drawn while a
+   quota series is shown). pointer-events is off on the row and back on for
+   the buttons, so drag-to-zoom still works in the gaps between them — the
+   same arrangement .pane-controls uses. */
+.usage-chart-actions {
+  position: absolute;
+  /* uPlot's top padding — the plot area's first pixel. */
+  top: 12px;
+  right: var(--usage-plot-right, 48px);
+  z-index: 2;
+  display: flex;
+  gap: 0.25rem;
+  pointer-events: none;
+}
+
+.usage-chart-actions .icon-btn {
+  pointer-events: auto;
+  /* Restates .icon-btn's transition, which omits box-shadow — without it
+     the halo below snaps on instead of blooming. */
+  transition: background 0.15s var(--ease-smooth), color 0.15s var(--ease-smooth),
+    border-color 0.15s var(--ease-smooth), box-shadow 0.2s var(--ease-smooth);
+}
+
+/* Hover holds the resting ink and blooms an orange ring + glow instead of
+   shifting shade — the same lead-action cue as .pane-controls-history (the
+   History clock) and .pane-controls-mic. Scoped to the row so both buttons
+   are covered by one rule rather than a selector list that grows with each
+   action added. */
+.usage-chart-actions .icon-btn:hover {
+  background: transparent;
+  color: var(--claude-mid);
+  border-color: var(--claude-orange);
+  box-shadow: 0 0 0 1px rgba(212, 104, 58, 0.55), 0 0 14px 3px rgba(232, 135, 92, 0.5);
+}
+
+/* === Shared sliding switch (.slide-switch-*) ===
+   ONE two-position control with a thumb that slides between two named
+   options. Used twice by the quota polling dialog (usage-poll-dialog.ts):
+   polling Off/On, and the interval unit sec/min. Themed off the host's
+   --app-* / --claude-* variables so it reads native wherever it lands. */
+.slide-switch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.slide-switch-label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--claude-mid);
+}
+
+.slide-switch {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: stretch;
+  width: max-content;
+  min-width: 8.5rem;
+  padding: 2px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: var(--app-input-bg);
+}
+
+/* Behind the labels, so the selected one keeps its own ink rather than
+   being covered by the thumb. */
+.slide-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(50% - 2px);
+  height: calc(100% - 4px);
+  border-radius: 999px;
+  background: var(--claude-orange);
+  transition: transform 0.22s var(--ease-smooth);
+}
+
+.slide-switch-opt {
+  position: relative;
+  z-index: 1;
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0.3rem 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.5px;
+  color: var(--app-text-dim);
+  border-radius: 999px;
+  transition: color 0.15s var(--ease-smooth);
+}
+
+.slide-switch-opt.on {
+  color: var(--claude-cream);
+}
+
+.slide-switch-opt:focus-visible {
+  outline: 2px solid var(--claude-orange);
+  outline-offset: 2px;
+}
+
+.slide-switch-field.is-disabled {
+  opacity: 0.45;
+}
+
+.slide-switch-field.is-disabled .slide-switch-opt {
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-switch-thumb { transition: none; }
+}
+
+/* Quota polling dialog (#98) — sits on the shared .confirm-* chrome; only
+   the form layout is specific to it. */
+.usage-poll-card {
+  width: min(26rem, 92vw);
+  text-align: left;
+}
+
+.usage-poll-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1rem 0 0.6rem;
+}
+
+/* The dialog reserves two live regions (the summary and the save status),
+   so the default .confirm-actions gap on top of them leaves a hole. */
+.usage-poll-card .confirm-actions {
+  margin-top: 0.5rem;
+}
+
+.usage-poll-interval {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+  transition: opacity 0.15s var(--ease-smooth);
+}
+
+/* Off dims the row but keeps its value on screen, so it's clear that
+   turning polling back on resumes at the interval already chosen. */
+.usage-poll-interval.is-disabled {
+  opacity: 0.45;
+}
+
+.usage-poll-amount {
+  flex: 0 0 6rem;
+}
+
+.usage-poll-amount input[type="number"] {
+  width: 100%;
+}
+
+/* Reserved height, like .usage-export-status: the summary changes on every
+   keystroke, and a line that appears and disappears would shift the
+   buttons out from under the cursor mid-click. */
+.usage-poll-summary {
+  min-height: 2.4em;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--app-text-muted);
 }

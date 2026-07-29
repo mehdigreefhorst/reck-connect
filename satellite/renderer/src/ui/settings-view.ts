@@ -195,6 +195,7 @@ export async function renderSettings(
         </label>
         <p style="margin-top:0.25rem;margin-left:1.5rem;color:var(--text-secondary);font-size:0.85rem;">
           After switching projects the sidebar divider nudges out and back so terminals re-fit without a manual jiggle.
+          Switching tabs within a project always nudges — the re-fit is what sizes the terminal you just revealed — but the distance and duration below apply there too.
         </p>
         <label for="s-rail-wiggle-px">Wiggle distance (px)</label>
         <input id="s-rail-wiggle-px" type="number" min="${MIN_WIGGLE_PX}" max="${MAX_WIGGLE_PX}" value="${savedRailWiggle.pixels}" placeholder="${DEFAULT_RAIL_WIGGLE.pixels}" />

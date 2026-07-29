@@ -352,6 +352,9 @@ func main() {
 	var usageBackfiller *usage.Backfiller
 	var usageQuotaPoller *usage.QuotaPoller
 	var usagePlanProbe *usage.PlanProbe
+	// The user's saved poll choice, or the flag for a station that has
+	// never had one. Resolved once here and handed to the runner below.
+	pollSettings := usage.PollSettings{Enabled: true, Interval: *quotaPollInterval}
 	if usageDir := usage.DefaultDir(); usageDir != "" {
 		if store, err := usage.Open(usageDir); err != nil {
 			logger.Warn("usage telemetry unavailable", "err", err, "dir", usageDir)
@@ -361,7 +364,9 @@ func main() {
 			usageBackfiller = usage.NewBackfiller(store, "")
 			usageQuotaPoller = usage.NewQuotaPoller(store)
 			usagePlanProbe = usage.NewPlanProbe(store)
-			logger.Info("usage telemetry ready", "dir", usageDir, "quota_poll", *quotaPollInterval)
+			pollSettings = usage.LoadPollSettings(store, *quotaPollInterval)
+			logger.Info("usage telemetry ready", "dir", usageDir,
+				"quota_poll", pollSettings.Effective())
 		}
 	}
 
@@ -383,6 +388,9 @@ func main() {
 		CodexAvailable: len(codexCmd) > 0,
 		Usage:          usageIngester,
 		UsageStore:     usageStore,
+		// So PUT /usage/poll-settings reaches the running poller and a new
+		// interval takes effect without a restart.
+		UsageQuotaPoller: usageQuotaPoller,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -417,8 +425,12 @@ func main() {
 	// this the series goes blind whenever panes are idle, quota is spent
 	// elsewhere, or a window resets. Unlike the sampler this DOES write
 	// unconditionally, so a gap means the poller was down.
+	//
+	// The period is the user's saved choice (PUT /usage/poll-settings), and
+	// the runner re-reads it while running, so this starting value is only
+	// what it does until someone says otherwise.
 	startBackground(func(ctx context.Context) {
-		usage.RunQuotaPoller(ctx, usageQuotaPoller, *quotaPollInterval)
+		usage.RunQuotaPoller(ctx, usageQuotaPoller, pollSettings.Effective())
 	})
 	// Record the account's subscription tier (change-only), so quota
 	// percentages can be read against the plan they are a percentage of.

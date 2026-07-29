@@ -49,6 +49,12 @@ declare global {
       };
       dialog: {
         pickFolder: () => Promise<string | null>;
+        /** Native save dialog + write, for the usage-view CSV export.
+         *  `canceled` means the user dismissed the dialog — not an error. */
+        saveCsv: (
+          filename: string,
+          content: string,
+        ) => Promise<{ ok: boolean; canceled: boolean; path?: string; error?: string }>;
       };
       shell: {
         openPath(slug: string): Promise<{ ok: boolean; error?: string }>;

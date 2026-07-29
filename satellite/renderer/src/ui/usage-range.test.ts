@@ -21,15 +21,27 @@ const TUE = new Date(2026, 6, 14, 15, 30);
 
 describe("bin widths", () => {
   it("defaults per view", () => {
-    expect(defaultBinFor("day")).toBe("1h");
-    expect(defaultBinFor("week")).toBe("1d");
-    expect(defaultBinFor("month")).toBe("1d");
+    expect(defaultBinFor("day")).toBe("5m");
+    expect(defaultBinFor("week")).toBe("30m");
+    expect(defaultBinFor("month")).toBe("4h");
     expect(defaultBinFor("year")).toBe("month");
   });
 
   it("every option list contains its default", () => {
     for (const g of ["day", "week", "month", "year"] as const) {
       expect(BIN_OPTIONS[g]).toContain(defaultBinFor(g));
+    }
+  });
+
+  // The defaults are meant to be fine enough to show burst shape but
+  // still land the request well inside the daemon's 12000-bin cap.
+  it("keeps each default between the curve threshold and the daemon cap", () => {
+    const periodSec = { day: 86400, week: 7 * 86400, month: 31 * 86400 };
+    for (const g of ["day", "week", "month"] as const) {
+      const sec = bucketSeconds(defaultBinFor(g))!;
+      const bins = periodSec[g] / sec;
+      expect(bins).toBeGreaterThan(96); // renders as the area curve
+      expect(bins).toBeLessThanOrEqual(2016);
     }
   });
 

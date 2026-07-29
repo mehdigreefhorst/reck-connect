@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,10 +49,14 @@ const (
 	// DefaultUsageEndpoint is the account quota endpoint.
 	DefaultUsageEndpoint = "https://api.anthropic.com/api/oauth/usage"
 
-	// DefaultQuotaPollInterval is how often to read account quota. Five
-	// minutes is fine-grained enough to catch a window reset promptly
-	// without being a meaningful load on anyone.
-	DefaultQuotaPollInterval = 5 * time.Minute
+	// DefaultQuotaPollInterval is how often to read account quota on a
+	// station that has never been told otherwise. A minute keeps a 5h
+	// window's approach to its limit legible in close to real time, which
+	// is when anyone actually looks at this data; five minutes rounded
+	// that off enough to be frustrating. Users can move it anywhere
+	// between MinQuotaPollInterval and MaxQuotaPollInterval, or switch
+	// polling off — see poll_settings.go.
+	DefaultQuotaPollInterval = time.Minute
 
 	// quotaPollTimeout bounds a single request. Claude Code uses 5s for
 	// the same call; a poller that hangs is worse than one that misses.
@@ -77,6 +82,15 @@ type QuotaPoller struct {
 	now      func() time.Time
 	logger   *slog.Logger
 	state    changeLogger
+
+	// interval is the live poll period in nanoseconds, 0 meaning "off". An
+	// atomic rather than a mutex because the only contention is one HTTP
+	// handler writing and one runner reading.
+	interval atomic.Int64
+	// wake nudges the runner to re-read interval. Buffered(1) and sent to
+	// non-blockingly: a pending nudge already means "re-read", so a second
+	// one carries no extra information and must never block the caller.
+	wake chan struct{}
 }
 
 // NewQuotaPoller constructs a poller against the default endpoint and the
@@ -92,7 +106,36 @@ func NewQuotaPoller(store *Store) *QuotaPoller {
 		client:   &http.Client{Timeout: quotaPollTimeout},
 		now:      func() time.Time { return time.Now().UTC() },
 		logger:   slog.Default(),
+		wake:     make(chan struct{}, 1),
 	}
+}
+
+// SetInterval changes the live poll period; d <= 0 stops polling until a
+// later call turns it back on. Safe before or after RunQuotaPoller starts,
+// and safe on a poller with no runner — the value is simply read when one
+// arrives.
+func (p *QuotaPoller) SetInterval(d time.Duration) {
+	if p == nil {
+		return
+	}
+	p.interval.Store(int64(d))
+	// Non-blocking: a full buffer already means "re-read on the next turn
+	// of the loop", and a nil channel (a poller built by a test literal)
+	// falls through here rather than deadlocking.
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Interval reports the period the poller is currently running at, 0
+// meaning polling is off. This is what is actually live, which can differ
+// from what is stored if a write half-succeeded — worth being able to ask.
+func (p *QuotaPoller) Interval() time.Duration {
+	if p == nil {
+		return 0
+	}
+	return time.Duration(p.interval.Load())
 }
 
 // Poll performs one read and, when the response carried at least one
@@ -194,6 +237,10 @@ func (p *QuotaPoller) sampleFrom(body []byte, now time.Time) (QuotaSample, bool,
 		SevenDayOpus:   windowToBucket(w.SevenDayOpus),
 		SevenDaySonnet: windowToBucket(w.SevenDaySonnet),
 	}
+	// Around a rollover the endpoint can still answer with the window
+	// that just closed; that reading belongs to the old window, not to
+	// now. See quota_stale.go.
+	qs = dropExpiredWindows(qs, now)
 	if qs.FiveHour.Pct == nil && qs.SevenDay.Pct == nil &&
 		qs.SevenDayOpus.Pct == nil && qs.SevenDaySonnet.Pct == nil {
 		return QuotaSample{}, false, nil
@@ -220,29 +267,68 @@ func windowToBucket(w *usageWindow) Bucket {
 	return b
 }
 
-// RunQuotaPoller polls account quota every interval until ctx is
-// cancelled. Mirrors RunSampler/RunBackfiller: safe with a nil poller so
-// the daemon can start it unconditionally, and interval <= 0 disables
-// polling entirely rather than spinning.
+// RunQuotaPoller polls account quota until ctx is cancelled, at whatever
+// period SetInterval most recently named (starting from interval). Safe
+// with a nil poller so the daemon can start it unconditionally, and an
+// interval <= 0 means "don't poll" rather than spinning.
+//
+// This no longer mirrors RunSampler/RunPlanProbe, which still take their
+// period once and keep it. The difference is deliberate: the quota period
+// is the only one a user can change from the UI (see poll_settings.go), so
+// it has to be re-readable while running, and its "off" state has to be a
+// state rather than the one-way <-ctx.Done() park the others use.
 //
 // Every failure is logged and swallowed. A poller that can take the daemon
 // down is a worse bug than one that misses a sample.
 func RunQuotaPoller(ctx context.Context, p *QuotaPoller, interval time.Duration) {
-	if p == nil || interval <= 0 {
+	if p == nil {
 		<-ctx.Done()
 		return
 	}
-	// Poll once at startup so a restart doesn't leave a hole the width of
-	// one interval.
-	p.pollOnce(ctx)
+	p.interval.Store(int64(interval))
 
-	t := time.NewTicker(interval)
-	defer t.Stop()
+	// A nil tick channel blocks forever in select, which is how "polling
+	// off" parks without burning a goroutine on a spin — and unlike a
+	// <-ctx.Done() park it can be armed again when polling comes back on.
+	var ticker *time.Ticker
+	var tick <-chan time.Time
+	armed := time.Duration(-1)
+
+	arm := func() {
+		d := time.Duration(p.interval.Load())
+		if d == armed {
+			return
+		}
+		armed = d
+		if ticker != nil {
+			ticker.Stop()
+			ticker, tick = nil, nil
+		}
+		if d <= 0 {
+			return
+		}
+		ticker = time.NewTicker(d)
+		tick = ticker.C
+		// Poll on arming: at startup so a restart doesn't leave a hole the
+		// width of one interval, and on a change so the effect of saving a
+		// new interval is visible now rather than one interval from now.
+		p.pollOnce(ctx)
+	}
+
+	arm()
+	defer func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-p.wake:
+			arm()
+		case <-tick:
 			p.pollOnce(ctx)
 		}
 	}

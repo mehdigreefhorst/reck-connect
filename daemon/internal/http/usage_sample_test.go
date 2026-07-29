@@ -6,6 +6,7 @@ import (
 	"io"
 	nethttp "net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -23,14 +24,21 @@ func attachUsage(t *testing.T, s *Server) *usage.Store {
 	return store
 }
 
+// statuslineBody is a representative Claude Code statusline payload. The
+// resets_at values are relative to now on purpose: the ingester drops
+// buckets whose window has already reset (see usage/quota_stale.go), so a
+// fixed past timestamp would make this fixture decay into a sample that
+// is correctly rejected.
 func statuslineBody(projectID string) []byte {
+	fiveHour := time.Now().Add(3 * time.Hour).Unix()
+	sevenDay := time.Now().Add(5 * 24 * time.Hour).Unix()
 	return []byte(`{"project_id":"` + projectID + `",
 	  "session_id":"sess-9","model":{"id":"claude-opus-4-8","display_name":"Opus"},
 	  "context_window":{"total_input_tokens":40000,"context_window_size":200000,"used_percentage":20,
 	    "current_usage":{"input_tokens":1200,"output_tokens":900,
 	      "cache_creation_input_tokens":5000,"cache_read_input_tokens":33800}},
-	  "rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1738425600},
-	    "seven_day":{"used_percentage":41.2,"resets_at":1738857600}}}`)
+	  "rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":` + strconv.FormatInt(fiveHour, 10) + `},
+	    "seven_day":{"used_percentage":41.2,"resets_at":` + strconv.FormatInt(sevenDay, 10) + `}}}`)
 }
 
 func TestUsageSample_validSignatureIngests(t *testing.T) {

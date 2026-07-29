@@ -59,8 +59,14 @@ function synthHistogram(params: UsageHistogramParams): UsageHistogramResponse {
   const sec = bucketSeconds(params.bucket);
   const bins: UsageHistogramBin[] = [];
   if (sec !== null) {
-    for (let t = Math.floor(params.since / sec) * sec; t < params.until; t += sec) {
-      bins.push(makeBin(t, sec));
+    // Align to the caller's local midnight, exactly as the daemon does
+    // (binStarts in daemon/internal/usage/histogram.go). Aligning to
+    // the UTC epoch instead is invisible at widths that divide an hour
+    // but puts 4-hour bins two hours off local midnight in UTC+2 — and
+    // the day-boundary axis ticks would then sit inside a bin.
+    const off = (params.tzOffsetMin ?? 0) * 60;
+    for (let k = Math.floor((params.since + off) / sec); k * sec - off < params.until; k++) {
+      bins.push(makeBin(k * sec - off, sec));
     }
   } else {
     // Calendar months in the local zone, matching the daemon.
@@ -89,6 +95,10 @@ function synthHistogram(params: UsageHistogramParams): UsageHistogramResponse {
   return { enabled: true, bucket: params.bucket, since: params.since, until: params.until, bins };
 }
 
+// Poll settings live in memory for the harness, so the gear dialog can be
+// opened, edited and saved without a daemon.
+let pollSettings = { enabled: true, intervalSec: 60, minIntervalSec: 5, maxIntervalSec: 86_400 };
+
 const stubApi = {
   getUsageHistogram: async (params: UsageHistogramParams) => synthHistogram(params),
   listProjects: async () => ({
@@ -97,6 +107,17 @@ const stubApi = {
       { id: "tokenwarden", name: "tokenwarden" },
     ],
   }),
+  getUsagePollSettings: async () => pollSettings,
+  putUsagePollSettings: async (next: { enabled: boolean; intervalSec: number }) => {
+    // Clamp like the daemon does, so the harness exercises the same
+    // "echo back what was accepted" path the real client sees.
+    const intervalSec = Math.min(
+      Math.max(next.intervalSec, pollSettings.minIntervalSec),
+      pollSettings.maxIntervalSec,
+    );
+    pollSettings = { ...pollSettings, enabled: next.enabled, intervalSec };
+    return pollSettings;
+  },
 } as unknown as ApiClient;
 
 document.documentElement.setAttribute(

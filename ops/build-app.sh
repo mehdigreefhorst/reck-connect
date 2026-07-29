@@ -2,16 +2,16 @@
 # build-app.sh — one-shot Satellite app builder.
 #
 # Sources ~/.config/reck/satellite.env, exports RECK_STATION_ROOT and
-# the matching VITE_* mirror, runs `pnpm install && pnpm dist`, and
+# the matching VITE_* mirror, runs `pnpm install && pnpm package`, and
 # (optionally) copies the built bundle into /Applications.
 #
 # Why a wrapper exists: the build needs the same value injected in
 # three different places — Vite's renderer-side `import.meta.env.VITE_*`
 # (compiled into the bundle), the main process's runtime `process.env`,
 # and electron-builder's `extendInfo.LSEnvironment` block (baked into
-# Info.plist via `${env.RECK_STATION_ROOT}` substitution). Running
-# `pnpm dist` by hand without setting all of these correctly is the
-# easy way to ship a broken .app, so this script does it for you.
+# Info.plist via `${env.RECK_STATION_ROOT}` substitution). Running the
+# build by hand without setting all of these correctly is the easy way
+# to ship a broken .app, so this script does it for you.
 #
 # Usage:
 #   ./ops/build-app.sh                  # build only, leave .app in release/
@@ -65,18 +65,19 @@ set +a
 # value from RECK_STATION_ROOT so the .env stays single-source.
 export VITE_RECK_STATION_ROOT="$RECK_STATION_ROOT"
 
-# pnpm 11 requires interactive `pnpm approve-builds` even when
-# package.json's `pnpm.onlyBuiltDependencies` lists the relevant
-# packages. pnpm 10 respects the package.json field directly. Prefer
-# pnpm 10 from `brew install pnpm@10` if available; otherwise use
-# whatever `pnpm` resolves to. Override by exporting PNPM_BIN.
+# Use whatever `pnpm` is on PATH. This used to prefer a pinned pnpm@10,
+# because pnpm 11 ignores package.json's `pnpm.onlyBuiltDependencies`
+# and would stop for an interactive `pnpm approve-builds`. That was
+# fixed by moving the allowlist to satellite/pnpm-workspace.yaml
+# (`allowBuilds`), which pnpm 11 reads directly — so the pin is stale,
+# and now does harm: pnpm 10 does not recognise a node_modules laid down
+# by pnpm 11 and aborts trying to purge it, non-interactively
+# (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY). Override with PNPM_BIN.
 if [[ -z "${PNPM_BIN:-}" ]]; then
-  if [[ -x /opt/homebrew/opt/pnpm@10/bin/pnpm ]]; then
-    PNPM_BIN=/opt/homebrew/opt/pnpm@10/bin/pnpm
-  elif command -v pnpm >/dev/null 2>&1; then
+  if command -v pnpm >/dev/null 2>&1; then
     PNPM_BIN=$(command -v pnpm)
   else
-    echo "ERROR: no pnpm on PATH. Install via 'brew install pnpm@10'." >&2
+    echo "ERROR: no pnpm on PATH. Install via 'brew install pnpm'." >&2
     exit 1
   fi
 fi
@@ -87,7 +88,13 @@ echo "==> VITE_RECK_STATION_ROOT=$VITE_RECK_STATION_ROOT"
 
 cd "$SATELLITE_DIR"
 "$PNPM_BIN" install
-"$PNPM_BIN" dist
+# `package`, not `dist`: dist builds a DMG, whose codesign step fails on
+# macOS 26 with a libexpat ABI clash. `package` is the same build with
+# electron-builder's --dir, producing the .app on its own — which is all
+# this script installs. (The Makefile and INSTALL.md switched in #58;
+# this script was missed.) Note `pnpm dist -- --dir` is NOT a substitute:
+# pnpm 11 swallows the `--` and electron-builder still builds the DMG.
+"$PNPM_BIN" package
 
 BUILT_APP="$SATELLITE_DIR/release/mac-arm64/$APP_NAME.app"
 if [[ ! -d "$BUILT_APP" ]]; then

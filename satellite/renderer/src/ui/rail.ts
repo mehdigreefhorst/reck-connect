@@ -29,6 +29,13 @@ export interface RailProps {
    */
   onExpand?: () => void;
   /**
+   * Collapse the rail to mini. Fired by an empty-area click while the rail
+   * is expanded — the mirror of `onExpand`'s empty-area click in mini mode,
+   * so a click on the sidebar toggles it either way. Project rows are NOT
+   * part of this: clicking a row while expanded only selects.
+   */
+  onCollapse?: () => void;
+  /**
    * an earlier release — return paneIds in the project's saved layout order
    * (left-to-right, top-to-bottom for stacked splits, same flatten as
    * the tab bar uses). Returning `null` skips reorder for that project
@@ -256,13 +263,27 @@ export class Rail {
       "click",
       () => this.props.onExpand?.(),
     );
-    // In mini mode the whole rail is a big expand target: clicking any
-    // empty (non-row, non-button) area springs it open. Rows and buttons
-    // keep their own handlers.
+    // The whole rail is one big mode-toggle target: clicking any empty
+    // (non-row, non-button, non-scrollbar) area springs mini open and
+    // retracts expanded back to mini. Rows and buttons keep their own
+    // handlers — selecting a project never changes the mode.
     this.props.root.addEventListener("click", (e) => {
-      if (!this.props.root.classList.contains("rail-mini")) return;
-      if ((e.target as HTMLElement).closest(".rail-item, button")) return;
-      this.props.onExpand?.();
+      // `.reck-scrollbar` matters only in expanded mode, where the list
+      // can actually overflow: releasing a scrollbar drag lands a click
+      // on the thumb, which is inside the rail root but outside any row
+      // or button, and must not retract the rail.
+      if ((e.target as HTMLElement).closest(".rail-item, button, .reck-scrollbar")) return;
+      // Likewise a click that ends a text drag-selection (the "Projects"
+      // header, the footer count) is a selection gesture, not a toggle.
+      // Scoped to a selection anchored INSIDE the rail — a live selection
+      // elsewhere in the app (transcript, markdown viewer) is unrelated
+      // and must not swallow the click.
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && sel.anchorNode && this.props.root.contains(sel.anchorNode)) {
+        return;
+      }
+      if (this.props.root.classList.contains("rail-mini")) this.props.onExpand?.();
+      else this.props.onCollapse?.();
     });
     (this.props.root.querySelector("#rail-archive-header") as HTMLElement).addEventListener(
       "click",

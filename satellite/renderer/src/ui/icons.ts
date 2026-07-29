@@ -32,6 +32,12 @@ export const iconChart = base(
   `<line x1="2.5" y1="13.5" x2="13.5" y2="13.5"/><rect x="3.5" y="8.5" width="2.5" height="5" rx="0.5"/><rect x="7" y="5" width="2.5" height="8.5" rx="0.5"/><rect x="10.5" y="7" width="2.5" height="6.5" rx="0.5"/>`,
 );
 
+// Tray-with-down-arrow: the download affordance in the usage view's
+// header. Drawn on the same 16-unit grid and stroke weight as the rest.
+export const iconDownload = base(
+  `<path d="M8 2.5v7.5M5 7.5L8 10.5l3-3"/><path d="M2.5 11v1.5a1 1 0 001 1h9a1 1 0 001-1V11"/>`,
+);
+
 export const iconClear = base(
   `<path d="M3 5h10M5 5V3.5a1 1 0 011-1h4a1 1 0 011 1V5M4.5 5l.7 8a1 1 0 001 .9h3.6a1 1 0 001-.9l.7-8"/>`,
 );
@@ -58,5 +64,13 @@ export const iconDetach = base(
 // Claude transcript overlay.
 export const iconHistory = base(
   `<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2.2 1.6"/>`,
+);
+
+// Cog for the usage view's polling settings (#98). Six teeth, not eight:
+// at 16px on a 1.5 stroke, eight stubs around a small hub read as a sun
+// (and would be mistaken for the theme toggle). A r=4 body with teeth long
+// enough to be teeth keeps it unambiguous at this size.
+export const iconGear = base(
+  `<circle cx="8" cy="8" r="4"/><circle cx="8" cy="8" r="1.5"/><path d="M12 8h2.2M3.8 8H1.6M10 11.46l1.1 1.91M5.9 4.54L4.8 2.63M6 11.46l-1.1 1.91M10.1 4.54l1.1-1.91"/>`,
 );
 

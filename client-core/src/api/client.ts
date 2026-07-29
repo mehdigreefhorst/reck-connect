@@ -104,6 +104,32 @@ export interface UsageHistogramResponse {
 }
 
 
+/** Which table a CSV export draws from. `binned` is the plotted series
+ * (one row per bin); `turns` and `quota` are raw, unbinned rows. */
+export type UsageExportDataset = "binned" | "turns" | "quota";
+
+/** Caller-side params for `getUsageExportCsv`. `bucket` is required for
+ * `binned` and ignored otherwise; `projectId` applies to `binned` and
+ * `turns` (quota is account-level and ignores it). */
+export interface UsageExportParams {
+  dataset: UsageExportDataset;
+  since: number; // unix seconds, inclusive
+  until: number; // unix seconds, exclusive
+  bucket?: UsageHistogramBucket;
+  projectId?: string;
+  tzOffsetMin?: number;
+}
+
+/** A completed export: the CSV body and the daemon's suggested filename. */
+export interface UsageExportResult {
+  csv: string;
+  filename: string;
+}
+
+/** Exports can span a year of raw rows, so they get a longer ceiling
+ * than the small JSON reads the rest of this client makes. */
+const USAGE_EXPORT_TIMEOUT_MS = 120_000;
+
 /** Caller-side params for `getUsageHistogram`. `tzOffsetMin` is minutes
  * east of UTC (i.e. `-new Date().getTimezoneOffset()`), so day/month
  * bins align to the caller's local midnight rather than the station's. */
@@ -113,6 +139,39 @@ export interface UsageHistogramParams {
   until: number; // unix seconds, exclusive
   projectId?: string;
   tzOffsetMin?: number;
+}
+
+/** How often the station polls account quota. `intervalSec` is kept even
+ * while `enabled` is false, so switching polling off and back on restores
+ * the period the user chose rather than resetting it to a default. */
+export interface UsagePollSettings {
+  enabled: boolean;
+  intervalSec: number;
+}
+
+/** `GET`/`PUT /usage/poll-settings`. The daemon reports the bounds it
+ * enforces alongside the value, so callers can validate against the real
+ * clamp rather than keeping their own copy of the numbers in sync. */
+export interface UsagePollSettingsResponse extends UsagePollSettings {
+  minIntervalSec: number;
+  maxIntervalSec: number;
+}
+
+/** Wire shape of the above, snake_case as the daemon sends it. */
+interface UsagePollSettingsWire {
+  enabled: boolean;
+  interval_sec: number;
+  min_interval_sec: number;
+  max_interval_sec: number;
+}
+
+function pollSettingsFromWire(w: UsagePollSettingsWire): UsagePollSettingsResponse {
+  return {
+    enabled: w.enabled,
+    intervalSec: w.interval_sec,
+    minIntervalSec: w.min_interval_sec,
+    maxIntervalSec: w.max_interval_sec,
+  };
 }
 
 /**
@@ -192,6 +251,65 @@ export class ApiClient {
     return (await res.json()) as T;
   }
 
+  /**
+   * Like `fetch<T>` but for endpoints that legitimately return something
+   * other than JSON. Shares the base URL, bearer token, and error
+   * handling; skips the content-type guard, since the whole point is a
+   * non-JSON body. Returns the raw text plus the response headers so the
+   * caller can read things like a server-suggested filename.
+   */
+  private async fetchText(
+    path: string,
+    init?: RequestInit,
+  ): Promise<{ text: string; headers: Headers }> {
+    const headers: Record<string, string> = {
+      ...((init?.headers as Record<string, string>) ?? {}),
+    };
+    if (this.config.token) {
+      headers["Authorization"] = "Bearer " + this.config.token;
+    }
+    const signal = init?.signal ?? AbortSignal.timeout(this.config.timeoutMs ?? 5000);
+    const res = await fetch(this.config.baseUrl + path, { ...init, headers, signal });
+    if (!res.ok) {
+      throw new HttpError(res.status, res.statusText, await res.text());
+    }
+    return { text: await res.text(), headers: res.headers };
+  }
+
+  /**
+   * Export usage data as CSV (issue #95). Returns the file body and the
+   * filename the daemon suggests, which encodes the dataset and range so
+   * a saved file is self-describing.
+   *
+   * Uses a longer timeout than the default: an export can cover a year
+   * of raw rows, which is a different shape of request from the small
+   * JSON reads the rest of this client makes.
+   */
+  async getUsageExportCsv(
+    params: UsageExportParams,
+    init?: RequestInit,
+  ): Promise<UsageExportResult> {
+    const q = new URLSearchParams({
+      dataset: params.dataset,
+      since: String(params.since),
+      until: String(params.until),
+    });
+    if (params.bucket) q.set("bucket", params.bucket);
+    if (params.projectId) q.set("project_id", params.projectId);
+    if (params.tzOffsetMin !== undefined) {
+      q.set("tz_offset_min", String(params.tzOffsetMin));
+    }
+    const signal = init?.signal ?? AbortSignal.timeout(USAGE_EXPORT_TIMEOUT_MS);
+    const { text, headers } = await this.fetchText(`/usage/export.csv?${q}`, {
+      ...init,
+      signal,
+    });
+    return {
+      csv: text,
+      filename: headers.get("X-Reck-Export-Filename") || "reck-usage.csv",
+    };
+  }
+
   health(init?: RequestInit) {
     return this.fetch<HealthResponse>("/health", init);
   }
@@ -255,6 +373,34 @@ export class ApiClient {
     return this.fetch<UsageHistogramResponse>(`/usage/histogram?${q}`, init);
   }
 
+  /**
+   * How often the station polls account quota (issue #98). Throws
+   * `HttpError` with status 404 when telemetry is disabled on the station
+   * — this route deliberately 404s rather than returning the
+   * `{enabled: false}` body the other usage reads use, because `enabled`
+   * here means "polling is on" and the two would be indistinguishable.
+   */
+  async getUsagePollSettings(init?: RequestInit): Promise<UsagePollSettingsResponse> {
+    return pollSettingsFromWire(
+      await this.fetch<UsagePollSettingsWire>("/usage/poll-settings", init),
+    );
+  }
+
+  /**
+   * Saves the poll settings and applies them to the running poller — no
+   * daemon restart. An interval outside the station's bounds is clamped
+   * rather than refused, so the returned value is the one that actually
+   * took effect and is what callers should render.
+   */
+  async putUsagePollSettings(settings: UsagePollSettings): Promise<UsagePollSettingsResponse> {
+    const body = { enabled: settings.enabled, interval_sec: settings.intervalSec };
+    return pollSettingsFromWire(
+      await this.fetch<UsagePollSettingsWire>("/usage/poll-settings", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
+    );
+  }
 
   createPane(
     projectId: string,
