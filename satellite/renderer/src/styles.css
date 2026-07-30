@@ -3059,6 +3059,37 @@ html, body, #app {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
 }
 
+/* Image lightbox. Positioned against `.file-viewer-body` (which is
+   `position: relative`) rather than the viewport, so it covers the reading
+   column and leaves the popup header — with its close button and mode toggle —
+   reachable. `position: sticky` on a `position: absolute` overlay would fight
+   the body's scroll, so it is pinned with `fixed`-like insets on the scroller
+   and the body's own scrolling is what it covers. */
+.file-viewer-body .reck-lightbox {
+  position: fixed;
+  inset: 38px 0 0 0; /* below the 38px header */
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--app-bg) 88%, transparent);
+  backdrop-filter: blur(2px);
+  cursor: zoom-out;
+}
+.file-viewer-body .reck-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: default;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 45%);
+}
+/* Rendered images advertise that they can be opened. */
+.file-viewer-body > p > img,
+.file-viewer-body > img {
+  cursor: zoom-in;
+}
+
 /* Mermaid diagrams. The ```mermaid fence is unwrapped out of its <pre><code>
    before rendering (see markdownEnhancers.ts) precisely so the SVG does NOT
    inherit the code-block treatment below — a diagram is a figure, not source.

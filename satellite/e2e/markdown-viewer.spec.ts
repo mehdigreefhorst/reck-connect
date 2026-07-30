@@ -223,12 +223,21 @@ test.describe("TOC sidebar", () => {
     await page.locator(".file-viewer-toc-toggle-slot button").click();
     await expect(page.locator(".file-viewer-toc")).toBeVisible();
 
+    // Scroll a specific heading to the top of the scroller rather than
+    // slamming to the bottom: `rootMargin: "0px 0px -70% 0px"` means only the
+    // top 30% of the viewport counts as "current", so at scrollHeight every
+    // heading can sit above the band and nothing is active — which says
+    // nothing about whether scroll-spy works.
     await page.locator(".file-viewer-body").evaluate((el) => {
-      el.scrollTop = el.scrollHeight;
+      const target = el.querySelector<HTMLElement>("#math")!;
+      el.scrollTop = target.offsetTop - el.offsetTop;
     });
     await expect
       .poll(async () => page.locator(".file-viewer-toc a.active").count())
       .toBeGreaterThan(0);
+    await expect(page.locator(".file-viewer-toc a.active").first()).toHaveText(
+      /Math/,
+    );
   });
 
   test("its open state survives a reload", async ({ page }) => {
@@ -251,6 +260,77 @@ test.describe("TOC sidebar", () => {
       .locator(".file-viewer-content")
       .evaluate((el) => getComputedStyle(el).gridTemplateColumns);
     expect(cols.startsWith("0px")).toBe(true);
+  });
+});
+
+test.describe("image lightbox", () => {
+  test("a plain click opens the image larger than the reading column", async ({
+    page,
+  }) => {
+    // Popup-shaped viewport on purpose. The in-flow image is clamped by the
+    // reading column's width AND its 32px side padding, so on a narrow window
+    // the overlay is a real gain. On a wide, short window it need not be —
+    // `object-fit: contain` fits to the shorter axis, so a 16:9 image in a
+    // 1280x720 window renders *narrower* in the overlay than in flow. The
+    // feature is for popups, so measure at popup proportions.
+    await page.setViewportSize({ width: 720, height: 1000 });
+    await openHarness(page);
+
+    const img = page.locator(".file-viewer-body img").first();
+    const thumb = (await img.boundingBox())!;
+
+    await img.click();
+
+    const overlay = page.locator(".reck-lightbox");
+    await expect(overlay).toBeVisible();
+    const full = page.locator(".reck-lightbox img");
+    await expect(full).toBeVisible();
+    expect((await full.boundingBox())!.width).toBeGreaterThan(thumb.width);
+  });
+
+  test("Escape closes it", async ({ page }) => {
+    await openHarness(page);
+    await page.locator(".file-viewer-body img").first().click();
+    await expect(page.locator(".reck-lightbox")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".reck-lightbox")).toHaveCount(0);
+  });
+
+  test("a backdrop click closes it, a click on the image does not", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    await page.locator(".file-viewer-body img").first().click();
+    const overlay = page.locator(".reck-lightbox");
+    await expect(overlay).toBeVisible();
+
+    // Corner of the overlay, well clear of the centred image.
+    const box = (await overlay.boundingBox())!;
+    await page.mouse.click(box.x + 6, box.y + 6);
+    await expect(overlay).toHaveCount(0);
+
+    await page.locator(".file-viewer-body img").first().click();
+    await page.locator(".reck-lightbox img").click();
+    await expect(page.locator(".reck-lightbox")).toBeVisible();
+  });
+
+  test("Cmd+click on an image does not open it", async ({ page }) => {
+    await openHarness(page);
+    await page
+      .locator(".file-viewer-body img")
+      .first()
+      .click({ modifiers: ["Meta"] });
+    await expect(page.locator(".reck-lightbox")).toHaveCount(0);
+  });
+
+  test("leaves the header reachable so the popup can still be closed", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    await page.locator(".file-viewer-body img").first().click();
+    const overlay = (await page.locator(".reck-lightbox").boundingBox())!;
+    const header = (await page.locator(".file-viewer-header").boundingBox())!;
+    expect(overlay.y).toBeGreaterThanOrEqual(header.y + header.height - 1);
   });
 });
 
