@@ -1,11 +1,16 @@
 import { test, expect, type Page } from "@playwright/test";
 
+import { E2E_ORIGIN } from "../playwright.config";
+
 // Browser-level tests of the usage overlay against the synthetic-API
 // harness (renderer/usage-harness.html — no daemon needed). Covers the
 // two field reports from v1: the card growing on hover, and the fixed
 // bin widths. Screenshots land in e2e/artifacts/ for visual review.
 
-const HARNESS = "http://localhost:5173/usage-harness.html";
+// Origin comes from the config, not a literal: 5173 is contested (see the
+// comment there), and a hardcoded port meant RECK_E2E_PORT moved the dev
+// server while this file kept pointing at whatever still owned 5173.
+const HARNESS = `${E2E_ORIGIN}/usage-harness.html`;
 
 async function openHarness(page: Page, theme: "light" | "dark" = "light") {
   await page.goto(`${HARNESS}?theme=${theme}`);
@@ -383,5 +388,73 @@ test.describe("usage view — no series selected", () => {
     await expect(page.locator(".usage-card")).toBeVisible();
     await expect(page.locator(".usage-no-series")).toBeVisible();
     await page.screenshot({ path: "e2e/artifacts/usage-no-series.png" });
+  });
+});
+
+// The export dialog had no browser coverage at all, which is how a CSS rule
+// that made two of its controls inert shipped unnoticed: `field.hidden = true`
+// was a no-op because the author-origin `.usage-export-field { display: flex }`
+// beats the user-agent `[hidden]` rule on origin. See issue #131.
+test.describe("export dialog", () => {
+  async function openExport(page: Page) {
+    await openHarness(page);
+    await page.locator(".usage-download").click();
+    const card = page.locator(".usage-export-card");
+    await expect(card).toBeVisible();
+    // .confirm-card runs `confirm-pop` (a 0.16s scale) on open, and
+    // boundingBox() reports the TRANSFORMED rect — so measuring before it
+    // settles reads a card that is still ~1.3% small, and every element
+    // inside it grows uniformly between samples. Nothing to do with layout.
+    await card.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+  }
+
+  const dataset = (page: Page) => page.locator(".usage-export-dataset");
+  const intervalField = (page: Page) => page.locator(".usage-export-interval-field");
+  const projectField = (page: Page) => page.locator(".usage-export-project-field");
+
+  test("Interval and Project are reserved for the datasets that ignore them", async ({ page }) => {
+    await openExport(page);
+
+    // Binned honours both.
+    await dataset(page).selectOption("binned");
+    await expect(intervalField(page)).not.toHaveClass(/is-reserved/);
+    await expect(page.locator(".usage-export-interval")).toBeEnabled();
+    await expect(projectField(page)).not.toHaveClass(/is-reserved/);
+    await expect(page.locator(".usage-export-project")).toBeEnabled();
+
+    // Raw turns aren't binned, but are per-project.
+    await dataset(page).selectOption("turns");
+    await expect(intervalField(page)).toHaveClass(/is-reserved/);
+    await expect(page.locator(".usage-export-interval")).toBeDisabled();
+    await expect(projectField(page)).not.toHaveClass(/is-reserved/);
+
+    // Quota is raw AND account-level, so neither applies.
+    await dataset(page).selectOption("quota");
+    await expect(intervalField(page)).toHaveClass(/is-reserved/);
+    await expect(page.locator(".usage-export-interval")).toBeDisabled();
+    await expect(projectField(page)).toHaveClass(/is-reserved/);
+    await expect(page.locator(".usage-export-project")).toBeDisabled();
+
+    await page.screenshot({ path: "e2e/artifacts/usage-export-quota.png" });
+  });
+
+  test("the card never resizes when the dataset changes", async ({ page }) => {
+    await openExport(page);
+    const card = page.locator(".usage-export-card");
+
+    await dataset(page).selectOption("binned");
+    const before = await card.boundingBox();
+    expect(before).not.toBeNull();
+
+    // Same precision as the hover test above (±0.005px): the whole point is
+    // that Cancel / Download CSV do not move, and .confirm-overlay centres
+    // the card, so any height delta moves them by half of it.
+    for (const d of ["turns", "quota", "binned"] as const) {
+      await dataset(page).selectOption(d);
+      await expect(page.locator(".usage-export-hint")).not.toHaveText("");
+      const after = await card.boundingBox();
+      expect(after!.height, `height changed on "${d}"`).toBeCloseTo(before!.height, 2);
+      expect(after!.width, `width changed on "${d}"`).toBeCloseTo(before!.width, 2);
+    }
   });
 });

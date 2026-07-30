@@ -5173,6 +5173,11 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   color: var(--app-text-muted);
   /* Pulls the description up under its select, inside the form's row gap. */
   margin-top: -0.35rem;
+  /* Two lines held open: the dataset descriptions straddle the 1↔2 line
+     boundary at this card width, so letting the box size to its text would
+     shift every row below it on each dataset change. In `em` so it tracks
+     the font size rather than pinning to today's one. */
+  min-height: 2.9em;
 }
 
 .usage-export-row {
@@ -5193,6 +5198,23 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   letter-spacing: 1px;
   text-transform: uppercase;
   color: var(--claude-mid);
+}
+
+/* Reserved, not removed. `display: none` would shrink the card by a row,
+   and .confirm-overlay centres it (2282), so the delta walks Cancel /
+   Download CSV out from under the cursor mid-click. `visibility` keeps the
+   box while dropping the control from view, the tab order and the a11y
+   tree — a pinned layout with no hard-coded height to drift out of date. */
+.usage-export-field.is-reserved {
+  visibility: hidden;
+}
+
+/* `[hidden]` is a user-agent rule, so the author-origin `display: flex`
+   above beats it on ORIGIN regardless of specificity — `field.hidden = true`
+   silently did nothing here, which is how Interval and Project came to
+   render for raw datasets. Same fix as .usage-no-series[hidden] (5359). */
+.usage-export-field[hidden] {
+  display: none;
 }
 
 .usage-export-field select,
@@ -5217,9 +5239,12 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
 }
 
 /* Reserved height so a message appearing doesn't shift the buttons out
-   from under the cursor mid-click. */
+   from under the cursor mid-click. Two lines, because a daemon error is
+   interpolated into the text ("Export failed: …") and wraps past one.
+   Deliberately not ellipsised — a truncated error message is worse than
+   the rare shift a third line would cause. */
 .usage-export-status {
-  min-height: 1.15rem;
+  min-height: 2.3rem;
   font-size: 0.78rem;
   line-height: 1.15rem;
   color: var(--app-text-muted);
