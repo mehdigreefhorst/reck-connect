@@ -360,3 +360,78 @@ func TestQuotaForecastsEmptyStore(t *testing.T) {
 		t.Errorf("got (%v, %v), want (nil, nil)", fh, sd)
 	}
 }
+
+// Regression for the shape real data actually has.
+//
+// The ingest gate writes IMMEDIATELY on a 2-point jump, bypassing its
+// one-minute rate cap (ingest.go), so a burst emits pairs of rows seconds
+// apart with a 2-point delta. Those are rising and inside their window, so
+// the monotonic and active filters both pass them straight through — and
+// 2 points over 5 seconds is 1440 %/h. Shipped, this made every forecast
+// read "100% in twenty minutes".
+func TestSlopesIgnoreTheGateJumpArtifact(t *testing.T) {
+	now := time.Date(2026, 7, 30, 19, 40, 0, 0, time.UTC).Unix()
+	resets := now + 4*3600
+
+	// Six hours climbing 0 -> 96%, i.e. 16 %/h, sampled once a minute…
+	var rs []quotaReading
+	for i := 0; i <= 360; i++ {
+		rs = append(rs, quotaReading{
+			ts:       now - int64(360-i)*60,
+			pct:      float64(i) * 96.0 / 360.0,
+			resetsAt: resets,
+		})
+	}
+	// …with the gate's jump path firing inside it: an extra row five
+	// seconds after a regular one, two points higher.
+	var spiked []quotaReading
+	for i, r := range rs {
+		spiked = append(spiked, r)
+		if i%20 == 0 && i > 0 {
+			spiked = append(spiked, quotaReading{ts: r.ts + 5, pct: r.pct + 2, resetsAt: resets})
+		}
+	}
+
+	for _, s := range activeSlopes(spiked, now) {
+		if s.rate > 100 {
+			t.Errorf("slope %.0f %%/h — a sub-minute gate write was divided by", s.rate)
+		}
+	}
+
+	got := buildForecast(spiked, fiveHourWindow, now)
+	if got == nil {
+		t.Fatal("buildForecast = nil")
+	}
+	// The series averages 16 %/h. An upper bound above ~60 means artifacts
+	// still dominate the quantile.
+	if got.RateHigh > 60 {
+		t.Errorf("RateHigh = %.0f %%/h, want a rate the series can support", got.RateHigh)
+	}
+	// And from 96% the projection must not claim to reach 100% instantly:
+	// at a sane rate that is minutes of headroom, not seconds.
+	if got.RateCentre > 40 {
+		t.Errorf("RateCentre = %.0f %%/h, want ~16", got.RateCentre)
+	}
+}
+
+func TestSlopesSkipLongIdleGaps(t *testing.T) {
+	now := time.Date(2026, 7, 30, 19, 0, 0, 0, time.UTC).Unix()
+	resets := now + 3600
+
+	// Two bursts of real work either side of a two-hour lull. The interval
+	// straddling the lull averages working and not-working, which is not the
+	// rate "if I keep going" asks about.
+	rs := []quotaReading{
+		{ts: now - 10800, pct: 10, resetsAt: resets},
+		{ts: now - 10200, pct: 15, resetsAt: resets}, // 30 %/h
+		{ts: now - 9600, pct: 20, resetsAt: resets},  // 30 %/h
+		{ts: now - 2400, pct: 22, resetsAt: resets},  // straddles the lull
+		{ts: now - 1800, pct: 27, resetsAt: resets},  // 30 %/h
+		{ts: now - 1200, pct: 32, resetsAt: resets},  // 30 %/h
+	}
+	for _, s := range activeSlopes(rs, now) {
+		if s.rate < 20 {
+			t.Errorf("slope %.1f %%/h — an idle stretch was measured as work", s.rate)
+		}
+	}
+}

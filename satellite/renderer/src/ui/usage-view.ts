@@ -1,13 +1,12 @@
 // Usage view (issue #88): an overlay modal plotting token burn over
 // time — tokens per bin (the daemon's authoritative per-turn counts)
 // with the account's 5h / 7d quota peaks as lines on a 0–100% axis.
-// Four granularities, each at a bin width DERIVED from the view (issue
-// #130 — it used to be a select, but it is a density control whose only
-// visible effect is how jagged the line looks, and the axis deliberately
-// does not follow it). Coarse widths render bars, fine widths (>96 bins)
-// switch to an area curve. ‹ › paging, click-to-drill-down, ↑ drill-up,
-// project filter. All binning happens on the daemon (GET
-// /usage/histogram); this module owns only view state and chrome.
+// Four granularities with a selectable bin width each (Day: 1 min–4 h,
+// Week: 5 min–1 day, Month: 30 min–1 day, Year: 1 day/month); coarse
+// widths render bars, fine widths (>96 bins) switch to an area curve.
+// ‹ › paging, click-to-drill-down, ↑ drill-up, project filter. All
+// binning happens on the daemon (GET /usage/histogram); this module
+// owns only view state and chrome.
 //
 // Past `now` the quota series get a burn-rate forecast: three projected
 // lines to the window's reset with a band between the bounds. The rates
@@ -39,8 +38,10 @@ import type {
   UsageHistogramBucket,
 } from "@client-core/api/client";
 import {
+  BIN_OPTIONS,
   DAYS,
   binLabelFor,
+  binOptionLabel,
   bucketSeconds,
   defaultBinFor,
   defaultWidthForSpan,
@@ -52,6 +53,7 @@ import {
   rangeLabelFor,
   stepPeriod,
   tzOffsetMin,
+  widthsForSpan,
   type Granularity,
 } from "./usage-range";
 import { MIN_TICK_PX, axisTicksFor } from "./usage-axis";
@@ -95,9 +97,6 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
 
   // ---- view state -------------------------------------------------
   let granularity: Granularity = "week";
-  // Bin width. No longer a user control: it is derived from the view on
-  // every fetch (see bucketForView) and held here so renderChart labels the
-  // data at the width it was actually fetched at.
   let bucket: UsageHistogramBucket = defaultBinFor(granularity);
   let periodStart = periodFor(granularity, new Date()).start;
   // Drag-zoom range. Non-null replaces the calendar period with an
@@ -115,6 +114,11 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   // Live 5h/7d windows and their projected burn rates. Describes NOW, not
   // the plotted range — renderChart checks the range contains now.
   let forecasts: UsageQuotaForecasts | undefined;
+  // True while the range is pinned to the live 5h window by the Session
+  // chip. It is a `custom` range like any other — this only remembers that
+  // the chip put us there, so the chip can read as active and the label can
+  // say "Session" instead of a bare pair of timestamps.
+  let sessionMode = false;
   // Series visibility, keyed to uPlot series index 1/2/3. Owned here
   // (not by uPlot's legend) so toggles survive the chart rebuilds that
   // every granularity/bin/theme change triggers.
@@ -141,6 +145,9 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         <button class="usage-pager" data-dir="1" title="Next period">›</button>
         <button class="usage-drill-up" title="Zoom out">↑</button>
         <span class="usage-nav-spacer"></span>
+        <label class="usage-project-label">Bins
+          <select class="usage-project usage-bins" title="Bin width"></select>
+        </label>
         <label class="usage-project-label">Project
           <select class="usage-project"><option value="">All projects</option></select>
         </label>
@@ -174,7 +181,8 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   const readoutEl = overlay.querySelector(".usage-readout") as HTMLElement;
   const statsEl = overlay.querySelector(".usage-stats") as HTMLElement;
   const legendEl = overlay.querySelector(".usage-legend") as HTMLElement;
-  const projectSel = overlay.querySelector(".usage-project") as HTMLSelectElement;
+  const binsSel = overlay.querySelector(".usage-bins") as HTMLSelectElement;
+  const projectSel = overlay.querySelector(".usage-project:not(.usage-bins)") as HTMLSelectElement;
   const downloadBtn = overlay.querySelector(".usage-download") as HTMLButtonElement;
   const pollSettingsBtn = overlay.querySelector(".usage-poll-settings") as HTMLButtonElement;
   // Mirrors projectSel's options so the export dialog can offer the
@@ -201,7 +209,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
    * The anchor date is intentionally absent — see ui/usage-prefs.ts.
    */
   function persist(): void {
-    void saveUsagePrefs({ granularity, projectId, shown: { ...shown } }).catch(
+    void saveUsagePrefs({ granularity, bucket, projectId, shown: { ...shown } }).catch(
       (e) => console.warn("[usage] could not persist view state:", e),
     );
   }
@@ -243,6 +251,28 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     legendEl.appendChild(btn);
   }
 
+  // The live 5h window, ahead of the calendar views: it is the range you
+  // are actually inside, and the only one whose right-hand edge is a
+  // deadline rather than a date. Spans exactly [window start, reset], so
+  // the session opens at the left edge and expires at the right.
+  //
+  // Disabled until a forecast arrives, since the window's bounds come from
+  // `quota_forecast` — there is nothing to pin to before then.
+  const sessionChip = document.createElement("button");
+  sessionChip.className = "usage-chip usage-chip-session";
+  sessionChip.dataset.g = "session";
+  sessionChip.textContent = "Session";
+  sessionChip.disabled = true;
+  sessionChip.title = "The live 5-hour quota window";
+  sessionChip.addEventListener("click", () => {
+    const w = forecasts?.five_hour;
+    if (!w) return;
+    custom = { since: new Date(w.window_start * 1000), until: new Date(w.resets_at * 1000) };
+    sessionMode = true;
+    void refresh();
+  });
+  chipsEl.appendChild(sessionChip);
+
   for (const g of GRANULARITIES) {
     const chip = document.createElement("button");
     chip.className = "usage-chip";
@@ -251,16 +281,26 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     chip.addEventListener("click", () => {
       if (g === granularity && custom === null) return;
       custom = null;
+      sessionMode = false;
       granularity = g;
+      bucket = defaultBinFor(g);
       periodStart = periodFor(g, new Date()).start;
       void refresh();
     });
     chipsEl.appendChild(chip);
   }
 
+  binsSel.addEventListener("change", () => {
+    bucket = binsSel.value;
+    void refresh();
+  });
+
   overlay.querySelectorAll<HTMLButtonElement>(".usage-pager").forEach((btn) => {
     btn.addEventListener("click", () => {
       const dir = Number(btn.dataset.dir) as 1 | -1;
+      // Paging lands on the window BEFORE or AFTER this one, which is no
+      // longer the session you are in.
+      sessionMode = false;
       if (custom) {
         // Page a zoomed range by its own span.
         const span = custom.until.getTime() - custom.since.getTime();
@@ -276,16 +316,19 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   });
 
   drillUpBtn.addEventListener("click", () => {
+    sessionMode = false;
     if (custom) {
       // Exit zoom back to the calendar view containing the range start.
       periodStart = periodFor(granularity, custom.since).start;
       custom = null;
+      bucket = defaultBinFor(granularity);
       void refresh();
       return;
     }
     const up = drillUp(granularity);
     if (!up) return;
     granularity = up;
+    bucket = defaultBinFor(up);
     periodStart = periodFor(up, periodStart).start;
     void refresh();
   });
@@ -382,19 +425,20 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     return periodFor(granularity, periodStart);
   }
 
-  /**
-   * The bin width for the current view.
-   *
-   * Bin width is a density control, not something to decide: a calendar view
-   * has a tuned default, and a drag-zoomed span gets a width fitted to it.
-   * Exposing that as a select asked the reader to pick a number whose only
-   * visible effect was how jagged the line looked — the axis deliberately
-   * does not follow it (usage-axis.ts) — so it is now derived.
-   */
-  function bucketForView(): UsageHistogramBucket {
-    if (!custom) return defaultBinFor(granularity);
-    const spanSec = (custom.until.getTime() - custom.since.getTime()) / 1000;
-    return defaultWidthForSpan(spanSec);
+  function rebuildBinOptions(): void {
+    const spanSec = (currentRange().until.getTime() - currentRange().start.getTime()) / 1000;
+    const options = custom ? widthsForSpan(spanSec) : BIN_OPTIONS[granularity];
+    binsSel.innerHTML = "";
+    for (const b of options) {
+      const o = document.createElement("option");
+      o.value = b;
+      o.textContent = binOptionLabel(b);
+      binsSel.appendChild(o);
+    }
+    if (!options.includes(bucket)) {
+      bucket = custom ? defaultWidthForSpan(spanSec) : defaultBinFor(granularity);
+    }
+    binsSel.value = bucket;
   }
 
   async function refresh(): Promise<void> {
@@ -405,12 +449,19 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     persist();
     // Reflect state in the chrome immediately, then fetch.
     chipsEl.querySelectorAll<HTMLElement>(".usage-chip").forEach((c) => {
-      c.classList.toggle("active", custom === null && c.dataset.g === granularity);
+      c.classList.toggle(
+        "active",
+        c.dataset.g === "session"
+          ? sessionMode
+          : custom === null && c.dataset.g === granularity,
+      );
     });
-    bucket = bucketForView();
-    periodEl.textContent = custom
-      ? rangeLabelFor(custom.since, custom.until)
-      : labelFor(granularity, periodStart);
+    rebuildBinOptions();
+    periodEl.textContent = sessionMode
+      ? `Session · ${rangeLabelFor(custom!.since, custom!.until)}`
+      : custom
+        ? rangeLabelFor(custom.since, custom.until)
+        : labelFor(granularity, periodStart);
     drillUpBtn.disabled = custom === null && drillUp(granularity) === null;
     drillUpBtn.title = custom ? "Exit zoom" : "Zoom out";
     nextBtn.disabled = custom
@@ -447,6 +498,9 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       bins = resp.bins ?? [];
       planDays = resp.plan_days ?? [];
       forecasts = resp.quota_forecast;
+      // The chip pins to [window_start, resets_at], which only exist once a
+      // forecast has arrived.
+      sessionChip.disabled = !forecasts?.five_hour;
       renderPlan(resp.plan_summary);
       renderChart();
       if (!bins.some((b) => b.total > 0 || b.five_hour_peak !== undefined)) {
@@ -521,6 +575,8 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
               ).getTime() / 1000,
             );
     custom = { since: new Date(bins[lo].t * 1000), until: new Date(endT * 1000) };
+    sessionMode = false;
+    bucket = defaultWidthForSpan(endT - bins[lo].t);
     void refresh();
   }
 
@@ -891,6 +947,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
               if (typeof idx !== "number" || !bins[idx] || !down) return;
               const binDate = new Date(bins[idx].t * 1000);
               granularity = down;
+              bucket = defaultBinFor(down);
               periodStart = periodFor(down, binDate).start;
               void refresh();
             });
@@ -926,6 +983,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     const prefs = await loadUsagePrefs().catch(() => null);
     if (prefs) {
       granularity = prefs.granularity;
+      bucket = prefs.bucket;
       Object.assign(shown, prefs.shown);
       // Deliberately NOT restored: the anchor date. Reopening a "Day" view
       // shows today, not the day last paged to.

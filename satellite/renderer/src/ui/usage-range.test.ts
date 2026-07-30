@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BIN_OPTIONS,
   binLabelFor,
   binOptionLabel,
   bucketSeconds,
@@ -26,6 +27,12 @@ describe("bin widths", () => {
     expect(defaultBinFor("year")).toBe("month");
   });
 
+  it("every option list contains its default", () => {
+    for (const g of ["day", "week", "month", "year"] as const) {
+      expect(BIN_OPTIONS[g]).toContain(defaultBinFor(g));
+    }
+  });
+
   // The defaults are meant to be fine enough to show burst shape but
   // still land the request well inside the daemon's 12000-bin cap.
   it("keeps each default between the curve threshold and the daemon cap", () => {
@@ -46,6 +53,17 @@ describe("bin widths", () => {
     expect(bucketSeconds("hour")).toBe(3600); // legacy
     expect(bucketSeconds("day")).toBe(86400); // legacy
     expect(bucketSeconds("month")).toBeNull();
+  });
+
+  it("keeps every offered choice at a sane bin count for its view", () => {
+    const periodSec = { day: 86400, week: 7 * 86400, month: 31 * 86400, year: 366 * 86400 };
+    for (const g of ["day", "week", "month", "year"] as const) {
+      for (const b of BIN_OPTIONS[g]) {
+        const sec = bucketSeconds(b);
+        if (sec === null) continue; // calendar month bins
+        expect(periodSec[g] / sec).toBeLessThanOrEqual(2016);
+      }
+    }
   });
 
   it("labels bin options", () => {

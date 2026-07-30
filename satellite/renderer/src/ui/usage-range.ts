@@ -15,6 +15,18 @@ import type { UsageHistogramBucket } from "@client-core/api/client";
 /** The four user-facing views. Each renders one period of bins. */
 export type Granularity = "day" | "week" | "month" | "year";
 
+/** Selectable bin widths per view, coarse default last-but-safe. The
+ * daemon accepts any "<N>m|<N>h|<N>d" plus calendar "month"; these
+ * lists keep the densest choice around ~2000 bins so the response
+ * stays small. Fine widths turn the bars into a curve (the chart
+ * switches to a line above ~96 bins). */
+export const BIN_OPTIONS: Record<Granularity, UsageHistogramBucket[]> = {
+  day: ["1m", "2m", "5m", "10m", "30m", "1h", "4h"],
+  week: ["5m", "10m", "30m", "1h", "4h", "1d"],
+  month: ["30m", "1h", "4h", "1d"],
+  year: ["1d", "month"],
+};
+
 /** Default bin width per view. Deliberately fine: the point of the plot
  * is *when* tokens burned, and day-wide bins answer that with one bar
  * per day. Each default keeps the period a few hundred bins — past the

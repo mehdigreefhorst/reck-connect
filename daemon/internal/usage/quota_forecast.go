@@ -46,6 +46,27 @@ const (
 	// forecast is withheld entirely — no line beats a wrong line.
 	forecastMinSlopes = 3
 
+	// minSlopeSeconds is the shortest interval a rate may be measured over.
+	//
+	// This is load-bearing, not a tidiness guard. The ingest gate writes
+	// IMMEDIATELY on a jump of DefaultJumpPct (2 points), bypassing its
+	// one-minute rate cap — so during a burst two rows land seconds apart
+	// with a 2-point delta between them. Divided by a 5-second dt that is
+	// 1440 %/hour, and every burst manufactures a fistful of them. They are
+	// rising and inside their window, so neither the monotonic filter nor
+	// the active filter touches them; they simply swamp the upper quantile
+	// and the forecast reads "you hit 100% in twenty minutes" forever.
+	//
+	// Five minutes is comfortably longer than the jump path can produce and
+	// short enough to still resolve a burst.
+	minSlopeSeconds = 300
+
+	// maxSlopeSeconds bounds the other end: an interval spanning a long
+	// quiet stretch measures the average of working and not working, which
+	// is not the "if I keep going" rate being asked for. Beyond this the
+	// anchor restarts rather than straddling the gap.
+	maxSlopeSeconds = 1800
+
 	fiveHourWindow = 5 * time.Hour
 	sevenDayWindow = 7 * 24 * time.Hour
 )
@@ -200,26 +221,42 @@ func activeSlopes(readings []quotaReading, now int64) []weightedSlope {
 		start = end
 
 		runningMax := math.Inf(-1)
-		var prev *quotaReading
+		var anchor *quotaReading
 		for i := range window {
 			r := window[i]
 			if r.pct < runningMax {
 				continue // impossible within a live window: a stale reading
 			}
 			runningMax = r.pct
-			if prev != nil {
-				dtHours := float64(r.ts-prev.ts) / 3600
-				if dtHours > 0 {
-					if rate := (r.pct - prev.pct) / dtHours; rate > 0 {
-						out = append(out, weightedSlope{
-							rate:   rate,
-							weight: recencyWeight(r.ts, now),
-						})
-					}
-				}
-			}
+
 			cur := r
-			prev = &cur
+			if anchor == nil {
+				anchor = &cur
+				continue
+			}
+
+			// Measure over a bounded interval, never between whichever two
+			// rows the write gate happened to emit. Too short and the rate is
+			// an artifact of the gate's jump path (see minSlopeSeconds); too
+			// long and it averages in the idling between bursts.
+			dt := r.ts - anchor.ts
+			switch {
+			case dt < minSlopeSeconds:
+				// Hold the anchor and keep accumulating: the pair is too
+				// close together in time to divide by.
+			case dt > maxSlopeSeconds:
+				// The gap swallowed the interval. Start again from here
+				// rather than reporting the average across it.
+				anchor = &cur
+			default:
+				if rate := (r.pct - anchor.pct) / (float64(dt) / 3600); rate > 0 {
+					out = append(out, weightedSlope{
+						rate:   rate,
+						weight: recencyWeight(r.ts, now),
+					})
+				}
+				anchor = &cur
+			}
 		}
 	}
 	return out

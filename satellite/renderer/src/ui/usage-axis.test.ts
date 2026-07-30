@@ -8,20 +8,8 @@ import {
   tickTimes,
   tickUnitFor,
 } from "./usage-axis";
-import { bucketSeconds, defaultBinFor, periodFor, type Granularity } from "./usage-range";
-import type { UsageHistogramBucket } from "@client-core/api/client";
-
-// Bin widths to sweep the axis across. A local fixture rather than a shared
-// constant: bin width stopped being a user control (issue #130), so there is
-// no longer a production list of "widths this view offers" — but the
-// invariant these pin, that the axis vocabulary does NOT follow the bin
-// width, still has to hold at every width the daemon will bin at.
-const WIDTHS: Record<Granularity, UsageHistogramBucket[]> = {
-  day: ["1m", "2m", "5m", "10m", "30m", "1h", "4h"],
-  week: ["5m", "10m", "30m", "1h", "4h", "1d"],
-  month: ["30m", "1h", "4h", "1d"],
-  year: ["1d", "month"],
-};
+import { BIN_OPTIONS, bucketSeconds, defaultBinFor, periodFor } from "./usage-range";
+import type { Granularity } from "./usage-range";
 
 // 2026-07-14 is a Tuesday; July 2026 has 31 days.
 const TUE = new Date(2026, 6, 14, 15, 30);
@@ -188,10 +176,10 @@ describe("axisTicksFor", () => {
   // The regression this module exists for: bin width is a density
   // control, so it must not touch the axis vocabulary.
   it.each(["day", "week", "month", "year"] as const)(
-    "gives %s view the same labels at every bin width",
+    "gives %s view the same labels at every bin width it offers",
     (g) => {
       const { start, until } = periodFor(g, TUE);
-      const labelSets = WIDTHS[g].map((bucket) =>
+      const labelSets = BIN_OPTIONS[g].map((bucket) =>
         axisTicksFor({
           granularity: g,
           start,

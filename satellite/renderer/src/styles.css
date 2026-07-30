@@ -5208,9 +5208,16 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
    and .confirm-overlay centres it (2282), so the delta walks Cancel /
    Download CSV out from under the cursor mid-click. `visibility` keeps the
    box while dropping the control from view, the tab order and the a11y
-   tree — a pinned layout with no hard-coded height to drift out of date. */
+   tree — a pinned layout with no hard-coded height to drift out of date.
+
+   `order` sinks the reserved box to the end of the form so the fields that
+   DO apply close up to the top and the slack collects at the bottom.
+   Without it the blank sits wherever the hidden field happens to live —
+   a hole between the dates and Project — which reads as a broken layout
+   rather than as space held in reserve. */
 .usage-export-field.is-reserved {
   visibility: hidden;
+  order: 99;
 }
 
 /* `[hidden]` is a user-agent rule, so the author-origin `display: flex`
@@ -5272,7 +5279,15 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
     border-color 0.15s var(--ease-smooth);
 }
 
-.usage-chip:hover {
+/* The Session chip can't pin to a window whose bounds haven't arrived yet.
+   Dimmed rather than hidden: a control that appears once data loads is more
+   startling than one that is visibly not ready. */
+.usage-chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.usage-chip:not(:disabled):hover {
   background: var(--app-hover);
   color: var(--app-text);
 }
