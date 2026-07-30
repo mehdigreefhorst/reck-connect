@@ -1117,6 +1117,17 @@ func (p *Pane) ExitCode() *int {
 
 // AgentState returns the pane's current event-driven agent state. Empty
 // string (AgentStateUnknown) before any hook event has arrived.
+// HasAgentEvents reports whether any lifecycle-hook event has ever been
+// recorded against this pane. Distinguishes "the agent is between turns"
+// from "this pane's hooks were never installed, so we have no signal at
+// all" — both of which leave AgentState at unknown.
+func (p *Pane) HasAgentEvents() bool {
+	if p.eventLog == nil {
+		return false
+	}
+	return p.eventLog.Len() > 0
+}
+
 func (p *Pane) AgentState() proto.AgentState {
 	p.mu.Lock()
 	defer p.mu.Unlock()
