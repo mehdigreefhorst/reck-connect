@@ -43,7 +43,6 @@ import {
   binLabelFor,
   binOptionLabel,
   bucketSeconds,
-  defaultBinFor,
   defaultWidthForSpan,
   drillDown,
   drillUp,
@@ -64,7 +63,7 @@ import { iconClose, iconDownload, iconGear } from "./icons";
 import { confirmDialogOpen } from "./confirmDialog";
 import { openUsageExportDialog } from "./usage-export-dialog";
 import { openUsagePollDialog } from "./usage-poll-dialog";
-import { noSeriesVisible } from "./usage-prefs";
+import { bucketFor, noSeriesVisible, type UsageBuckets } from "./usage-prefs";
 import { loadUsagePrefs, saveUsagePrefs } from "../config";
 
 export interface UsageOverlayOpts {
@@ -97,7 +96,11 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
 
   // ---- view state -------------------------------------------------
   let granularity: Granularity = "week";
-  let bucket: UsageHistogramBucket = defaultBinFor(granularity);
+  // Bin width per granularity, not one shared value: "1 minute" is a
+  // considered choice on Day and not offered at all on Year, so a single
+  // remembered width meant glancing at Week threw the Day choice away.
+  let buckets: UsageBuckets = {};
+  let bucket: UsageHistogramBucket = bucketFor(buckets, granularity);
   let periodStart = periodFor(granularity, new Date()).start;
   // Drag-zoom range. Non-null replaces the calendar period with an
   // arbitrary [since, until) span; ↑ or a granularity chip exits.
@@ -209,7 +212,13 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
    * The anchor date is intentionally absent — see ui/usage-prefs.ts.
    */
   function persist(): void {
-    void saveUsagePrefs({ granularity, bucket, projectId, shown: { ...shown } }).catch(
+    void saveUsagePrefs({
+      granularity,
+      buckets: { ...buckets },
+      session: sessionMode,
+      projectId,
+      shown: { ...shown },
+    }).catch(
       (e) => console.warn("[usage] could not persist view state:", e),
     );
   }
@@ -264,12 +273,19 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   sessionChip.textContent = "Session";
   sessionChip.disabled = true;
   sessionChip.title = "The live 5-hour quota window";
-  sessionChip.addEventListener("click", () => {
+  /** Pin the range to the live 5h window. Reports whether it could — the
+   *  bounds come from `quota_forecast`, so there is nothing to pin to
+   *  before a response has landed. */
+  function enterSession(): boolean {
     const w = forecasts?.five_hour;
-    if (!w) return;
+    if (!w) return false;
     custom = { since: new Date(w.window_start * 1000), until: new Date(w.resets_at * 1000) };
     sessionMode = true;
-    void refresh();
+    return true;
+  }
+
+  sessionChip.addEventListener("click", () => {
+    if (enterSession()) void refresh();
   });
   chipsEl.appendChild(sessionChip);
 
@@ -283,7 +299,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       custom = null;
       sessionMode = false;
       granularity = g;
-      bucket = defaultBinFor(g);
+      bucket = bucketFor(buckets, granularity);
       periodStart = periodFor(g, new Date()).start;
       void refresh();
     });
@@ -292,6 +308,10 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
 
   binsSel.addEventListener("change", () => {
     bucket = binsSel.value;
+    // Only a calendar view's width is a preference worth keeping. Inside a
+    // zoom the width is derived from the span, so recording it would let a
+    // transient gesture redefine what Day means.
+    if (!custom) buckets = { ...buckets, [granularity]: bucket };
     void refresh();
   });
 
@@ -321,14 +341,14 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       // Exit zoom back to the calendar view containing the range start.
       periodStart = periodFor(granularity, custom.since).start;
       custom = null;
-      bucket = defaultBinFor(granularity);
+      bucket = bucketFor(buckets, granularity);
       void refresh();
       return;
     }
     const up = drillUp(granularity);
     if (!up) return;
     granularity = up;
-    bucket = defaultBinFor(up);
+    bucket = bucketFor(buckets, up);
     periodStart = periodFor(up, periodStart).start;
     void refresh();
   });
@@ -436,7 +456,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       binsSel.appendChild(o);
     }
     if (!options.includes(bucket)) {
-      bucket = custom ? defaultWidthForSpan(spanSec) : defaultBinFor(granularity);
+      bucket = custom ? defaultWidthForSpan(spanSec) : bucketFor(buckets, granularity);
     }
     binsSel.value = bucket;
   }
@@ -947,7 +967,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
               if (typeof idx !== "number" || !bins[idx] || !down) return;
               const binDate = new Date(bins[idx].t * 1000);
               granularity = down;
-              bucket = defaultBinFor(down);
+              bucket = bucketFor(buckets, down);
               periodStart = periodFor(down, binDate).start;
               void refresh();
             });
@@ -983,7 +1003,8 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     const prefs = await loadUsagePrefs().catch(() => null);
     if (prefs) {
       granularity = prefs.granularity;
-      bucket = prefs.bucket;
+      buckets = prefs.buckets;
+      bucket = bucketFor(buckets, granularity);
       Object.assign(shown, prefs.shown);
       // Deliberately NOT restored: the anchor date. Reopening a "Day" view
       // shows today, not the day last paged to.
@@ -996,5 +1017,14 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       }
     }
     await refresh();
+
+    // Session last, and only after that first fetch: the window's bounds
+    // ride in on `quota_forecast`, so there is nothing to pin to until a
+    // response has landed. Costs a second round trip, but only for someone
+    // who was actually in the session view when they closed it — and the
+    // alternative is opening on a view they did not leave.
+    if (prefs?.session && enterSession()) {
+      await refresh();
+    }
   })();
 }

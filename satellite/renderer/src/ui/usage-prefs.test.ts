@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_USAGE_PREFS,
+  bucketFor,
   isBucketValidFor,
   noSeriesVisible,
   sanitizeUsagePrefs,
@@ -34,7 +35,8 @@ describe("sanitizeUsagePrefs", () => {
   it("round-trips a valid blob", () => {
     const prefs = {
       granularity: "day" as const,
-      bucket: "1m" as const,
+      buckets: { day: "1m" as const, week: "4h" as const },
+      session: false,
       projectId: "proj-x",
       shown: { tokens: false, fiveHour: true, sevenDay: false },
     };
@@ -51,27 +53,18 @@ describe("sanitizeUsagePrefs", () => {
     expect(sanitizeUsagePrefs(raw)).toEqual(DEFAULT_USAGE_PREFS);
   });
 
-  it("keeps a good granularity when the bin width is nonsense", () => {
-    // Field-by-field, not all-or-nothing: losing the granularity because the
+  it("keeps a good granularity when a remembered width is nonsense", () => {
+    // Field-by-field, not all-or-nothing: losing the granularity because a
     // width was bad would throw away the more important half.
-    const out = sanitizeUsagePrefs({ granularity: "day", bucket: "42q" });
+    const out = sanitizeUsagePrefs({ granularity: "day", buckets: { day: "42q" } });
     expect(out.granularity).toBe("day");
-    expect(out.bucket).toBe(defaultBinFor("day"));
+    expect(out.buckets.day).toBeUndefined();
   });
 
-  it("repairs an incoherent granularity/width pair", () => {
+  it("drops a width its own granularity does not offer", () => {
     // "1m" is a Day width; on Month it would reach the daemon as a bad query.
-    const out = sanitizeUsagePrefs({ granularity: "month", bucket: "1m" });
-    expect(out.granularity).toBe("month");
-    expect(out.bucket).toBe(defaultBinFor("month"));
-  });
-
-  it("validates the width against the RESOLVED granularity", () => {
-    // Bad granularity resolves to the default (week); "4h" is valid there, so
-    // it must survive rather than being judged against the bogus input.
-    const out = sanitizeUsagePrefs({ granularity: "decade", bucket: "4h" });
-    expect(out.granularity).toBe("week");
-    expect(out.bucket).toBe("4h");
+    const out = sanitizeUsagePrefs({ buckets: { day: "1m", month: "1m", week: "4h" } });
+    expect(out.buckets).toEqual({ day: "1m", week: "4h" });
   });
 
   it("drops a non-string projectId", () => {
@@ -141,5 +134,59 @@ describe("noSeriesVisible", () => {
     ["7d", { tokens: false, fiveHour: false, sevenDay: true }],
   ])("is false when %s is on", (_label, shown) => {
     expect(noSeriesVisible(shown)).toBe(false);
+  });
+});
+
+describe("remembering a width per view", () => {
+  it("keeps each granularity's width independent", () => {
+    // The bug this exists for: picking 1m on Day and glancing at Week used to
+    // throw the choice away, because coming back ran the Day default.
+    const out = sanitizeUsagePrefs({
+      granularity: "day",
+      buckets: { day: "1m", week: "1d", month: "4h" },
+    });
+    expect(bucketFor(out.buckets, "day")).toBe("1m");
+    expect(bucketFor(out.buckets, "week")).toBe("1d");
+    expect(bucketFor(out.buckets, "month")).toBe("4h");
+  });
+
+  it("falls back to a granularity's default when it has no entry", () => {
+    const out = sanitizeUsagePrefs({ buckets: { day: "1m" } });
+    expect(bucketFor(out.buckets, "day")).toBe("1m");
+    expect(bucketFor(out.buckets, "year")).toBe("month");
+    expect(bucketFor({}, "week")).toBe("30m");
+  });
+
+  it("adopts a pre-upgrade flat width for the view it was chosen on", () => {
+    // Older releases stored one `bucket` for all views. Upgrading must not
+    // silently discard the width someone had set.
+    const out = sanitizeUsagePrefs({ granularity: "day", bucket: "1m" });
+    expect(out.buckets.day).toBe("1m");
+    // …but only where it is valid: "1m" is not a Month width.
+    expect(sanitizeUsagePrefs({ granularity: "month", bucket: "1m" }).buckets.month).toBeUndefined();
+  });
+
+  it("never lets the legacy field override an explicit per-view entry", () => {
+    const out = sanitizeUsagePrefs({ granularity: "day", bucket: "4h", buckets: { day: "1m" } });
+    expect(out.buckets.day).toBe("1m");
+  });
+});
+
+describe("remembering which view was open", () => {
+  it("round-trips the session flag", () => {
+    expect(sanitizeUsagePrefs({ session: true }).session).toBe(true);
+    expect(sanitizeUsagePrefs({ session: false }).session).toBe(false);
+  });
+
+  it("defaults to off, and treats anything non-boolean as off", () => {
+    expect(sanitizeUsagePrefs({}).session).toBe(false);
+    expect(sanitizeUsagePrefs({ session: "yes" }).session).toBe(false);
+    expect(sanitizeUsagePrefs({ session: 1 }).session).toBe(false);
+  });
+
+  it("keeps the calendar view alongside it, to fall back to on exit", () => {
+    const out = sanitizeUsagePrefs({ granularity: "day", session: true });
+    expect(out.session).toBe(true);
+    expect(out.granularity).toBe("day");
   });
 });

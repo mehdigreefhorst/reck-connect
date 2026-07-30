@@ -295,6 +295,57 @@ test.describe("usage view — remembered state", () => {
     await expect(page.locator(".usage-bins")).toHaveValue("1m");
   });
 
+  test("a bin width is remembered PER view, not globally", async ({ page }) => {
+    await openHarness(page);
+    await pickGranularity(page, "Day");
+    await page.locator(".usage-bins").selectOption("1m");
+    await expect(page.locator(".usage-bins")).toHaveValue("1m");
+
+    // Glancing at another view must not throw the Day choice away. It used
+    // to: switching granularity ran that view's DEFAULT width, and there was
+    // only ever one remembered width to come back to.
+    await pickGranularity(page, "Week");
+    await page.locator(".usage-bins").selectOption("4h");
+    await expect(page.locator(".usage-bins")).toHaveValue("4h");
+
+    await pickGranularity(page, "Day");
+    await expect(page.locator(".usage-bins")).toHaveValue("1m");
+    await pickGranularity(page, "Week");
+    await expect(page.locator(".usage-bins")).toHaveValue("4h");
+  });
+
+  test("both remembered widths survive a reopen", async ({ page }) => {
+    await openHarness(page);
+    await pickGranularity(page, "Day");
+    await page.locator(".usage-bins").selectOption("1m");
+    await pickGranularity(page, "Month");
+    await page.locator(".usage-bins").selectOption("1d");
+    await expect(page.locator(".usage-bins")).toHaveValue("1d");
+
+    await page.reload();
+    await expect(page.locator(".usage-card")).toBeVisible();
+
+    // Lands on the view it was left in, at that view's width…
+    await expect(page.locator(".usage-chip.active")).toHaveText("Month");
+    await expect(page.locator(".usage-bins")).toHaveValue("1d");
+    // …and the other view's width came back too.
+    await pickGranularity(page, "Day");
+    await expect(page.locator(".usage-bins")).toHaveValue("1m");
+  });
+
+  test("reopens on the Session view when that is where it was left", async ({ page }) => {
+    await openHarness(page);
+    await page.locator('.usage-chip[data-g="session"]').click();
+    await expect(page.locator('.usage-chip[data-g="session"]')).toHaveClass(/active/);
+
+    await page.reload();
+    await expect(page.locator(".usage-card")).toBeVisible();
+    await expect(page.locator(".usage-chart canvas")).toBeVisible();
+
+    await expect(page.locator('.usage-chip[data-g="session"]')).toHaveClass(/active/);
+    await expect(page.locator(".usage-period")).toContainText("Session ·");
+  });
+
   test("series toggles come back on reopen", async ({ page }) => {
     await openHarness(page);
     await toggle(page, "fiveHour").click();

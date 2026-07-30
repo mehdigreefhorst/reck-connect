@@ -6,7 +6,13 @@
 // persisted blob is sanitized back into usable state.
 //
 // WHAT IS REMEMBERED — the shape of the view:
-//   granularity, bin width, project filter, and which series are toggled on.
+//   which view was open (granularity, or the Session window), the bin width
+//   PER granularity, the project filter, and which series are toggled on.
+//
+//   Bin width is per-granularity because it is not one preference, it is one
+//   per view: "1 minute" is a considered choice on Day and not offered at all
+//   on Year. A single remembered width meant picking 1m on Day and glancing at
+//   Week threw the choice away, since coming back ran the Day default.
 //
 // WHAT IS NOT — where in time you were:
 //   The anchor date is deliberately dropped. Reopening a "Day" view should show
@@ -30,9 +36,17 @@ export interface UsageSeriesShown {
   sevenDay: boolean;
 }
 
+/** Remembered bin width per granularity. Sparse: a granularity with no entry
+ * has never been chosen for and uses its default. */
+export type UsageBuckets = Partial<Record<Granularity, UsageHistogramBucket>>;
+
 export interface UsagePrefs {
   granularity: Granularity;
-  bucket: UsageHistogramBucket;
+  buckets: UsageBuckets;
+  /** Whether the Session view (the live 5h window) was the one open.
+   * Sits alongside `granularity` rather than replacing it, so leaving the
+   * session drops back to the calendar view you were on before. */
+  session: boolean;
   /** Project filter; "" means all projects. */
   projectId: string;
   shown: UsageSeriesShown;
@@ -47,7 +61,8 @@ const GRANULARITIES: Granularity[] = ["day", "week", "month", "year"];
  *  the rest of the session. `sanitizeUsagePrefs` always builds fresh objects. */
 export const DEFAULT_USAGE_PREFS: Readonly<UsagePrefs> = Object.freeze({
   granularity: "week" as Granularity,
-  bucket: defaultBinFor("week"),
+  buckets: Object.freeze({}) as UsageBuckets,
+  session: false,
   projectId: "",
   shown: Object.freeze({ tokens: true, fiveHour: true, sevenDay: true }),
 }) as Readonly<UsagePrefs>;
@@ -107,16 +122,41 @@ export function sanitizeUsagePrefs(raw: unknown): UsagePrefs {
     ? src.granularity
     : DEFAULT_USAGE_PREFS.granularity;
 
-  const bucket = isBucketValidFor(granularity, src.bucket)
-    ? src.bucket
-    : defaultBinFor(granularity);
-
   return {
     granularity,
-    bucket,
+    buckets: sanitizeBuckets(src.buckets, src.bucket, granularity),
+    session: src.session === true,
     projectId: typeof src.projectId === "string" ? src.projectId : "",
     shown: sanitizeShown(src.shown),
   };
+}
+
+/**
+ * Per-granularity bin widths, dropping any that its granularity does not
+ * offer — a hand-edited or stale "1m" on Month would otherwise reach the
+ * daemon as a bad query parameter.
+ *
+ * `legacy` is the flat `bucket` field written before widths were per-view.
+ * It is adopted for `granularity` (the view it was chosen on) so upgrading
+ * does not silently throw away the width someone had set, but never
+ * overrides an explicit per-granularity entry.
+ */
+function sanitizeBuckets(raw: unknown, legacy: unknown, granularity: Granularity): UsageBuckets {
+  const src: Record<string, unknown> =
+    typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const out: UsageBuckets = {};
+  for (const g of GRANULARITIES) {
+    if (isBucketValidFor(g, src[g])) out[g] = src[g];
+  }
+  if (out[granularity] === undefined && isBucketValidFor(granularity, legacy)) {
+    out[granularity] = legacy;
+  }
+  return out;
+}
+
+/** The width to use for a granularity: the remembered one, else its default. */
+export function bucketFor(buckets: UsageBuckets, granularity: Granularity): UsageHistogramBucket {
+  return buckets[granularity] ?? defaultBinFor(granularity);
 }
 
 /**
