@@ -1263,13 +1263,31 @@ html, body, #app {
   background: var(--app-bg);
   color: var(--app-text);
 }
-.popout-header {
+/* The two popup title bars — detached pane and file viewer — are visually the
+   same bar: mono, uppercase, dimmed, on a raised background. They were separate
+   byte-identical rules; grouped here so the typography can only be changed in
+   one place.
+
+   The main window's `.nav` is deliberately NOT in this group: it has its own
+   display-font brand and dark palette. It shares the structural base
+   (`.reck-window-header`), not this skin.
+
+   On the font size: 0.7rem is 9.8px at this app's 14px root, which next to a
+   12px traffic-light dot read as a mistake. 0.9rem = 12.6px, essentially the
+   13px macOS uses for its own window titles — a cap-height a little under the
+   dot diameter is the normal, balanced relationship.
+
+   (The real culprit was alignment rather than size: the dots were centred 3px
+   off this bar's centre line. Fixed via per-window `trafficLightPosition` in
+   main — see WINDOW_HEADER_HEIGHT there, which must track the heights below.) */
+.popout-header,
+.file-viewer-header {
   gap: 0.5rem;
   padding-right: 12px;
   border-bottom: 1px solid var(--app-border);
   background: var(--app-bg-raised);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.9rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--app-text-dim);
@@ -2736,17 +2754,11 @@ html, body, #app {
   overflow: hidden;
 }
 
+/* Only what the file viewer adds on top of the shared popup skin: the header
+   is a positioning context for the spinner slot, and sits above the body so the
+   lightbox / banners can't paint over it. */
 .file-viewer-header {
   position: relative;
-  gap: 0.5rem;
-  padding-right: 12px;
-  border-bottom: 1px solid var(--app-border);
-  background: var(--app-bg-raised);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--app-text-dim);
   z-index: 10;
 }
 

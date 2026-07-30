@@ -27,6 +27,11 @@ import {
   type CreateViewerOptions,
 } from "./file-viewer";
 import { composeFileViewerRoots } from "./file-roots";
+import {
+  NAV_HEIGHT,
+  POPUP_HEADER_HEIGHT,
+  trafficLightPositionFor,
+} from "./window-chrome";
 
 // Pin the Electron app name before any path / safeStorage resolution.
 //
@@ -165,7 +170,7 @@ function createWindow() {
     },
     backgroundColor: bgColor,
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 14, y: 16 },
+    trafficLightPosition: trafficLightPositionFor(NAV_HEIGHT),
   });
 
   if (isDev) {
@@ -301,7 +306,7 @@ function createPaneWindow(
     },
     backgroundColor: bgColor,
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 14, y: 16 },
+    trafficLightPosition: trafficLightPositionFor(POPUP_HEADER_HEIGHT),
   });
 
   // Use a query string (NOT a hash) so the popout boot script can read
