@@ -5199,6 +5199,46 @@ details.transcript-plan-detail > .transcript-md { margin-top: 6px; }
   opacity: 0.45;
 }
 
+/* Shown when every series toggle is off. Without it the plot is simply blank,
+   which is indistinguishable from "no usage in this period" — the user reads it
+   as missing data rather than as their own filter.
+
+   Red rather than the muted `.usage-note` treatment on purpose: this is a state
+   the user has to undo to see anything, not an observation about the data.
+   `--sl-red` is the app's existing red (the stoplight red), so this stays in
+   palette instead of introducing a second one.
+   `pointer-events: none` so drag-zoom and the legend underneath stay reachable. */
+.usage-no-series {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 3rem;
+  z-index: 2;
+  pointer-events: none;
+  border: 1.5px solid color-mix(in srgb, var(--sl-red) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--sl-red) 22%, transparent);
+}
+.usage-no-series[hidden] {
+  display: none;
+}
+/* Solid red fill with white text rather than tinted text on the app background:
+   the label sits on a translucent red wash, so relying on the theme's own
+   contrast made it wash out in light mode. This reads the same in both. */
+.usage-no-series > span {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--sl-red);
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 25%);
+}
+
 .usage-note {
   position: absolute;
   inset: 0;

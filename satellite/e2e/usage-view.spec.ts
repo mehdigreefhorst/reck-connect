@@ -259,3 +259,129 @@ test("Escape closes the polling dialog without closing the usage view", async ({
   // guards, and it only works because the dialog root is .confirm-overlay.
   await expect(page.locator(".usage-card")).toBeVisible();
 });
+
+// ---------------------------------------------------------------------------
+// Remembered view state + the no-series overlay.
+//
+// The harness backs window.reckAPI.config with sessionStorage, so a reload
+// exercises the real load/save path rather than a mock of it.
+
+/** Click a granularity chip ("Day", "Week", …). */
+async function pickGranularity(page: Page, label: string): Promise<void> {
+  await page.locator(".usage-chip", { hasText: new RegExp(`^${label}$`) }).click();
+  await expect(page.locator(".usage-chart canvas")).toBeVisible();
+}
+
+function toggle(page: Page, key: "tokens" | "fiveHour" | "sevenDay") {
+  return page.locator(`.usage-series-toggle[data-series="${key}"]`);
+}
+
+test.describe("usage view — remembered state", () => {
+  test("granularity and bin width come back on reopen", async ({ page }) => {
+    await openHarness(page);
+    await pickGranularity(page, "Day");
+    await page.locator(".usage-bins").selectOption("1m");
+    await expect(page.locator(".usage-chart canvas")).toBeVisible();
+
+    await page.reload();
+    await expect(page.locator(".usage-card")).toBeVisible();
+
+    await expect(page.locator(".usage-chip.active")).toHaveText("Day");
+    await expect(page.locator(".usage-bins")).toHaveValue("1m");
+  });
+
+  test("series toggles come back on reopen", async ({ page }) => {
+    await openHarness(page);
+    await toggle(page, "fiveHour").click();
+    await toggle(page, "sevenDay").click();
+    await expect(toggle(page, "fiveHour")).toHaveAttribute("aria-pressed", "false");
+
+    await page.reload();
+    await expect(page.locator(".usage-card")).toBeVisible();
+
+    await expect(toggle(page, "tokens")).toHaveAttribute("aria-pressed", "true");
+    await expect(toggle(page, "fiveHour")).toHaveAttribute("aria-pressed", "false");
+    await expect(toggle(page, "sevenDay")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("the project filter comes back on reopen", async ({ page }) => {
+    await openHarness(page);
+    const projectSel = page.locator(".usage-project:not(.usage-bins)");
+    const value = await projectSel
+      .locator("option")
+      .nth(1)
+      .evaluate((o: HTMLOptionElement) => o.value);
+    await projectSel.selectOption(value);
+    await expect(page.locator(".usage-chart canvas")).toBeVisible();
+
+    await page.reload();
+    await expect(page.locator(".usage-card")).toBeVisible();
+    // The <option> list is fetched async — the restore has to wait for it, or
+    // assigning the value silently no-ops and the filter is lost.
+    await expect(projectSel).toHaveValue(value);
+  });
+
+  test("the anchor date is NOT remembered — reopen lands on the latest period", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    await pickGranularity(page, "Day");
+    const today = await page.locator(".usage-period").textContent();
+
+    // Page back two days, then reopen.
+    await page.locator('.usage-pager[data-dir="-1"]').click();
+    await page.locator('.usage-pager[data-dir="-1"]').click();
+    await expect(page.locator(".usage-period")).not.toHaveText(today!);
+
+    await page.reload();
+    await expect(page.locator(".usage-card")).toBeVisible();
+    await expect(page.locator(".usage-chip.active")).toHaveText("Day");
+    // Granularity remembered, position in time not.
+    await expect(page.locator(".usage-period")).toHaveText(today!);
+  });
+});
+
+test.describe("usage view — no series selected", () => {
+  test("is hidden while any series is on", async ({ page }) => {
+    await openHarness(page);
+    await expect(page.locator(".usage-no-series")).toBeHidden();
+    await toggle(page, "fiveHour").click();
+    await toggle(page, "sevenDay").click();
+    // Tokens still on.
+    await expect(page.locator(".usage-no-series")).toBeHidden();
+  });
+
+  test("appears when the last series is switched off", async ({ page }) => {
+    await openHarness(page);
+    for (const k of ["tokens", "fiveHour", "sevenDay"] as const) {
+      await toggle(page, k).click();
+    }
+    const banner = page.locator(".usage-no-series");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText(/no series selected/i);
+
+    // It must not swallow clicks aimed at the chart underneath.
+    await expect(banner).toHaveCSS("pointer-events", "none");
+  });
+
+  test("disappears again as soon as a series comes back", async ({ page }) => {
+    await openHarness(page);
+    for (const k of ["tokens", "fiveHour", "sevenDay"] as const) {
+      await toggle(page, k).click();
+    }
+    await expect(page.locator(".usage-no-series")).toBeVisible();
+    await toggle(page, "tokens").click();
+    await expect(page.locator(".usage-no-series")).toBeHidden();
+  });
+
+  test("survives a reopen in the empty state", async ({ page }) => {
+    await openHarness(page);
+    for (const k of ["tokens", "fiveHour", "sevenDay"] as const) {
+      await toggle(page, k).click();
+    }
+    await page.reload();
+    await expect(page.locator(".usage-card")).toBeVisible();
+    await expect(page.locator(".usage-no-series")).toBeVisible();
+    await page.screenshot({ path: "e2e/artifacts/usage-no-series.png" });
+  });
+});

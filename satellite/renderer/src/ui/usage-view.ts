@@ -53,6 +53,8 @@ import { iconClose, iconDownload, iconGear } from "./icons";
 import { confirmDialogOpen } from "./confirmDialog";
 import { openUsageExportDialog } from "./usage-export-dialog";
 import { openUsagePollDialog } from "./usage-poll-dialog";
+import { noSeriesVisible } from "./usage-prefs";
+import { loadUsagePrefs, saveUsagePrefs } from "../config";
 
 export interface UsageOverlayOpts {
   api: ApiClient;
@@ -129,6 +131,9 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       </div>
       <div class="usage-chart-wrap">
         <div class="usage-chart"></div>
+        <div class="usage-no-series" hidden>
+          <span>No series selected — pick Tokens, 5h quota or 7d quota below.</span>
+        </div>
         <div class="usage-note" hidden></div>
         <div class="usage-chart-actions">
           <button class="icon-btn usage-poll-settings" title="Quota polling…">${iconGear}</button>
@@ -149,6 +154,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   const chartWrap = overlay.querySelector(".usage-chart-wrap") as HTMLElement;
   const chartEl = overlay.querySelector(".usage-chart") as HTMLElement;
   const noteEl = overlay.querySelector(".usage-note") as HTMLElement;
+  const noSeriesEl = overlay.querySelector(".usage-no-series") as HTMLElement;
   const readoutEl = overlay.querySelector(".usage-readout") as HTMLElement;
   const statsEl = overlay.querySelector(".usage-stats") as HTMLElement;
   const legendEl = overlay.querySelector(".usage-legend") as HTMLElement;
@@ -173,6 +179,31 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     { key: "fiveHour", label: "5h quota", cssColor: "--wes-sage", seriesIdx: 2 },
     { key: "sevenDay", label: "7d quota", cssColor: "--wes-mustard", seriesIdx: 3 },
   ];
+  /**
+   * Remember the shape of the view. Fire-and-forget: a failed write costs the
+   * setting on next open, and must never interrupt looking at the chart.
+   *
+   * The anchor date is intentionally absent — see ui/usage-prefs.ts.
+   */
+  function persist(): void {
+    void saveUsagePrefs({ granularity, bucket, projectId, shown: { ...shown } }).catch(
+      (e) => console.warn("[usage] could not persist view state:", e),
+    );
+  }
+
+  /** Push `shown` onto the toggle buttons — needed when prefs restore a state
+   *  the buttons were not built with. */
+  function syncToggleButtons(): void {
+    for (const t of SERIES_TOGGLES) {
+      const btn = legendEl.querySelector<HTMLButtonElement>(
+        `.usage-series-toggle[data-series="${t.key}"]`,
+      );
+      if (!btn) continue;
+      btn.classList.toggle("off", !shown[t.key]);
+      btn.setAttribute("aria-pressed", String(shown[t.key]));
+    }
+  }
+
   for (const t of SERIES_TOGGLES) {
     const btn = document.createElement("button");
     btn.className = "usage-series-toggle";
@@ -192,6 +223,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       // an axis with no visible series disappears instead of showing a
       // meaningless autoscaled 0–10 scale.
       renderChart();
+      persist();
     });
     legendEl.appendChild(btn);
   }
@@ -295,7 +327,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
 
   // Project filter options are best-effort decoration: the view works
   // fine as "All projects" when the list fetch fails.
-  void opts.api
+  const projectsLoaded = opts.api
     .listProjects()
     .then(({ projects }) => {
       for (const p of projects) {
@@ -360,6 +392,11 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   }
 
   async function refresh(): Promise<void> {
+    // Every non-toggle state change funnels through here — granularity chips,
+    // bin select, project select, paging, drill up/down — so this is the one
+    // place that has to remember them. (Paging only moves the anchor date,
+    // which isn't persisted, so those writes are no-ops.)
+    persist();
     // Reflect state in the chrome immediately, then fetch.
     chipsEl.querySelectorAll<HTMLElement>(".usage-chip").forEach((c) => {
       c.classList.toggle("active", custom === null && c.dataset.g === granularity);
@@ -511,6 +548,9 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     chartEl.innerHTML = "";
     renderStats();
     renderReadout(null);
+    // With every series toggled off the plot is blank, which is
+    // indistinguishable from "no usage in this period". Say which it is.
+    noSeriesEl.hidden = !noSeriesVisible(shown);
     if (bins.length === 0) return;
 
     const orange = cssVar("--claude-orange") || "#d4683a";
@@ -735,5 +775,30 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   });
   ro.observe(chartWrap);
 
-  void refresh();
+  // Restore the remembered view, then do the first fetch — one round trip, and
+  // no flash of the default view first.
+  //
+  // The project filter waits for the option list: assigning a <select> value
+  // before its <option> exists silently keeps the old value, which would have
+  // quietly dropped a remembered project filter. A remembered project that no
+  // longer exists leaves the select on "All projects", and reading the value
+  // back keeps state and chrome in agreement.
+  void (async () => {
+    const prefs = await loadUsagePrefs().catch(() => null);
+    if (prefs) {
+      granularity = prefs.granularity;
+      bucket = prefs.bucket;
+      Object.assign(shown, prefs.shown);
+      // Deliberately NOT restored: the anchor date. Reopening a "Day" view
+      // shows today, not the day last paged to.
+      periodStart = periodFor(granularity, new Date()).start;
+      syncToggleButtons();
+      if (prefs.projectId) {
+        await projectsLoaded;
+        projectSel.value = prefs.projectId;
+        projectId = projectSel.value;
+      }
+    }
+    await refresh();
+  })();
 }

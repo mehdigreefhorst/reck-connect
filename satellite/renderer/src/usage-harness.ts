@@ -120,6 +120,26 @@ const stubApi = {
   },
 } as unknown as ApiClient;
 
+/** The overlay remembers its view state through window.reckAPI.config, which
+ *  only exists behind the Electron preload. Back it with sessionStorage so the
+ *  harness exercises the real persistence path — and so a Playwright reload can
+ *  assert the state actually came back. */
+function installConfigStub(): void {
+  (window as unknown as { reckAPI: unknown }).reckAPI = {
+    config: {
+      get: async <T>(k: string): Promise<T | null> => {
+        const raw = sessionStorage.getItem(`harness:${k}`);
+        return raw === null ? null : (JSON.parse(raw) as T);
+      },
+      set: async (k: string, v: unknown): Promise<boolean> => {
+        sessionStorage.setItem(`harness:${k}`, JSON.stringify(v));
+        return true;
+      },
+    },
+  };
+}
+
+installConfigStub();
 document.documentElement.setAttribute(
   "data-theme",
   new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light",
