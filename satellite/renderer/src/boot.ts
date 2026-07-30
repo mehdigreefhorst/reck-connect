@@ -1322,9 +1322,18 @@ export async function boot(splash?: StartupSplashController) {
           // clicked pane is only provably that project's when it sits in
           // the current layout tree (directHost !== null). Outside it
           // (selectProject race), a WRONG cwd poisons resolveActivatePath
-          // and main's rescue pipeline, while an ABSENT cwd is safe — main
-          // derives the project anchor from the resolved path. So drop the
-          // cwd when the pane isn't provably the current project's.
+          // and main's rescue pipeline, so drop the cwd when the pane isn't
+          // provably the current project's.
+          //
+          // Absent is SAFER than wrong, but it is not free: main cannot
+          // anchor a relative path on its own — `rootRelativeCandidate`
+          // returns null without a cwd, so the text reaches
+          // `isStationPathSafe` still relative and is rejected. Clicks that
+          // take this branch therefore resolve absolute and `~/` forms only.
+          // (An earlier version of this comment claimed main derives the
+          // anchor from the resolved path; it doesn't, and believing it was
+          // what left detached pane windows unable to open relative paths
+          // at all.)
           const projectCwd =
             directHost !== null
               ? currentProjects.find((p) => p.id === currentProjectId)?.cwd ??
