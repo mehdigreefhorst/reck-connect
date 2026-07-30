@@ -18,6 +18,11 @@ import taskLists from "markdown-it-task-lists";
 import hljs from "highlight.js/lib/common";
 import DOMPurify, { type Config as DOMPurifyConfig } from "dompurify";
 import { createRenderedDom, isInternalLinkHref } from "./renderedDom";
+import {
+  enhanceMath,
+  enhanceMermaid,
+  type MermaidTheme,
+} from "./markdownEnhancers";
 
 export interface MarkdownRendererOptions {
   /**
@@ -49,6 +54,19 @@ export interface MarkdownRenderer {
    * interception against the (sole) handler attached to `container`.
    */
   mount(container: HTMLElement, html: string): void;
+  /**
+   * Resolves once the post-mount enhancement passes (mermaid diagrams, KaTeX
+   * math) kicked off by the most recent `mount()` have settled.
+   *
+   * `mount()` stays synchronous — callers that only need the prose on screen
+   * are unaffected — but anything that depends on the *final* layout must
+   * await this: the passes change document height, which moves scroll-spy
+   * thresholds and scroll offsets. Tests await it for determinism.
+   *
+   * Never rejects: an enhancement failure degrades to the un-enhanced source
+   * block rather than breaking the whole render.
+   */
+  whenEnhanced(): Promise<void>;
   /** Detach the click handler and clear internal references. */
   dispose(): void;
 }
@@ -179,6 +197,14 @@ const PURIFY_CONFIG: DOMPurifyConfig = {
   KEEP_CONTENT: true,
 };
 
+/** Mermaid's theme name for the app's current palette. Reads the same
+ *  `data-theme` attribute the viewer already uses to theme CodeMirror. */
+function currentMermaidTheme(): MermaidTheme {
+  return document.documentElement.getAttribute("data-theme") === "dark"
+    ? "dark"
+    : "default";
+}
+
 export function createMarkdownRenderer(
   opts: MarkdownRendererOptions = {},
 ): MarkdownRenderer {
@@ -187,6 +213,28 @@ export function createMarkdownRenderer(
     onLinkActivate: opts.onLinkActivate,
     onExternalActivate: opts.onExternalActivate,
   });
+
+  // Every mount() (and dispose()) bumps the generation. The enhancement
+  // passes capture the value at kick-off and re-check it after their lazy
+  // import resolves, so a popup that re-rendered — or closed — while a
+  // several-hundred-KB chunk was in flight never gets written into.
+  let generation = 0;
+  let enhancing: Promise<void> = Promise.resolve();
+
+  async function enhance(container: HTMLElement, mine: number): Promise<void> {
+    const stillCurrent = (): boolean =>
+      generation === mine && container.isConnected;
+    if (!stillCurrent()) return;
+    // Sequential, not concurrent: both passes mutate the same subtree, and
+    // running them one after the other keeps the post-enhancement layout
+    // deterministic for whoever awaits whenEnhanced().
+    await enhanceMermaid(container, {
+      theme: currentMermaidTheme(),
+      stillCurrent,
+    });
+    await enhanceMath(container, { stillCurrent });
+  }
+
   return {
     render(markdown: string): string {
       const rawHtml = md.render(markdown);
@@ -197,8 +245,14 @@ export function createMarkdownRenderer(
     },
     mount(container: HTMLElement, html: string): void {
       dom.mount(container, html);
+      const mine = ++generation;
+      enhancing = enhance(container, mine);
+    },
+    whenEnhanced(): Promise<void> {
+      return enhancing;
     },
     dispose(): void {
+      generation++;
       dom.dispose();
     },
   };
