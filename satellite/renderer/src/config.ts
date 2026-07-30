@@ -623,11 +623,19 @@ cwd-relative path printed from inside a subdirectory becomes ambiguous
 Good: \`services/foo/main.py\`, \`<project-root>/services/foo/main.py\`.
 Ambiguous: \`main.py\` (relative to which subdir?).
 
-RENDERING:
-The Reck file viewer renders Markdown popups with Mermaid diagrams
-(\`\`\`mermaid blocks) and KaTeX math (inline \`$..$\`, display \`$$..$$\`).
-You can freely emit diagrams and math notation in any \`.md\` file the
-user might open — they'll render rather than appearing as raw source.`;
+RENDERING — FILE CONTENT ONLY:
+A \`.md\` file opened in the Reck viewer popup renders Mermaid diagrams
+(\`\`\`mermaid blocks), KaTeX math (inline \`$..$\`, display \`$$..$$\`),
+images (click one to enlarge it), tables, task lists and syntax-
+highlighted code. Its headings become a collapsible table of contents.
+
+NONE of that applies to your TERMINAL OUTPUT, which is plain text. A
+\`\`\`mermaid block or \`$..$\` printed into the chat is unreadable source,
+not a diagram — never use them there. They belong only inside \`.md\`
+files you write for the user to open.
+
+Raw HTML inside markdown is escaped rather than rendered — \`<details>\`
+and \`<br>\` appear literally — so use markdown constructs instead.`;
 
 export async function loadReckConnectPrompt(): Promise<string | null> {
   const raw = await window.reckAPI.config.get<string>(RECK_CONNECT_PROMPT_KEY);

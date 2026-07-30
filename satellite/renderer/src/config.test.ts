@@ -687,3 +687,36 @@ describe("file-viewer TOC mode", () => {
     expect(await loadFileViewerTocWidth()).toBe(180);
   });
 });
+
+describe("DEFAULT_RECK_CONNECT_PROMPT — rendering section", () => {
+  // This text is appended to every Claude pane, so a weakened instruction
+  // shows up as diagrams appearing in terminal output. The original wording
+  // ("You can freely emit diagrams…") read as blanket permission and did
+  // exactly that; these pin the scope so it can't quietly regress.
+  const prompt = DEFAULT_RECK_CONNECT_PROMPT;
+
+  it("scopes rendering to file content", () => {
+    expect(prompt).toMatch(/FILE CONTENT ONLY/);
+  });
+
+  it("explicitly forbids diagrams and math in terminal output", () => {
+    expect(prompt).toMatch(/TERMINAL OUTPUT/);
+    expect(prompt).toMatch(/never use them there/i);
+  });
+
+  it("still advertises the capabilities that make it worth using", () => {
+    for (const capability of [/Mermaid/, /KaTeX/, /table of contents/i, /enlarge/i]) {
+      expect(prompt).toMatch(capability);
+    }
+  });
+
+  it("warns that raw HTML is escaped", () => {
+    // `html: false` in the markdown renderer — agents reach for <details>
+    // constantly, and it renders literally.
+    expect(prompt).toMatch(/escaped rather than rendered/);
+  });
+
+  it("keeps the path-conventions section intact", () => {
+    expect(prompt).toMatch(/PATH CONVENTIONS/);
+  });
+});
