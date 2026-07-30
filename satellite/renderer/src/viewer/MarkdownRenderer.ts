@@ -142,6 +142,21 @@ function createMarkdownIt(): MarkdownIt {
     return defaultLinkOpen(tokens, idx, options, env, self);
   };
 
+  // Lazy-load images. Native attributes rather than an IntersectionObserver:
+  // MarkView reaches for the observer because it wants custom fade-in
+  // transitions, which we don't — and native works everywhere Electron does.
+  // Same wrapper idiom as `link_open` above.
+  const defaultImage =
+    md.renderer.rules.image ??
+    ((tokens, idx, options, _env, self) =>
+      self.renderToken(tokens, idx, options));
+  md.renderer.rules.image = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    token.attrSet("loading", "lazy");
+    token.attrSet("decoding", "async");
+    return defaultImage(tokens, idx, options, env, self);
+  };
+
   // Tighten markdown-it's link validator: it permits `javascript:` only under
   // explicit opt-in, but the default also allows `vbscript:` and `data:`
   // image/SVG. We restrict to schemes we will actually click through.
@@ -162,7 +177,21 @@ function createMarkdownIt(): MarkdownIt {
 const PURIFY_CONFIG: DOMPurifyConfig = {
   // Allow the classes our renderer adds (especially reck-internal-link) and
   // the highlight.js classnames. Defaults preserve `class` for benign tags.
-  ALLOWED_ATTR: ["href", "title", "alt", "src", "class", "id", "type", "checked", "disabled"],
+  // `loading`/`decoding` carry the lazy-image hints set in createMarkdownIt();
+  // without them here DOMPurify strips the attributes straight back off.
+  ALLOWED_ATTR: [
+    "href",
+    "title",
+    "alt",
+    "src",
+    "class",
+    "id",
+    "type",
+    "checked",
+    "disabled",
+    "loading",
+    "decoding",
+  ],
   ALLOWED_TAGS: [
     "a",
     "p",
@@ -192,6 +221,19 @@ const PURIFY_CONFIG: DOMPurifyConfig = {
     "th",
     "td",
     "del",
+    // §5 of docs/markdown-viewer-integration.md. NOTE: these are currently
+    // unreachable through this pipeline — `html: false` escapes raw HTML in
+    // markdown source long before DOMPurify sees it, so `<details>` renders as
+    // the literal text `&lt;details&gt;` (pinned by a test). They are listed
+    // as defense-in-depth for a future markdown-it plugin that emits them
+    // through the render pipeline.
+    //
+    // Do NOT flip `html: true` to "make them work". That is the primary XSS
+    // bar here — see the file header. Collapsible sections, if wanted, want a
+    // narrow container plugin, not raw HTML passthrough.
+    "details",
+    "summary",
+    "kbd",
   ],
   // Disallow form/iframe-style tags by omitting them from ALLOWED_TAGS.
   KEEP_CONTENT: true,
