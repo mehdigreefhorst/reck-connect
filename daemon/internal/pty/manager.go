@@ -1394,8 +1394,37 @@ func (m *Manager) CreatePaneWith(projectID string, kind proto.PaneKind, cols, ro
 	// osascript no longer fail with errAEPrivilegeError, and the
 	// reck-clipboard sidecar — which existed solely to mediate that —
 	// is gone.
-	pane, err := Spawn(projectID, kind, plan.Argv, spawnCwd, cols, rows, opts.ExtraEnv)
-	if err != nil {
+	// Allocate, publish, then start. Agent lifecycle hooks can fire the
+	// instant the child execs, and a hook that arrives before the pane is
+	// in byID gets a 404 — losing whatever the payload carried. So:
+	//   1. New: pre-generates pane.ID + HookSecret and initializes the
+	//      replay buffer / event log, making Subscribe + RecordEvent safe
+	//      on a pane whose child doesn't exist yet.
+	//   2. SlotID assignment for shell + codex, so the pane already
+	//      carries the identity its session-index row is keyed by.
+	//   3. byID registration, so the agent-event endpoint can find it.
+	//   4. Start: env build + exec + readLoop/waitLoop. On failure we undo
+	//      1–3.
+	// Scans over AllPanes gate on IsStarted() so a pane that is published
+	// but not yet running stays invisible to the liveness ticker and the
+	// aggregate stoplight.
+	pane := New(projectID, kind)
+	if (kind == proto.PaneKindShell || kind == proto.PaneKindCodex) && m.sessions != nil {
+		if restoreEntry != nil {
+			pane.SlotID = restoreEntry.SlotID
+		} else {
+			pane.SlotID = sessions.NewUUID()
+		}
+	}
+
+	m.mu.Lock()
+	m.byID[pane.ID] = pane
+	m.mu.Unlock()
+
+	if err := pane.Start(plan.Argv, spawnCwd, cols, rows, opts.ExtraEnv); err != nil {
+		m.mu.Lock()
+		delete(m.byID, pane.ID)
+		m.mu.Unlock()
 		return nil, err
 	}
 
@@ -1440,19 +1469,20 @@ func (m *Manager) CreatePaneWith(projectID string, kind proto.PaneKind, cols, ro
 	}
 
 	// Shell- and codex-pane session bookkeeping (Scope B). Both are
-	// slot-identified (no Claude session): fresh spawns get a new SlotID
-	// and a new Entry with the resolved argv captured for later restore;
-	// the restore path reuses the same SlotID and bumps
-	// LastActiveAt/LastPaneID/WasLive on the existing entry. The exit
-	// callback touches last_active_at same as the Claude flow so the
-	// restore-candidate heuristic has a fresh timestamp to report. Codex
-	// mirrors shell here — it has no session to resume, so slot continuity
-	// is what lets a codex tab survive a daemon restart.
+	// slot-identified (no Claude session): fresh spawns record a new Entry
+	// with the resolved argv captured for later restore; the restore path
+	// reuses the same SlotID and bumps LastActiveAt/LastPaneID/WasLive on
+	// the existing entry. The exit callback touches last_active_at same as
+	// the Claude flow so the restore-candidate heuristic has a fresh
+	// timestamp to report. Codex mirrors shell here — slot continuity is
+	// what lets a codex tab survive a daemon restart.
+	//
+	// SlotID itself was assigned before Start (see above) so the pane
+	// carries its row identity from the moment it is published.
 	if (kind == proto.PaneKindShell || kind == proto.PaneKindCodex) && m.sessions != nil {
 		now := time.Now().UTC()
 		switch {
 		case restoreEntry != nil:
-			pane.SlotID = restoreEntry.SlotID
 			restoreEntry.LastActiveAt = now
 			restoreEntry.LastPaneID = pane.ID
 			restoreEntry.WasLive = true
@@ -1460,7 +1490,6 @@ func (m *Manager) CreatePaneWith(projectID string, kind proto.PaneKind, cols, ro
 				slog.Warn("sessions: upsert on slot restore failed", "kind", kind, "err", err, "project", projectID, "slot", shortSessionID(restoreEntry.SlotID))
 			}
 		default:
-			pane.SlotID = sessions.NewUUID()
 			// plan.Argv is the already-resolved absolute argv the
 			// adapter chose. Storing it + spawnCwd means restore
 			// ignores any subsequent edit to Project.Shell / Project.Cwd
@@ -2061,6 +2090,12 @@ func (m *Manager) RunLivenessTicker(ctx context.Context, interval time.Duration)
 		case <-t.C:
 			now := time.Now().UTC()
 			for _, p := range m.AllPanes() {
+				// Skip panes that are registered but not yet started:
+				// touching their row would mark it live before the child
+				// exists.
+				if !p.IsStarted() {
+					continue
+				}
 				identity := p.SessionID
 				if identity == "" {
 					identity = p.SlotID

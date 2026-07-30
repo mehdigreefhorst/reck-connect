@@ -108,6 +108,13 @@ func (r *Runner) Run(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			for _, pane := range r.mgr.AllPanes() {
+				// A pane is registered before its child starts so agent
+				// hooks can be attributed to it. Until Start has run,
+				// State() / AgentState() describe nothing real, so
+				// evaluating them would publish a misleading colour.
+				if !pane.IsStarted() {
+					continue
+				}
 				sig := Signals{
 					Kind:             pane.Kind,
 					AgentState:       pane.AgentState(),
