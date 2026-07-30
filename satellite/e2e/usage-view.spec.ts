@@ -47,59 +47,38 @@ test("hovering the chart never resizes the card", async ({ page }) => {
   expect(after!.height).toBeCloseTo(before!.height, 2);
 });
 
-test("bin selector offers per-view widths and re-renders", async ({ page }) => {
+test("no bin selector — the width is derived from the view", async ({ page }) => {
   await openHarness(page);
 
-  // Week view default: 30-minute bins.
-  await expect(page.locator(".usage-bins")).toHaveValue("30m");
-  const weekOptions = await page.locator(".usage-bins option").allTextContents();
-  expect(weekOptions).toEqual(["5 min", "10 min", "30 min", "1 hour", "4 hours", "1 day"]);
+  // Bin width stopped being a control (issue #130): it is a density knob
+  // whose only visible effect was how jagged the line looked, and the axis
+  // deliberately does not follow it.
+  await expect(page.locator(".usage-bins")).toHaveCount(0);
+  await expect(page.locator(".usage-project")).toHaveCount(1);
 
-  // Fine bins → curve (uPlot still draws one canvas; assert data volume
-  // via the readout after hover, and take a screenshot for the eye).
-  await page.locator(".usage-bins").selectOption("5m");
-  await expect(page.locator(".usage-bins")).toHaveValue("5m");
-  await page.waitForTimeout(150);
-  await page.screenshot({ path: "e2e/artifacts/usage-week-5m-curve.png" });
-
-  // Bin width is a density control, not an axis control (issue #106):
-  // these two shots are 12× apart in bin count and their x-axis rows
-  // must read identically — "Mon 13 … Sun 19" either way. The label
-  // logic itself is pinned in usage-axis.test.ts; these are for the eye.
-  await page.locator(".usage-bins").selectOption("4h");
-  await page.waitForTimeout(150);
-  await page.screenshot({ path: "e2e/artifacts/usage-week-axis-4h.png" });
-  await page.locator(".usage-bins").selectOption("5m");
-  await page.waitForTimeout(150);
-  await page.screenshot({ path: "e2e/artifacts/usage-week-axis-5m.png" });
-
-  // Day view: defaults to 5 minutes, offers 1 minute up to 4 hours.
-  await page.locator('.usage-chip[data-g="day"]').click();
-  await expect(page.locator(".usage-bins")).toHaveValue("5m");
-  const dayOptions = await page.locator(".usage-bins option").allTextContents();
-  expect(dayOptions).toEqual(["1 min", "2 min", "5 min", "10 min", "30 min", "1 hour", "4 hours"]);
-  await page.locator(".usage-bins").selectOption("1m");
-  await page.waitForTimeout(150);
-  await page.screenshot({ path: "e2e/artifacts/usage-day-1m-curve.png" });
-
-  // Year view: day bins or calendar months.
-  await page.locator('.usage-chip[data-g="year"]').click();
-  await expect(page.locator(".usage-bins")).toHaveValue("month");
-  const yearOptions = await page.locator(".usage-bins option").allTextContents();
-  expect(yearOptions).toEqual(["1 day", "Month"]);
+  // Every view still renders at its derived default.
+  for (const [g, shot] of [
+    ["week", "usage-week-derived.png"],
+    ["day", "usage-day-derived.png"],
+    ["month", "usage-month-derived.png"],
+    ["year", "usage-year-derived.png"],
+  ] as const) {
+    await page.locator(`.usage-chip[data-g="${g}"]`).click();
+    await expect(page.locator(".usage-chart canvas")).toBeVisible();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: `e2e/artifacts/${shot}` });
+  }
 });
 
-test("drill-down resets the bin width to the finer view's default", async ({ page }) => {
+test("drill-down and drill-up walk the granularity ladder", async ({ page }) => {
   await openHarness(page);
   await page.locator('.usage-chip[data-g="year"]').click();
-  await expect(page.locator(".usage-bins")).toHaveValue("month");
 
   // Click mid-chart → month view at 4-hour bins.
   const chart = page.locator(".usage-chart .u-over");
   const box = (await chart.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.8);
   await expect(page.locator('.usage-chip[data-g="month"]')).toHaveClass(/active/);
-  await expect(page.locator(".usage-bins")).toHaveValue("4h");
   // Month's axis row is bare dates — no clock times, and no weekday
   // names either (30 of them is noise; the space buys more dates).
   await page.waitForTimeout(150);
@@ -108,7 +87,6 @@ test("drill-down resets the bin width to the finer view's default", async ({ pag
   // ↑ drills back up (month → year on the ladder) with year's default.
   await page.locator(".usage-drill-up").click();
   await expect(page.locator('.usage-chip[data-g="year"]')).toHaveClass(/active/);
-  await expect(page.locator(".usage-bins")).toHaveValue("month");
   // At the ceiling the ↑ button disables.
   await expect(page.locator(".usage-drill-up")).toBeDisabled();
 });
@@ -133,7 +111,6 @@ test("series toggles hide/show data and survive re-renders", async ({ page }) =>
   // Toggle state survives a chart rebuild (bin-width change refetches
   // and reconstructs the uPlot instance).
   await sevenDay.click();
-  await page.locator(".usage-bins").selectOption("4h");
   await page.waitForTimeout(200);
   await expect(tokens).toHaveClass(/off/);
   await expect(sevenDay).toHaveClass(/off/);
@@ -160,20 +137,12 @@ test("drag-selecting a span zooms into that time frame", async ({ page }) => {
   await page.mouse.up();
 
   // Now in a zoomed range: the label shows a time range (– between
-  // endpoints), granularity chips deactivate, and the bin width is
-  // re-derived from the span rather than kept from the week view.
+  // endpoints) and the granularity chips deactivate.
   await expect(page.locator(".usage-period")).toContainText("–");
   await expect(page.locator(".usage-chip.active")).toHaveCount(0);
-  // ~30% of a week is ~50 h, for which defaultWidthForSpan aims at
-  // ≤240 bins. (Asserting "not the week default" stopped meaning
-  // anything once that default became 30m — which is also what this
-  // span picks.)
-  const zoomBucket = await page.locator(".usage-bins").inputValue();
-  expect(["2m", "5m", "10m", "30m"]).toContain(zoomBucket);
-  // The menu is rebuilt from the span too, so day-wide bins — two of
-  // them across 50 hours — drop off it.
-  const zoomOptions = await page.locator(".usage-bins option").allTextContents();
-  expect(zoomOptions).not.toContain("1 day");
+  // The width is re-derived from the span (defaultWidthForSpan) rather than
+  // carried over from the week view. Not directly assertable any more now
+  // that no control exposes it; usage-range.test.ts pins the derivation.
   await page.waitForTimeout(150);
   await page.screenshot({ path: "e2e/artifacts/usage-drag-zoom.png" });
 
@@ -190,12 +159,10 @@ test("drag-selecting a span zooms into that time frame", async ({ page }) => {
   await page.locator(".usage-drill-up").click();
   await expect(page.locator(".usage-period")).toContainText("Week of");
   await expect(page.locator('.usage-chip[data-g="week"]')).toHaveClass(/active/);
-  await expect(page.locator(".usage-bins")).toHaveValue("30m");
 });
 
 test("dark theme renders and looks right", async ({ page }) => {
   await openHarness(page, "dark");
-  await page.locator(".usage-bins").selectOption("1h");
   await page.waitForTimeout(150);
   await page.screenshot({ path: "e2e/artifacts/usage-week-1h-dark.png" });
   await expect(page.locator(".usage-chart canvas")).toBeVisible();
@@ -282,17 +249,15 @@ function toggle(page: Page, key: "tokens" | "fiveHour" | "sevenDay") {
 }
 
 test.describe("usage view — remembered state", () => {
-  test("granularity and bin width come back on reopen", async ({ page }) => {
+  test("granularity comes back on reopen", async ({ page }) => {
     await openHarness(page);
     await pickGranularity(page, "Day");
-    await page.locator(".usage-bins").selectOption("1m");
     await expect(page.locator(".usage-chart canvas")).toBeVisible();
 
     await page.reload();
     await expect(page.locator(".usage-card")).toBeVisible();
 
     await expect(page.locator(".usage-chip.active")).toHaveText("Day");
-    await expect(page.locator(".usage-bins")).toHaveValue("1m");
   });
 
   test("series toggles come back on reopen", async ({ page }) => {
@@ -311,7 +276,7 @@ test.describe("usage view — remembered state", () => {
 
   test("the project filter comes back on reopen", async ({ page }) => {
     await openHarness(page);
-    const projectSel = page.locator(".usage-project:not(.usage-bins)");
+    const projectSel = page.locator(".usage-project");
     const value = await projectSel
       .locator("option")
       .nth(1)

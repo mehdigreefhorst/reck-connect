@@ -47,7 +47,12 @@ const RESET_ALPHA = "59"; // ~35%
 
 /** uPlot renders at devicePixelRatio; every width and radius here is in CSS
  * pixels and scaled by it, or the marks come out hairline on retina. */
-function paintLayer(u: uPlot, layer: ForecastLayer, opts: ForecastPaintOpts): void {
+function paintLayer(
+  u: uPlot,
+  layer: ForecastLayer,
+  opts: ForecastPaintOpts,
+  order: number,
+): void {
   const { ctx } = u;
   // valToPos(..., true) returns CANVAS pixels, and uPlot sizes its canvas at
   // the device ratio. Series widths get scaled by uPlot itself; raw ctx
@@ -115,8 +120,9 @@ function paintLayer(u: uPlot, layer: ForecastLayer, opts: ForecastPaintOpts): vo
 
   // Canvas cannot resolve a CSS custom property, so the mono stack is named
   // here rather than read from --font-mono.
-  ctx.font = `${10 * r}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-  ctx.textBaseline = "top";
+  const fontPx = 10 * r;
+  ctx.font = `${fontPx}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.textBaseline = "bottom";
 
   // --- reset marker ----------------------------------------------------
   // Null when the reset lies beyond the horizon cap, which is the norm for a
@@ -132,18 +138,25 @@ function paintLayer(u: uPlot, layer: ForecastLayer, opts: ForecastPaintOpts): vo
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Right-align the label when the marker sits near the plot's edge, so
-    // it never spills outside the clip.
+    // Labelled along the BOTTOM, not the top. It names an instant, so it
+    // belongs by the time axis — and the top strip is where the 100%
+    // crossing rings live, which put a ring through the middle of the text.
+    // Stacked by layer order, since the 5h and 7d windows reset at
+    // different instants and their markers land close together on Week.
     const text = `${layer.label} resets ${layer.formatTime(g.resetsAt)}`;
     const w = ctx.measureText(text).width;
     const right = u.bbox.left + u.bbox.width;
     ctx.fillStyle = opts.textColor;
-    ctx.fillText(text, x + 4 * r + w > right ? x - 4 * r - w : x + 4 * r, u.bbox.top + 2 * r);
+    ctx.fillText(
+      text,
+      // Flip to the marker's left when the label would spill past the clip.
+      x + 4 * r + w > right ? x - 4 * r - w : x + 4 * r,
+      u.bbox.top + u.bbox.height - 2 * r - order * (fontPx + 2 * r),
+    );
   }
 
   // --- 100% crossing ---------------------------------------------------
-  // The moment the projection says you get throttled. Marked on the centre
-  // line only: one ring per series, not three.
+  // The moment the projection says you get throttled.
   // Marked on the upper bound as well as the centre: the earliest crossing
   // is the one worth knowing about, and on a wide band the centre may never
   // reach 100% while the upper bound does.
@@ -172,9 +185,7 @@ export function paintForecast(u: uPlot, opts: ForecastPaintOpts): void {
     ctx.beginPath();
     ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
     ctx.clip();
-    for (const layer of opts.layers) {
-      paintLayer(u, layer, opts);
-    }
+    opts.layers.forEach((layer, i) => paintLayer(u, layer, opts, i));
   } finally {
     ctx.restore();
   }

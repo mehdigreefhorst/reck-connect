@@ -1,40 +1,10 @@
 import { describe, it, expect } from "vitest";
-import {
-  DEFAULT_USAGE_PREFS,
-  isBucketValidFor,
-  noSeriesVisible,
-  sanitizeUsagePrefs,
-} from "./usage-prefs";
-import { BIN_OPTIONS, defaultBinFor } from "./usage-range";
-
-describe("isBucketValidFor", () => {
-  it("accepts every width the granularity offers", () => {
-    for (const [g, widths] of Object.entries(BIN_OPTIONS)) {
-      for (const w of widths) {
-        expect(isBucketValidFor(g as never, w)).toBe(true);
-      }
-    }
-  });
-
-  it("rejects a width from a different granularity", () => {
-    // The realistic case: 1m is a Day width, and the user switches to Month.
-    expect(isBucketValidFor("day", "1m")).toBe(true);
-    expect(isBucketValidFor("month", "1m")).toBe(false);
-    expect(isBucketValidFor("day", "month")).toBe(false);
-  });
-
-  it("rejects non-strings", () => {
-    expect(isBucketValidFor("day", 5)).toBe(false);
-    expect(isBucketValidFor("day", null)).toBe(false);
-    expect(isBucketValidFor("day", undefined)).toBe(false);
-  });
-});
+import { DEFAULT_USAGE_PREFS, noSeriesVisible, sanitizeUsagePrefs } from "./usage-prefs";
 
 describe("sanitizeUsagePrefs", () => {
   it("round-trips a valid blob", () => {
     const prefs = {
       granularity: "day" as const,
-      bucket: "1m" as const,
       projectId: "proj-x",
       shown: { tokens: false, fiveHour: true, sevenDay: false },
     };
@@ -51,27 +21,21 @@ describe("sanitizeUsagePrefs", () => {
     expect(sanitizeUsagePrefs(raw)).toEqual(DEFAULT_USAGE_PREFS);
   });
 
-  it("keeps a good granularity when the bin width is nonsense", () => {
-    // Field-by-field, not all-or-nothing: losing the granularity because the
-    // width was bad would throw away the more important half.
-    const out = sanitizeUsagePrefs({ granularity: "day", bucket: "42q" });
-    expect(out.granularity).toBe("day");
-    expect(out.bucket).toBe(defaultBinFor("day"));
+  it("ignores a bin width left over from an older release", () => {
+    // `bucket` used to be persisted, back when it was a user control. The
+    // sanitize is field-by-field and never copies unknown keys through, so an
+    // old blob neither resurrects the field nor costs the rest of the prefs.
+    const out = sanitizeUsagePrefs({ granularity: "day", bucket: "1m", projectId: "p" });
+    expect(out).toEqual({
+      granularity: "day",
+      projectId: "p",
+      shown: DEFAULT_USAGE_PREFS.shown,
+    });
+    expect("bucket" in out).toBe(false);
   });
 
-  it("repairs an incoherent granularity/width pair", () => {
-    // "1m" is a Day width; on Month it would reach the daemon as a bad query.
-    const out = sanitizeUsagePrefs({ granularity: "month", bucket: "1m" });
-    expect(out.granularity).toBe("month");
-    expect(out.bucket).toBe(defaultBinFor("month"));
-  });
-
-  it("validates the width against the RESOLVED granularity", () => {
-    // Bad granularity resolves to the default (week); "4h" is valid there, so
-    // it must survive rather than being judged against the bogus input.
-    const out = sanitizeUsagePrefs({ granularity: "decade", bucket: "4h" });
-    expect(out.granularity).toBe("week");
-    expect(out.bucket).toBe("4h");
+  it("still resolves a bad granularity to the default", () => {
+    expect(sanitizeUsagePrefs({ granularity: "decade" }).granularity).toBe("week");
   });
 
   it("drops a non-string projectId", () => {

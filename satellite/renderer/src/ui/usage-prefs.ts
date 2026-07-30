@@ -20,8 +20,7 @@
 // its default rather than propagating (a bad bin width would otherwise reach the
 // daemon as a query parameter).
 
-import type { UsageHistogramBucket } from "@client-core/api/client";
-import { BIN_OPTIONS, defaultBinFor, type Granularity } from "./usage-range";
+import { type Granularity } from "./usage-range";
 
 /** Series visibility, keyed as the overlay keys it. */
 export interface UsageSeriesShown {
@@ -32,11 +31,15 @@ export interface UsageSeriesShown {
 
 export interface UsagePrefs {
   granularity: Granularity;
-  bucket: UsageHistogramBucket;
   /** Project filter; "" means all projects. */
   projectId: string;
   shown: UsageSeriesShown;
 }
+
+// `bucket` used to live here, back when bin width was a user control. It is
+// now derived from the view on every fetch, so there is nothing to remember.
+// A blob written by an older release still carries the field; the
+// field-by-field sanitize below simply ignores it.
 
 const GRANULARITIES: Granularity[] = ["day", "week", "month", "year"];
 
@@ -47,31 +50,12 @@ const GRANULARITIES: Granularity[] = ["day", "week", "month", "year"];
  *  the rest of the session. `sanitizeUsagePrefs` always builds fresh objects. */
 export const DEFAULT_USAGE_PREFS: Readonly<UsagePrefs> = Object.freeze({
   granularity: "week" as Granularity,
-  bucket: defaultBinFor("week"),
   projectId: "",
   shown: Object.freeze({ tokens: true, fiveHour: true, sevenDay: true }),
 }) as Readonly<UsagePrefs>;
 
 function isGranularity(raw: unknown): raw is Granularity {
   return typeof raw === "string" && (GRANULARITIES as string[]).includes(raw);
-}
-
-/**
- * True when `bucket` is offered for `granularity`.
- *
- * Bin widths are per-granularity (`BIN_OPTIONS`), so a remembered "1m" is valid
- * for Day but not for Month. Cross-granularity carryover is the likely case
- * here — the user picks 1m on Day, switches to Month, and the persisted pair
- * has to stay coherent.
- */
-export function isBucketValidFor(
-  granularity: Granularity,
-  bucket: unknown,
-): bucket is UsageHistogramBucket {
-  return (
-    typeof bucket === "string" &&
-    (BIN_OPTIONS[granularity] as string[]).includes(bucket)
-  );
 }
 
 function sanitizeShown(raw: unknown): UsageSeriesShown {
@@ -107,13 +91,8 @@ export function sanitizeUsagePrefs(raw: unknown): UsagePrefs {
     ? src.granularity
     : DEFAULT_USAGE_PREFS.granularity;
 
-  const bucket = isBucketValidFor(granularity, src.bucket)
-    ? src.bucket
-    : defaultBinFor(granularity);
-
   return {
     granularity,
-    bucket,
     projectId: typeof src.projectId === "string" ? src.projectId : "",
     shown: sanitizeShown(src.shown),
   };
