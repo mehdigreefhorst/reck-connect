@@ -475,3 +475,73 @@ test("the plan reads the entitlement, not the stale subscriptionType", async ({ 
   await expect(page.locator(".usage-stats")).toContainText("Max 5x");
   await expect(page.locator(".usage-stats")).toContainText("tokens");
 });
+
+// The forecast band (issue #130): three projected lines to the window's
+// reset, a tinted fill between the bounds, a reset marker and a 100%
+// crossing. The harness pins the live windows on the real clock, exactly as
+// the daemon's `quota_forecast` does.
+test.describe("quota forecast", () => {
+  test("draws a band on Day view and honours the series toggles", async ({ page }) => {
+    await openHarness(page);
+    await page.locator('.usage-chip[data-g="day"]').click();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: "e2e/artifacts/usage-forecast-day.png" });
+
+    const chart = page.locator(".usage-chart");
+    const withBoth = await chart.screenshot();
+
+    // Hiding a quota series must take its projection with it.
+    await toggle(page, "sevenDay").click();
+    await page.waitForTimeout(200);
+    const without7d = await chart.screenshot();
+    expect(withBoth.equals(without7d)).toBe(false);
+
+    await toggle(page, "fiveHour").click();
+    await page.waitForTimeout(200);
+    const withNeither = await chart.screenshot();
+    expect(without7d.equals(withNeither)).toBe(false);
+    await page.screenshot({ path: "e2e/artifacts/usage-forecast-tokens-only.png" });
+  });
+
+  test("names the projected 100% time in the readout", async ({ page }) => {
+    await openHarness(page);
+    await page.locator('.usage-chip[data-g="day"]').click();
+    await page.waitForTimeout(250);
+
+    const plot = page.locator(".usage-chart .u-over");
+    const box = (await plot.boundingBox())!;
+    // Park past the data, in the forecast region.
+    await page.mouse.move(box.x + box.width * 0.85, box.y + box.height / 2);
+    const readout = page.locator(".usage-readout");
+    await expect(readout).toContainText("projected");
+    // A range, not a single number — the band is a span between two
+    // observed paces, and the readout must not imply a point estimate.
+    await expect(readout).toContainText(/\d+–\d+%/);
+    // The crossing carries a weekday once it is not today: a bare "12:46"
+    // for something 16 hours out reads as this afternoon.
+    await expect(readout).toContainText(/100% from ~(Mon|Tue|Wed|Thu|Fri|Sat|Sun) /);
+
+    // Back over the data and it reverts to the per-bin readout.
+    await page.mouse.move(box.x + box.width * 0.35, box.y + box.height / 2);
+    await expect(readout).toContainText("tokens");
+    await expect(readout).not.toContainText("projected");
+  });
+
+  test("vanishes on a range that does not contain now", async ({ page }) => {
+    await openHarness(page);
+    await page.locator('.usage-chip[data-g="day"]').click();
+    await page.waitForTimeout(200);
+    const today = await page.locator(".usage-chart").screenshot();
+
+    // `quota_forecast` describes the LIVE windows and is not range-scoped,
+    // so without the gate this would paint today's projection over last
+    // week's data.
+    for (let i = 0; i < 7; i++) {
+      await page.locator('.usage-pager[data-dir="-1"]').click();
+    }
+    await page.waitForTimeout(300);
+    const weekAgo = await page.locator(".usage-chart").screenshot();
+    expect(today.equals(weekAgo)).toBe(false);
+    await page.screenshot({ path: "e2e/artifacts/usage-forecast-absent-past.png" });
+  });
+});

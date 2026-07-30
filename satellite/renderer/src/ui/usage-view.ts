@@ -28,10 +28,13 @@ import type {
   ApiClient,
   UsageHistogramBin,
   UsagePlanDay,
+  UsageQuotaForecast,
+  UsageQuotaForecasts,
   UsageHistogramBucket,
 } from "@client-core/api/client";
 import {
   BIN_OPTIONS,
+  DAYS,
   binLabelFor,
   binOptionLabel,
   bucketSeconds,
@@ -50,6 +53,8 @@ import {
 } from "./usage-range";
 import { MIN_TICK_PX, axisTicksFor } from "./usage-axis";
 import { currentTierLabel, planRangeLabel } from "./usage-plan";
+import { forecastGeometry, forecastXMax } from "./usage-forecast";
+import { paintForecast, type ForecastLayer } from "./usage-forecast-paint";
 import { iconClose, iconDownload, iconGear } from "./icons";
 import { confirmDialogOpen } from "./confirmDialog";
 import { openUsageExportDialog } from "./usage-export-dialog";
@@ -101,6 +106,9 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   // (`rate_limit_tier`), which is what distinguishes Max 5x from Max 20x —
   // `plan_summary` is keyed by subscription alone and cannot.
   let planDays: UsagePlanDay[] = [];
+  // Live 5h/7d windows and their projected burn rates. Describes NOW, not
+  // the plotted range — renderChart checks the range contains now.
+  let forecasts: UsageQuotaForecasts | undefined;
   // Series visibility, keyed to uPlot series index 1/2/3. Owned here
   // (not by uPlot's legend) so toggles survive the chart rebuilds that
   // every granularity/bin/theme change triggers.
@@ -437,6 +445,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       if (!resp.enabled) {
         bins = [];
         planDays = [];
+        forecasts = undefined;
         renderPlan(undefined);
         renderChart();
         note("Usage tracking isn't enabled on this station.");
@@ -444,6 +453,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       }
       bins = resp.bins ?? [];
       planDays = resp.plan_days ?? [];
+      forecasts = resp.quota_forecast;
       renderPlan(resp.plan_summary);
       renderChart();
       if (!bins.some((b) => b.total > 0 || b.five_hour_peak !== undefined)) {
@@ -454,6 +464,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       console.warn("[usage-view] histogram fetch failed", err);
       bins = [];
       planDays = [];
+      forecasts = undefined;
       renderPlan(undefined);
       renderChart();
       note("Couldn't reach the station — check the connection and try again.");
@@ -539,6 +550,43 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     statsEl.textContent = parts.join(" · ");
   }
 
+  /**
+   * Readout for the forecast region — everything right of the last bin.
+   *
+   * uPlot's `cursor.idx` snaps to a real data point, so it cannot express
+   * "the pointer is out past the data"; the x VALUE under the cursor can.
+   * Returns "" when the pointer is still over the plotted data, so the
+   * caller falls through to the per-bin readout.
+   *
+   * This is where the crossing time gets said out loud. The band flattening
+   * against the ceiling shows THAT you top out; only text can say when.
+   */
+  function forecastReadout(xVal: number, layers: ForecastLayer[]): string {
+    if (layers.length === 0 || xVal <= bins.length - 1) return "";
+    const parts: string[] = ["projected"];
+    for (const l of layers) {
+      const g = l.geometry;
+      if (xVal > g.endIdx) continue;
+      const at = (line: { points: Array<[number, number]> }) => {
+        // Linear between the polyline's points; 2 or 3 of them, so a scan
+        // is cheaper and clearer than anything smarter.
+        for (let i = 1; i < line.points.length; i++) {
+          const [x0, y0] = line.points[i - 1];
+          const [x1, y1] = line.points[i];
+          if (xVal <= x1) {
+            const t = x1 === x0 ? 0 : (xVal - x0) / (x1 - x0);
+            return Math.round(y0 + (y1 - y0) * t);
+          }
+        }
+        return Math.round(line.points[line.points.length - 1][1]);
+      };
+      parts.push(`${l.label} ${at(g.low)}–${at(g.high)}%`);
+      const cross = g.high.crossesAt ?? g.centre.crossesAt;
+      if (cross !== null) parts.push(`100% from ~${whenLabel(cross)}`);
+    }
+    return parts.length > 1 ? parts.join(" · ") : "";
+  }
+
   function renderReadout(idx: number | null): void {
     if (idx === null || !bins[idx]) {
       readoutEl.textContent = "";
@@ -556,6 +604,66 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     readoutEl.textContent = parts.join(" · ");
   }
 
+  /**
+   * Local clock time for a reset or crossing, with the weekday prepended
+   * once it is not today.
+   *
+   * A bare "12:45" for something 16 hours away reads as this afternoon —
+   * which is exactly the wrong answer to "when do I run out". A 7d window
+   * resets days out, so this is the common case, not the edge case.
+   */
+  function whenLabel(unixSeconds: number): string {
+    const d = new Date(unixSeconds * 1000);
+    const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    const now = new Date();
+    const sameDay =
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+    return sameDay ? hm : `${DAYS[d.getDay()]} ${hm}`;
+  }
+
+  /**
+   * Drawable forecast layers for the visible quota series.
+   *
+   * Gated on three things. The bucket must have a fixed width — a burn
+   * forecast across calendar months is meaningless, and there is no index
+   * arithmetic for them anyway. The series must be toggled on, so hiding
+   * "5h quota" hides its projection too. And the plotted range must contain
+   * now: `quota_forecast` describes the LIVE windows and is deliberately not
+   * range-scoped, so paging back to March would otherwise draw today's
+   * projection over March's data.
+   */
+  function forecastLayers(sage: string, mustard: string): ForecastLayer[] {
+    const width = bucketSeconds(bucket);
+    if (width === null || bins.length === 0) return [];
+    const now = Date.now() / 1000;
+    const range = currentRange();
+    const inRange =
+      range.start.getTime() / 1000 <= now && now < range.until.getTime() / 1000;
+    if (!inRange) return [];
+
+    const wanted: Array<[UsageQuotaForecast | undefined, string, string]> = [
+      [forecasts?.five_hour, sage, "5h"],
+      [forecasts?.seven_day, mustard, "7d"],
+    ];
+    const out: ForecastLayer[] = [];
+    for (const [forecast, color, label] of wanted) {
+      if (!forecast) continue;
+      if (label === "5h" && !shown.fiveHour) continue;
+      if (label === "7d" && !shown.sevenDay) continue;
+      const geometry = forecastGeometry({
+        forecast,
+        firstBinSec: bins[0].t,
+        binWidthSec: width,
+        binCount: bins.length,
+        now,
+      });
+      if (geometry) out.push({ geometry, color, label, formatTime: whenLabel });
+    }
+    return out;
+  }
+
   function renderChart(): void {
     chart?.destroy();
     chart = null;
@@ -570,8 +678,18 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     const orange = cssVar("--claude-orange") || "#d4683a";
     const sage = cssVar("--wes-sage") || "#7a9c6d";
     const mustard = cssVar("--wes-mustard") || "#c9982e";
+    const mustardDeep = cssVar("--wes-mustard-deep") || "#a37a24";
     const gridCol = cssVar("--app-border") || "#e0ddd3";
     const textDim = cssVar("--app-text-muted") || "#8a877d";
+
+    // Forecast geometry for whichever quota series are visible. Computed
+    // before the options object because the x scale has to be widened to
+    // make room for it.
+    const layers = forecastLayers(sage, mustard);
+    const xMax = forecastXMax(
+      layers.map((l) => l.geometry),
+      bins.length,
+    );
 
     const xs = bins.map((_, i) => i);
     const totals = bins.map((b) => (b.total > 0 ? b.total : 0));
@@ -655,7 +773,9 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       // resized itself on hover when live, shifting the card layout).
       legend: { show: false },
       scales: {
-        x: { time: false, range: [-0.5, bins.length - 0.5] },
+        // Widened past the data when a forecast is drawn — the projection
+        // lives entirely to the right of the last bin.
+        x: { time: false, range: [-0.5, xMax] },
         tok: { range: (_u, _min, max) => [0, Math.max(max, 10)] },
         pct: { range: [0, 100] },
       },
@@ -734,8 +854,22 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
         },
       ],
       hooks: {
+        // Last pass, so the projection sits over the data rather than
+        // under it. See usage-forecast-paint.ts for why this is a draw
+        // hook and not uPlot's native `bands`.
+        draw: [
+          (u) => paintForecast(u, { layers, bandColor: mustardDeep, textColor: textDim }),
+        ],
         setCursor: [
           (u) => {
+            const left = u.cursor.left;
+            if (typeof left === "number" && left >= 0) {
+              const projected = forecastReadout(u.posToVal(left, "x"), layers);
+              if (projected !== "") {
+                readoutEl.textContent = projected;
+                return;
+              }
+            }
             const idx = u.cursor.idx;
             renderReadout(typeof idx === "number" ? idx : null);
           },

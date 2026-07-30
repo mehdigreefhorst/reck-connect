@@ -27,6 +27,10 @@
   --wes-rose: #c8726e;
   --wes-sage: #7a9c6d;
   --wes-mustard: #c9982e;
+  /* Forecast band fill. Deeper than --wes-mustard so that at the low alpha
+     a projection deserves — it is a guess, and must not compete with the
+     data — the wash still reads against the paper background. */
+  --wes-mustard-deep: #a37a24;
 
   --dark-title: #f5f2ea;
   --dark-body: #b5b3a9;

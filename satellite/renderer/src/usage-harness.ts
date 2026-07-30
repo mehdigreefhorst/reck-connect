@@ -84,10 +84,20 @@ function synthHistogram(params: UsageHistogramParams): UsageHistogramResponse {
     }
   }
   // Mimic the daemon's quota forward-fill: quota is state, so
-  // sample-less bins carry the last known percentage forward.
+  // sample-less bins carry the last known percentage forward — but NEVER
+  // past now (histogram.go). The bins themselves still exist across the
+  // whole period, which is exactly the empty right-hand region the forecast
+  // is drawn into. Tokens go quiet there too: turn_usage has no future rows.
+  const now = Math.floor(Date.now() / 1000);
   let last5: number | undefined;
   let last7: number | undefined;
   for (const b of bins) {
+    if (b.t > now) {
+      b.five_hour_peak = undefined;
+      b.seven_day_peak = undefined;
+      b.input = b.output = b.cache_creation = b.cache_read = b.total = b.turns = 0;
+      continue;
+    }
     if (b.five_hour_peak !== undefined) last5 = b.five_hour_peak;
     else if (last5 !== undefined) b.five_hour_peak = last5;
     if (b.seven_day_peak !== undefined) last7 = b.seven_day_peak;
@@ -100,6 +110,76 @@ function synthHistogram(params: UsageHistogramParams): UsageHistogramResponse {
     until: params.until,
     bins,
     ...synthPlan(params),
+    quota_forecast: synthForecast(bins),
+  };
+}
+
+/**
+ * Live 5h/7d windows with projected burn rates, as the daemon computes them
+ * from raw quota_samples.
+ *
+ * Anchored on the real clock, not on the plotted range: the daemon's
+ * `quota_forecast` describes what is true NOW and is deliberately not
+ * range-scoped, so the harness must reproduce that or the range-contains-now
+ * gate would never be exercised.
+ *
+ * The 5h rates are chosen so the upper bound crosses 100% before the window
+ * resets and the centre does not — the case where the crossing marker and
+ * the band's asymmetry both have to render.
+ */
+function synthForecast(bins: UsageHistogramBin[]): UsageHistogramResponse["quota_forecast"] {
+  const now = Math.floor(Date.now() / 1000);
+
+  // Anchor on the last plotted value at or before now, so the projection
+  // visually continues the series instead of starting at an unrelated
+  // height. The real daemon anchors on the latest RAW reading, which is
+  // near-identical at fine bins and is why the origin dot exists.
+  const latest = (pick: (b: UsageHistogramBin) => number | undefined): number | undefined => {
+    let out: number | undefined;
+    for (const b of bins) {
+      if (b.t > now) break;
+      const v = pick(b);
+      if (v !== undefined) out = v;
+    }
+    return out;
+  };
+
+  const fh = latest((b) => b.five_hour_peak);
+  const sd = latest((b) => b.seven_day_peak);
+  if (fh === undefined && sd === undefined) return undefined;
+
+  return {
+    // 5h rates put the upper bound through 100% before the window resets
+    // while the centre stays under — the case where the crossing marker and
+    // the band's asymmetry both have to render.
+    ...(fh === undefined
+      ? {}
+      : {
+          five_hour: {
+            ts: now,
+            used_percentage: fh,
+            resets_at: now + 2 * 3600,
+            window_start: now + 2 * 3600 - 5 * 3600,
+            rate_centre: 8,
+            rate_low: 3,
+            rate_high: 40,
+          },
+        }),
+    // A 7d window resets days out, so its marker falls past the horizon cap
+    // on every view — the band is drawn clipped, with no reset line.
+    ...(sd === undefined
+      ? {}
+      : {
+          seven_day: {
+            ts: now,
+            used_percentage: sd,
+            resets_at: now + 3 * 86400,
+            window_start: now + 3 * 86400 - 7 * 86400,
+            rate_centre: 0.9,
+            rate_low: 0.3,
+            rate_high: 1.8,
+          },
+        }),
   };
 }
 
