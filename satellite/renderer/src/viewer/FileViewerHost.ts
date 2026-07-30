@@ -7,6 +7,7 @@
 // arrives in P3; editing + conflict UI arrives in P4.
 
 import { createMarkdownRenderer } from "./MarkdownRenderer";
+import { createWindowHeader } from "../ui/window-header";
 import { createHtmlRenderer } from "./HtmlRenderer";
 import {
   countBlockedExternalRefs,
@@ -129,8 +130,9 @@ function buildShell(root: HTMLElement): ViewerShell {
   root.innerHTML = "";
   root.classList.add("file-viewer-root");
 
-  const header = document.createElement("div");
-  header.className = "file-viewer-header";
+  // Shared window title bar — owns the traffic-light inset, the drag region
+  // and the no-zoom rule. See ui/window-header.ts.
+  const header = createWindowHeader("file-viewer-header");
 
   const titleEl = document.createElement("div");
   titleEl.className = "file-viewer-title";

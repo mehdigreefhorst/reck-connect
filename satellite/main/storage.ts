@@ -94,6 +94,10 @@ export const CONFIG_KEYS = [
   // blocks the secret half (same split as settings / station.token).
   "transcription",
   "transcription.deepgramKey",
+  // Content zoom factor (View menu). Main owns and persists it; the renderer
+  // only receives it over `zoom:set`, but it lives here because main writes it
+  // through the same storage layer.
+  "contentZoom",
 ] as const;
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
 
