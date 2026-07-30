@@ -25,9 +25,15 @@ flowchart LR
   A[fence] --> B[svg]
 \`\`\`
 
+## Math
+
 Inline math $E=mc^2$ and display math:
 
 $$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$
+
+## Trailing
+
+Prose so the last heading has something under it.
 `;
 
 test("markdown popup renders mermaid diagrams and KaTeX math", async () => {
@@ -65,6 +71,20 @@ test("markdown popup renders mermaid diagrams and KaTeX math", async () => {
     await expect(popup.locator(".file-viewer-body .katex-mathml")).toHaveCount(0);
 
     await popup.screenshot({ path: "e2e/artifacts/markdown-popup-electron.png" });
+
+    // The TOC: collapsed by default, opens from the header chip, and the body
+    // stays the sole scroll container.
+    const tocChip = popup.locator(".file-viewer-toc-toggle-slot button");
+    await expect(tocChip).toBeVisible();
+    await expect(popup.locator(".file-viewer-toc")).toBeHidden();
+
+    await tocChip.click();
+    await expect(popup.locator(".file-viewer-toc")).toBeVisible();
+    await expect(popup.locator(".file-viewer-toc a")).toHaveCount(3);
+
+    await popup.screenshot({
+      path: "e2e/artifacts/markdown-popup-electron-toc.png",
+    });
   } finally {
     await ctx.close();
   }

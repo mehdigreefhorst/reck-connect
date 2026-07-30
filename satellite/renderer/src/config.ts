@@ -912,6 +912,42 @@ export function renderDropPrompt(template: string, path: string, filename: strin
   return template.split("{path}").join(path).split("{filename}").join(filename);
 }
 
+// --- File-viewer table of contents ---
+//
+// Mode + width persist independently so the sidebar restores exactly as the
+// user left it, matching the rail's contract (loadRailMode / loadRailWidth).
+// Unlike the rail, the default is COLLAPSED: the popup is small and most files
+// opened in Reck are short enough not to want a TOC.
+import { TOC_MAX, TOC_MINI, TOC_DEFAULT_WIDTH } from "./viewer/tocCollapse";
+
+const TOC_MODE_KEY = "fileViewerTocMode";
+const TOC_WIDTH_KEY = "fileViewerTocWidth";
+
+export type TocMode = "expanded" | "mini";
+
+/** Any value that isn't exactly "expanded" resolves to "mini" — the safe
+ *  default for malformed or pre-feature configs. */
+export async function loadFileViewerTocMode(): Promise<TocMode> {
+  const raw = await window.reckAPI.config.get<string>(TOC_MODE_KEY);
+  return raw === "expanded" ? "expanded" : "mini";
+}
+
+export async function saveFileViewerTocMode(mode: TocMode): Promise<void> {
+  await window.reckAPI.config.set(TOC_MODE_KEY, mode);
+}
+
+/** Clamped on read so a corrupted value can't feed NaN — or a 99999px
+ *  sidebar — into the popup's grid template. */
+export async function loadFileViewerTocWidth(): Promise<number> {
+  const raw = await window.reckAPI.config.get<number>(TOC_WIDTH_KEY);
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return TOC_DEFAULT_WIDTH;
+  return Math.max(TOC_MINI, Math.min(TOC_MAX, raw));
+}
+
+export async function saveFileViewerTocWidth(width: number): Promise<void> {
+  await window.reckAPI.config.set(TOC_WIDTH_KEY, width);
+}
+
 // --- Usage overlay view state ---
 //
 // Reopening the usage overlay used to reset to Week / default bins / all

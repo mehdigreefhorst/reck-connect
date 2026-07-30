@@ -8,7 +8,7 @@
 // the dev server and never reaches the shipped bundle.
 //
 // Query parameters:
-//   ?fixture=rich|plain   which document to render (default: rich)
+//   ?fixture=rich|plain|bare  which document to render (default: rich)
 //   ?theme=dark|light     palette (default: dark)
 //
 // The `plain` fixture is what proves the lazy-import contract: rendering it
@@ -16,6 +16,7 @@
 
 import "./styles.css";
 import { createMarkdownRenderer } from "./viewer/MarkdownRenderer";
+import { attachToc } from "./viewer/attachToc";
 
 const FIXTURES: Record<string, string> = {
   // Exercises every Phase 1–4 surface at once: a diagram, inline + display
@@ -84,9 +85,23 @@ or katex.
 const x = 1;
 \`\`\`
 `,
+
+  // No headings at all — the TOC must offer no chip rather than a control
+  // that opens an empty panel.
+  bare: `Just a paragraph, with no headings anywhere in the document.
+
+And a second paragraph so there is something to look at.
+`,
 };
 
-function buildShell(): HTMLElement {
+interface HarnessShell {
+  body: HTMLElement;
+  content: HTMLElement;
+  tocSlot: HTMLElement;
+  tocToggleSlot: HTMLElement;
+}
+
+function buildShell(): HarnessShell {
   const root = document.createElement("div");
   root.className = "file-viewer-root";
 
@@ -97,16 +112,47 @@ function buildShell(): HTMLElement {
   title.textContent = "markdown-harness.md";
   header.appendChild(title);
 
+  const tocToggleSlot = document.createElement("div");
+  tocToggleSlot.className = "file-viewer-toc-toggle-slot";
+  header.appendChild(tocToggleSlot);
+
   const body = document.createElement("div");
   body.className = "file-viewer-body";
 
+  const content = document.createElement("div");
+  content.className = "file-viewer-content";
+  const tocSlot = document.createElement("aside");
+  tocSlot.className = "file-viewer-toc";
+  tocSlot.hidden = true;
+  content.append(tocSlot, body);
+
   root.appendChild(header);
-  root.appendChild(body);
+  root.appendChild(content);
   document.body.appendChild(root);
-  return body;
+  return { body, content, tocSlot, tocToggleSlot };
+}
+
+/** attachToc persists its open/closed state through window.reckAPI.config,
+ *  which only exists behind the Electron preload. Back it with sessionStorage
+ *  so the harness exercises the real persistence path (and so a Playwright
+ *  reload can assert the state survived) without a preload. */
+function installConfigStub(): void {
+  (window as unknown as { reckAPI: unknown }).reckAPI = {
+    config: {
+      get: async <T>(k: string): Promise<T | null> => {
+        const raw = sessionStorage.getItem(`harness:${k}`);
+        return raw === null ? null : (JSON.parse(raw) as T);
+      },
+      set: async (k: string, v: unknown): Promise<boolean> => {
+        sessionStorage.setItem(`harness:${k}`, JSON.stringify(v));
+        return true;
+      },
+    },
+  };
 }
 
 async function main(): Promise<void> {
+  installConfigStub();
   const params = new URLSearchParams(window.location.search);
   const theme = params.get("theme") === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", theme);
@@ -114,7 +160,8 @@ async function main(): Promise<void> {
   const fixture = params.get("fixture") ?? "rich";
   const source = FIXTURES[fixture] ?? FIXTURES.rich;
 
-  const body = buildShell();
+  const shell = buildShell();
+  const body = shell.body;
   const renderer = createMarkdownRenderer({
     onLinkActivate: (href) => console.log("[harness] internal activate", href),
     onExternalActivate: (href) => console.log("[harness] external activate", href),
@@ -122,6 +169,12 @@ async function main(): Promise<void> {
 
   renderer.mount(body, renderer.render(source));
   await renderer.whenEnhanced();
+  await attachToc({
+    body,
+    content: shell.content,
+    tocSlot: shell.tocSlot,
+    tocToggleSlot: shell.tocToggleSlot,
+  });
 
   // Signal for Playwright / manual inspection: the post-mount passes have
   // settled, so the document height is final and it is safe to screenshot.
