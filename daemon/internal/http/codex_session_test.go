@@ -151,11 +151,14 @@ func TestAgentEvent_acceptsCompactionKinds(t *testing.T) {
 	for _, kind := range []string{"pre_compact", "post_compact"} {
 		body := []byte(`{"project_id":"p1","hook_event_name":"Compact"}`)
 		if code := postAgentEvent(t, srv.URL, pane, "?kind="+kind+"&agent=codex", body); code != 200 {
-			t.Errorf("kind=%s: status = %d, want 200", kind, code)
+			// Don't also assert the resulting state: a rejected POST records
+			// no event, so that would pile a second, misleading failure on
+			// top of the real one.
+			t.Fatalf("kind=%s: status = %d, want 200", kind, code)
 		}
-	}
-	if got := pane.AgentState(); got != proto.AgentStateWorking {
-		t.Errorf("agent state after compaction = %s, want working", got)
+		if got := pane.AgentState(); got != proto.AgentStateWorking {
+			t.Errorf("agent state after %s = %s, want working", kind, got)
+		}
 	}
 }
 
