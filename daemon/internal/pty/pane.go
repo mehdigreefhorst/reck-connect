@@ -1133,6 +1133,7 @@ func (p *Pane) EventLog() *events.Log { return p.eventLog }
 // State transitions:
 //
 //	user_prompt / pre_tool / post_tool       → working
+//	pre_compact / post_compact               → working (Codex compaction turn)
 //	post_tool_failure (is_interrupt)         → unknown (user hit Escape mid-tool)
 //	post_tool_failure (other)                → working (Claude will likely retry)
 //	user_interrupt                           → unknown (user hit Escape between tools)
@@ -1167,7 +1168,8 @@ func (p *Pane) RecordEvent(e events.Event) {
 	}
 	var next proto.AgentState
 	switch e.Kind {
-	case events.KindUserPrompt, events.KindPreTool, events.KindPostTool:
+	case events.KindUserPrompt, events.KindPreTool, events.KindPostTool,
+		events.KindPreCompact, events.KindPostCompact:
 		next = proto.AgentStateWorking
 	case events.KindPostToolFailure:
 		if isInterruptPayload(e.Data) {
