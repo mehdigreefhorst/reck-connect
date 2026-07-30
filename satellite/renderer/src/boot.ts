@@ -1877,6 +1877,7 @@ export async function boot(splash?: StartupSplashController) {
     kind: PaneKind;
     host: HostRef;
     resumeSessionId?: string;
+    restoreSlotId?: string;
   } | null> {
     const choice = await askPaneKind(document.body, {
       // `settings` is narrowed non-null by the early-return guard at
@@ -1895,7 +1896,10 @@ export async function boot(splash?: StartupSplashController) {
     // Codex is a first-class kind but needs a `codex` binary on the chosen
     // host's daemon PATH. If /health reported none, don't silently fail the
     // create — tell the user exactly what's missing and how to fix it.
-    if (choice.kind === "codex" && !isHostCodexAvailable(choice.host)) {
+    // Both spawning a Codex pane and resuming one need a codex binary on
+    // that host.
+    const wantsCodex = choice.kind === "codex" || choice.kind === "resume-codex";
+    if (wantsCodex && !isHostCodexAvailable(choice.host)) {
       showToast(document.body, codexUnavailableMessage(choice.host), {
         kind: "info",
         durationMs: 9000,
@@ -1912,23 +1916,38 @@ export async function boot(splash?: StartupSplashController) {
       // on kind==="claude", so codex correctly sends neither.
       return { kind: choice.kind, host: choice.host };
     }
-    // "resume": surface the session list. The picker is Claude-only —
-    // Scope B widened /sessions to emit shell rows too, so we filter
-    // to Claude here (pre-Scope-B daemons omit kind entirely, treated
-    // as claude for back-compat). Shell restore is a separate flow
-    // that's only offered by the post-reconnect restore prompt.
+    // A resume action: surface the session list, filtered to the rows the
+    // chosen agent can actually resume.
+    //
+    //   - Claude rows resume by session_id.
+    //   - Codex rows resume by slot_id; the daemon looks up the thread id
+    //     server-side. A codex row whose thread never landed (the pane died
+    //     before reporting one) can't restore a conversation, so it's left
+    //     out rather than offered as a resume that silently starts fresh.
+    //
+    // Shell rows are excluded from both: they have nothing to resume, and
+    // are offered only by the post-reconnect restore prompt.
     //
     // Sessions are host-scoped: a local daemon never sees station's
     // session files and vice versa. Fetch from the picked host's client
     // so the resume list reflects what that daemon can actually spawn.
     if (!currentProjectId) return null;
+    const resumeKind: PaneKind = choice.kind === "resume-codex" ? "codex" : "claude";
     try {
       const { sessions } = await apiForHost(choice.host).listSessions(currentProjectId);
-      const claudeOnly = sessions.filter(
-        (s) => (s.kind ?? "claude") === "claude" && !!s.session_id,
+      // Pre-Scope-B daemons omit `kind` entirely; treat that as claude.
+      const resumable = sessions.filter((s) =>
+        resumeKind === "codex"
+          ? s.kind === "codex" && !!s.slot_id && !!s.thread_id
+          : (s.kind ?? "claude") === "claude" && !!s.session_id,
       );
-      const picked = await pickSession(document.body, claudeOnly);
-      if (!picked || !picked.session_id) return null;
+      const picked = await pickSession(document.body, resumable);
+      if (!picked) return null;
+      if (resumeKind === "codex") {
+        if (!picked.slot_id) return null;
+        return { kind: "codex", host: choice.host, restoreSlotId: picked.slot_id };
+      }
+      if (!picked.session_id) return null;
       return { kind: "claude", host: choice.host, resumeSessionId: picked.session_id };
     } catch (e) {
       console.error("listSessions failed", e);
@@ -1950,6 +1969,7 @@ export async function boot(splash?: StartupSplashController) {
     kind: PaneKind,
     opts: {
       resumeSessionId?: string;
+      restoreSlotId?: string;
       extraArgs?: string[];
       globalPreamble?: string;
     },
@@ -2000,6 +2020,7 @@ export async function boot(splash?: StartupSplashController) {
       choice.kind,
       {
         resumeSessionId: choice.resumeSessionId,
+        restoreSlotId: choice.restoreSlotId,
         extraArgs: extras?.tokens,
         globalPreamble,
       },
@@ -2051,6 +2072,7 @@ export async function boot(splash?: StartupSplashController) {
       choice.kind,
       {
         resumeSessionId: choice.resumeSessionId,
+        restoreSlotId: choice.restoreSlotId,
         extraArgs: extras?.tokens,
         globalPreamble,
       },
@@ -2094,6 +2116,7 @@ export async function boot(splash?: StartupSplashController) {
       choice.kind,
       {
         resumeSessionId: choice.resumeSessionId,
+        restoreSlotId: choice.restoreSlotId,
         extraArgs: extras?.tokens,
         globalPreamble,
       },
