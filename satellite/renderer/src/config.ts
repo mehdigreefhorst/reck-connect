@@ -911,3 +911,26 @@ export async function saveDropPromptTemplate(template: string): Promise<void> {
 export function renderDropPrompt(template: string, path: string, filename: string): string {
   return template.split("{path}").join(path).split("{filename}").join(filename);
 }
+
+// --- Usage overlay view state ---
+//
+// Reopening the usage overlay used to reset to Week / default bins / all
+// projects / all series. These remember the SHAPE of the view (granularity, bin
+// width, project filter, series toggles) but deliberately not the anchor date —
+// see viewer-adjacent rationale in ui/usage-prefs.ts.
+import {
+  sanitizeUsagePrefs,
+  type UsagePrefs,
+} from "./ui/usage-prefs";
+
+const USAGE_PREFS_KEY = "usageView";
+
+export async function loadUsagePrefs(): Promise<UsagePrefs> {
+  return sanitizeUsagePrefs(
+    await window.reckAPI.config.get<unknown>(USAGE_PREFS_KEY),
+  );
+}
+
+export async function saveUsagePrefs(prefs: UsagePrefs): Promise<void> {
+  await window.reckAPI.config.set(USAGE_PREFS_KEY, prefs);
+}

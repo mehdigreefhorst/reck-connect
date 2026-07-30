@@ -94,6 +94,10 @@ export const CONFIG_KEYS = [
   // blocks the secret half (same split as settings / station.token).
   "transcription",
   "transcription.deepgramKey",
+  // Usage overlay view state: { granularity, bucket, projectId, shown }.
+  // Non-secret. The anchor date is deliberately not part of it — reopening a
+  // "Day" view shows today.
+  "usageView",
 ] as const;
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
 
