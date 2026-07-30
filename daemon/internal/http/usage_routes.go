@@ -321,8 +321,9 @@ func (s *Server) handleUsageHistogram(w nethttp.ResponseWriter, r *nethttp.Reque
 		planDays := make([]map[string]any, 0, len(days))
 		for _, d := range days {
 			planDays = append(planDays, map[string]any{
-				"day":          d.Day,
-				"subscription": d.Subscription,
+				"day":             d.Day,
+				"subscription":    d.Subscription,
+				"rate_limit_tier": d.RateLimitTier,
 			})
 		}
 		resp["plan_days"] = planDays

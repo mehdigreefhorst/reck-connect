@@ -27,6 +27,7 @@ import "uplot/dist/uPlot.min.css";
 import type {
   ApiClient,
   UsageHistogramBin,
+  UsagePlanDay,
   UsageHistogramBucket,
 } from "@client-core/api/client";
 import {
@@ -48,7 +49,7 @@ import {
   type Granularity,
 } from "./usage-range";
 import { MIN_TICK_PX, axisTicksFor } from "./usage-axis";
-import { planRangeLabel } from "./usage-plan";
+import { currentTierLabel, planRangeLabel } from "./usage-plan";
 import { iconClose, iconDownload, iconGear } from "./icons";
 import { confirmDialogOpen } from "./confirmDialog";
 import { openUsageExportDialog } from "./usage-export-dialog";
@@ -96,6 +97,10 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   let justSelected = false;
   let projectId = ""; // "" = all projects
   let bins: UsageHistogramBin[] = [];
+  // Per-day plan attribution for the visible range. Carries the entitlement
+  // (`rate_limit_tier`), which is what distinguishes Max 5x from Max 20x —
+  // `plan_summary` is keyed by subscription alone and cannot.
+  let planDays: UsagePlanDay[] = [];
   // Series visibility, keyed to uPlot series index 1/2/3. Owned here
   // (not by uPlot's legend) so toggles survive the chart rebuilds that
   // every granularity/bin/theme change triggers.
@@ -431,12 +436,14 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       if (ac.signal.aborted) return;
       if (!resp.enabled) {
         bins = [];
+        planDays = [];
         renderPlan(undefined);
         renderChart();
         note("Usage tracking isn't enabled on this station.");
         return;
       }
       bins = resp.bins ?? [];
+      planDays = resp.plan_days ?? [];
       renderPlan(resp.plan_summary);
       renderChart();
       if (!bins.some((b) => b.total > 0 || b.five_hour_peak !== undefined)) {
@@ -446,6 +453,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       if (ac.signal.aborted) return;
       console.warn("[usage-view] histogram fetch failed", err);
       bins = [];
+      planDays = [];
       renderPlan(undefined);
       renderChart();
       note("Couldn't reach the station — check the connection and try again.");
@@ -462,7 +470,7 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   // header doesn't carry a dangling separator on a station that has never
   // recorded a plan.
   function renderPlan(summary: Record<string, number> | undefined): void {
-    const label = planRangeLabel(summary);
+    const label = planRangeLabel(summary, planDays);
     planEl.textContent = label;
     planEl.hidden = label === "";
     planEl.title = label === "" ? "" : `Subscription plan over this period: ${label}`;
@@ -522,6 +530,12 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
     );
     const parts = [`Σ ${fmtTokens(total)} tokens`, `${turns} turns`];
     if (peak5h !== null) parts.push(`peak 5h ${Math.round(peak5h)}%`);
+    // The tier belongs next to the numbers it gives meaning to: "peak 5h
+    // 87%" is 87% OF something, and 87% of Max 5x is not 87% of Pro. The
+    // range END rather than its composition, since that is the tier the
+    // peak was measured against.
+    const tier = currentTierLabel(planDays);
+    if (tier !== "") parts.push(tier);
     statsEl.textContent = parts.join(" · ");
   }
 

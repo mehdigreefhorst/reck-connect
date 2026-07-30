@@ -45,6 +45,16 @@ type PlanSample struct {
 type PlanDay struct {
 	Day          int64  // local-midnight bin start, unix seconds
 	Subscription string // may be PlanUnknown for days before the first sample
+	// RateLimitTier is the entitlement string, e.g. 'default_claude_max_5x'.
+	// Empty when the credential blob didn't report one.
+	//
+	// Reported alongside Subscription rather than instead of it because the
+	// two disagree: subscriptionType goes stale after an upgrade (it reads
+	// "pro" on an account that has been Max 5x for months) while
+	// rateLimitTier tracks the actual entitlement. Consumers should prefer
+	// this and fall back to Subscription — which is also what keeps rows
+	// written before the tier was recorded readable.
+	RateLimitTier string
 }
 
 // InsertPlanSample appends one plan observation.
@@ -125,7 +135,7 @@ func (s *Store) PlanDays(since, until int64, tzOffsetMin int) ([]PlanDay, error)
 	// Change-only writes keep this table tiny, so reading every sample up
 	// to the range end and walking it in Go beats a per-day subquery.
 	rows, err := s.db.Query(
-		`SELECT ts, subscription FROM plan_samples WHERE ts < ? ORDER BY ts ASC, id ASC`,
+		`SELECT ts, subscription, rate_limit_tier FROM plan_samples WHERE ts < ? ORDER BY ts ASC, id ASC`,
 		until,
 	)
 	if err != nil {
@@ -134,13 +144,14 @@ func (s *Store) PlanDays(since, until int64, tzOffsetMin int) ([]PlanDay, error)
 	defer rows.Close()
 
 	type change struct {
-		ts  int64
-		sub string
+		ts   int64
+		sub  string
+		tier string
 	}
 	var changes []change
 	for rows.Next() {
 		var c change
-		if err := rows.Scan(&c.ts, &c.sub); err != nil {
+		if err := rows.Scan(&c.ts, &c.sub, &c.tier); err != nil {
 			return nil, fmt.Errorf("usage: plan days scan: %w", err)
 		}
 		changes = append(changes, c)
@@ -152,14 +163,16 @@ func (s *Store) PlanDays(since, until int64, tzOffsetMin int) ([]PlanDay, error)
 	// Merge-walk: both slices are ascending, so one pass suffices.
 	out := make([]PlanDay, 0, len(starts))
 	cur := PlanUnknown
+	curTier := ""
 	next := 0
 	for _, dayStart := range starts {
 		dayEnd := dayStart + 86400
 		for next < len(changes) && changes[next].ts < dayEnd {
 			cur = changes[next].sub
+			curTier = changes[next].tier
 			next++
 		}
-		out = append(out, PlanDay{Day: dayStart, Subscription: cur})
+		out = append(out, PlanDay{Day: dayStart, Subscription: cur, RateLimitTier: curTier})
 	}
 	return out, nil
 }

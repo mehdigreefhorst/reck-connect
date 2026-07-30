@@ -18,6 +18,7 @@ import type {
   UsageHistogramBin,
   UsageHistogramParams,
   UsageHistogramResponse,
+  UsagePlanDay,
 } from "@client-core/api/client";
 
 /** Tokens/sec of synthetic activity at a moment: two humps of work
@@ -92,7 +93,40 @@ function synthHistogram(params: UsageHistogramParams): UsageHistogramResponse {
     if (b.seven_day_peak !== undefined) last7 = b.seven_day_peak;
     else if (last7 !== undefined) b.seven_day_peak = last7;
   }
-  return { enabled: true, bucket: params.bucket, since: params.since, until: params.until, bins };
+  return {
+    enabled: true,
+    bucket: params.bucket,
+    since: params.since,
+    until: params.until,
+    bins,
+    ...synthPlan(params),
+  };
+}
+
+/**
+ * Per-day plan attribution, day-granular whatever the bin width — as the
+ * daemon does it (PlanDays in daemon/internal/usage/plan.go).
+ *
+ * Deliberately reproduces the STALE-SUBSCRIPTION case this feature exists
+ * for: `subscription` says "pro" while `rate_limit_tier` says the account
+ * is entitled to Max 5x. A harness that agreed with itself would pass
+ * whether or not the view reads the right field.
+ */
+function synthPlan(
+  params: UsageHistogramParams,
+): Pick<UsageHistogramResponse, "plan_days" | "plan_summary"> {
+  const plan_days: UsagePlanDay[] = [];
+  const cur = new Date(params.since * 1000);
+  cur.setHours(0, 0, 0, 0);
+  while (cur.getTime() / 1000 < params.until && plan_days.length < 400) {
+    plan_days.push({
+      day: Math.floor(cur.getTime() / 1000),
+      subscription: "pro",
+      rate_limit_tier: "default_claude_max_5x",
+    });
+    cur.setDate(cur.getDate() + 1);
+  }
+  return { plan_days, plan_summary: { pro: plan_days.length } };
 }
 
 // Poll settings live in memory for the harness, so the gear dialog can be

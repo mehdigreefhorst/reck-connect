@@ -84,6 +84,16 @@ export interface UsageHistogramBin {
 export interface UsagePlanDay {
   day: number;
   subscription: string;
+  /** The entitlement string, e.g. `"default_claude_max_5x"`; `""` when the
+   * daemon's credential blob didn't report one.
+   *
+   * PREFER THIS over `subscription` for display. The two disagree:
+   * `subscription` comes from `subscriptionType`, which goes stale after an
+   * upgrade (it reads `"pro"` on an account that has been Max 5x for
+   * months), while this tracks the actual entitlement — and it is the only
+   * field that distinguishes Max 5x from Max 20x at all. Fall back to
+   * `subscription` when it is empty. */
+  rate_limit_tier?: string;
 }
 
 /** Envelope for `GET /usage/histogram`. `enabled: false` means the

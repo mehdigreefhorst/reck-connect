@@ -458,3 +458,20 @@ test.describe("export dialog", () => {
     }
   });
 });
+
+test("the plan reads the entitlement, not the stale subscriptionType", async ({ page }) => {
+  // The harness serves subscription "pro" with rate_limit_tier
+  // "default_claude_max_5x" — the real-world case where the credential
+  // blob's subscriptionType lags an upgrade by months. Reading the wrong
+  // field renders "Pro" and loses the multiplier entirely. See issue #130.
+  await openHarness(page);
+
+  const plan = page.locator(".usage-plan");
+  await expect(plan).toBeVisible();
+  await expect(plan).toHaveText("Max 5x");
+
+  // And the tier sits next to the numbers it gives meaning to: "peak 5h
+  // 87%" is 87% OF a tier.
+  await expect(page.locator(".usage-stats")).toContainText("Max 5x");
+  await expect(page.locator(".usage-stats")).toContainText("tokens");
+});
