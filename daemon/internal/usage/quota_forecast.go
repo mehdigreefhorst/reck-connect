@@ -46,30 +46,72 @@ const (
 	// forecast is withheld entirely — no line beats a wrong line.
 	forecastMinSlopes = 3
 
-	// minSlopeSeconds is the shortest interval a rate may be measured over.
-	//
-	// This is load-bearing, not a tidiness guard. The ingest gate writes
-	// IMMEDIATELY on a jump of DefaultJumpPct (2 points), bypassing its
-	// one-minute rate cap — so during a burst two rows land seconds apart
-	// with a 2-point delta between them. Divided by a 5-second dt that is
-	// 1440 %/hour, and every burst manufactures a fistful of them. They are
-	// rising and inside their window, so neither the monotonic filter nor
-	// the active filter touches them; they simply swamp the upper quantile
-	// and the forecast reads "you hit 100% in twenty minutes" forever.
-	//
-	// Five minutes is comfortably longer than the jump path can produce and
-	// short enough to still resolve a burst.
-	minSlopeSeconds = 300
-
-	// maxSlopeSeconds bounds the other end: an interval spanning a long
-	// quiet stretch measures the average of working and not working, which
-	// is not the "if I keep going" rate being asked for. Beyond this the
-	// anchor restarts rather than straddling the gap.
-	maxSlopeSeconds = 1800
-
 	fiveHourWindow = 5 * time.Hour
 	sevenDayWindow = 7 * 24 * time.Hour
 )
+
+// slopeRule says how to measure a burn rate for one window.
+//
+// There is a rule per window rather than one shared set of constants
+// because the two windows ask different questions on scales 33x apart, and
+// a rule tuned for one is catastrophically wrong for the other:
+//
+//	5h — "will I get cut off in this session?" The answer is the rate while
+//	     you are WORKING, so idle intervals are dropped.
+//	7d — "will I run out this week?" A seven-day window spans nights and
+//	     breaks nobody can work through, so the rate that answers it is the
+//	     one INCLUDING them. Dropping idle here would answer a question you
+//	     cannot act on.
+type slopeRule struct {
+	// minSpan / maxSpan bound the interval a rate may be divided by.
+	minSpan, maxSpan int64
+	// dropIdle excludes intervals with no rise.
+	dropIdle bool
+}
+
+var (
+	// fiveHourRule: 5-30 minutes, working time only.
+	//
+	// The lower bound is load-bearing. The ingest gate writes IMMEDIATELY
+	// on a jump of DefaultJumpPct, bypassing its one-minute rate cap, so
+	// during a burst two rows land seconds apart with a 2-point delta —
+	// 1440 %/hour if you divide by it. Those readings are rising and inside
+	// their window, so neither the monotonic filter nor the idle filter
+	// touches them; only refusing to divide by a few seconds does.
+	fiveHourRule = slopeRule{minSpan: 300, maxSpan: 1800, dropIdle: true}
+
+	// sevenDayRule: 20-30 hours, downtime included — about one day per
+	// interval, which is the granularity the weekly question lives at.
+	//
+	// A full day-night cycle per interval, not half of one. At 12 hours the
+	// intervals alternate between catching the working stretch and catching
+	// the night, so half the sample is zero and the median collapses toward
+	// it; a ~24-hour span always contains one of each and lands on the
+	// day's real average.
+	//
+	// Sized by the reporting resolution, not by taste. Upstream reports
+	// whole percentages (see quota_poll_test.go's captured response), so
+	// the 7d series is a 1-point staircase. A real weekly burn of ~0.2 %/h
+	// moves less than a tenth of a point in half an hour — far under that
+	// step — so at the 5h rule EVERY 7d interval is either exactly flat
+	// (dropped) or one whole step over ~5 minutes, which reads as 12 %/h.
+	// The pool ends up containing nothing but quantisation artifacts, which
+	// is why the bounds collapsed onto each other and the projection hit
+	// 100% within hours.
+	//
+	// A day, by contrast, carries ~5 points of rise, so a 1-point step is a
+	// ~20% error rather than a 100x one — and the day-to-day spread is a
+	// real signal, which is what finally gives the band honest width.
+	sevenDayRule = slopeRule{minSpan: 20 * 3600, maxSpan: 30 * 3600, dropIdle: false}
+)
+
+// ruleFor picks the measurement rule for a window width.
+func ruleFor(window time.Duration) slopeRule {
+	if window >= sevenDayWindow {
+		return sevenDayRule
+	}
+	return fiveHourRule
+}
 
 // QuotaForecast is the live state of one rate-limit window plus the burn
 // rates projected from it. Rates are percentage points per hour.
@@ -170,7 +212,7 @@ func buildForecast(readings []quotaReading, window time.Duration, now int64) *Qu
 		return nil
 	}
 
-	slopes := activeSlopes(readings, now)
+	slopes := observedSlopes(readings, now, ruleFor(window))
 	if len(slopes) < forecastMinSlopes {
 		return nil
 	}
@@ -193,9 +235,10 @@ type weightedSlope struct {
 	weight float64
 }
 
-// activeSlopes derives the burn rates between consecutive readings.
+// observedSlopes derives the burn rates between readings, measured over
+// intervals the given rule considers meaningful.
 //
-// Three filters, each earning its place:
+// Filters, each earning its place:
 //
 //   - Readings are grouped by resets_at, so a slope is never measured
 //     ACROSS a reset. Because the grouping is by the window's own identity,
@@ -205,11 +248,14 @@ type weightedSlope struct {
 //     stale-cache artifact quota_stale.go documents: Claude Code re-serves
 //     the rate_limits block it cached from the session's last API response,
 //     which lands as a single tick at the wrong level.
-//   - Only rising intervals count. Most intervals over a week are idle, and
-//     including them drags the low quantile to ~0 %/h — true (if you stop
-//     working, quota stops rising) but useless, since the question being
-//     asked is "if I keep working, when do I run out".
-func activeSlopes(readings []quotaReading, now int64) []weightedSlope {
+//   - Intervals are bounded by the rule, never taken between whichever two
+//     rows the write gate happened to emit. A quota_samples row is an
+//     all-bucket snapshot and the gate's jump test ORs across buckets, so
+//     the 7d column is sampled on the 5h bucket's clock — its row spacing
+//     says nothing about its own rate of change.
+//   - Idle intervals are dropped or kept per the rule; see slopeRule for
+//     why that differs by window.
+func observedSlopes(readings []quotaReading, now int64, rule slopeRule) []weightedSlope {
 	var out []weightedSlope
 
 	for start := 0; start < len(readings); {
@@ -235,26 +281,30 @@ func activeSlopes(readings []quotaReading, now int64) []weightedSlope {
 				continue
 			}
 
-			// Measure over a bounded interval, never between whichever two
-			// rows the write gate happened to emit. Too short and the rate is
-			// an artifact of the gate's jump path (see minSlopeSeconds); too
-			// long and it averages in the idling between bursts.
 			dt := r.ts - anchor.ts
 			switch {
-			case dt < minSlopeSeconds:
-				// Hold the anchor and keep accumulating: the pair is too
-				// close together in time to divide by.
-			case dt > maxSlopeSeconds:
+			case dt < rule.minSpan:
+				// Too close together to divide by. Hold the anchor and keep
+				// accumulating.
+			case dt > rule.maxSpan:
 				// The gap swallowed the interval. Start again from here
 				// rather than reporting the average across it.
 				anchor = &cur
 			default:
-				if rate := (r.pct - anchor.pct) / (float64(dt) / 3600); rate > 0 {
-					out = append(out, weightedSlope{
-						rate:   rate,
-						weight: recencyWeight(r.ts, now),
-					})
+				rate := (r.pct - anchor.pct) / (float64(dt) / 3600)
+				if rate <= 0 && rule.dropIdle {
+					// Nothing burned, and this rule counts working time only.
+					// Crucially the anchor does NOT advance: re-basing here
+					// would chop a long flat stretch into short hops, so the
+					// step that eventually lands gets divided by the last hop
+					// instead of by the whole stretch — inflating the rate by
+					// exactly the ratio of the two.
+					continue
 				}
+				out = append(out, weightedSlope{
+					rate:   math.Max(rate, 0),
+					weight: recencyWeight(r.ts, now),
+				})
 				anchor = &cur
 			}
 		}
