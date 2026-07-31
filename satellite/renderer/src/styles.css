@@ -50,6 +50,13 @@
   --ease-smooth: cubic-bezier(0.25, 0.1, 0.25, 1);
 
   --nav-height: 50px;
+  /* Room for the macOS traffic lights in any `hiddenInset` window's title bar.
+     Keep in step with `trafficLightPosition` in main (x: 14) — the lights are
+     ~52px wide, so 78px leaves a comfortable gutter after them. */
+  --window-header-inset: 78px;
+  /* Content zoom factor, driven by the View menu. Title bars must NOT use it
+     (see .reck-window-header); content surfaces multiply their font-size by it. */
+  --content-zoom: 1;
   --status-height: 28px;
   --tab-height: 34px;
   --rail-width: 240px;
@@ -109,21 +116,50 @@ html, body, #app {
   background: var(--app-bg);
 }
 
+/* === Shared window title bar ===================================════
+   ONE base for every window's title bar: the main window's nav, the
+   detached-pane popout header, and the file-viewer popup header. All three
+   windows are `titleBarStyle: "hiddenInset"` (main.ts, file-viewer.ts), so all
+   three have the macOS traffic lights floating over their top-left corner and
+   all three need the same two things:
+
+   1. A left inset that reserves room for those lights. Previously each surface
+      invented its own — the popups used `padding-left: 78px`, the nav used
+      `.nav-brand { margin-left: 80px }`. Two implementations 2px apart, which
+      is exactly the drift a shared base exists to prevent.
+      `--window-header-inset` is now the single source; it must stay in step
+      with `trafficLightPosition` in the main process.
+
+   2. Immunity from zoom. The traffic lights are drawn by the OS at a fixed
+      size, so a title bar that grows with zoom slides out of alignment with
+      them. Zoom is therefore CONTENT-only — see `--content-zoom` — and this
+      base deliberately never references it. Anything added here must be
+      zoom-invariant; put anything that should scale in the content area
+      instead.
+
+   Height is intentionally NOT set here: the nav is 50px and the popups are
+   38px. Each instance owns its own height, contents and colours. */
+.reck-window-header {
+  display: flex;
+  align-items: center;
+  padding-left: var(--window-header-inset);
+  user-select: none;
+  /* The bar itself drags the window; interactive children opt back out. */
+  -webkit-app-region: drag;
+}
+.reck-window-header > * {
+  -webkit-app-region: no-drag;
+}
+
 /* === Top nav (V1 .nav) === */
 
 .nav {
   background: var(--claude-dark);
   height: 100%;
-  display: flex;
-  align-items: center;
-  padding: 0 1rem;
   gap: 0.75rem;
+  padding-right: 1rem;
   border-bottom: 1px solid var(--claude-dark);
-  user-select: none;
-  -webkit-app-region: drag;
 }
-
-.nav > * { -webkit-app-region: no-drag; }
 
 .nav-brand {
   font-family: var(--font-display);
@@ -135,7 +171,6 @@ html, body, #app {
   display: flex;
   align-items: center;
   gap: 0.2rem;
-  margin-left: 80px;
 }
 
 .nav-brand .dot {
@@ -1238,16 +1273,31 @@ html, body, #app {
   background: var(--app-bg);
   color: var(--app-text);
 }
-.popout-header {
-  -webkit-app-region: drag;
-  display: flex;
-  align-items: center;
+/* The two popup title bars — detached pane and file viewer — are visually the
+   same bar: mono, uppercase, dimmed, on a raised background. They were separate
+   byte-identical rules; grouped here so the typography can only be changed in
+   one place.
+
+   The main window's `.nav` is deliberately NOT in this group: it has its own
+   display-font brand and dark palette. It shares the structural base
+   (`.reck-window-header`), not this skin.
+
+   On the font size: 0.7rem is 9.8px at this app's 14px root, which next to a
+   12px traffic-light dot read as a mistake. 0.9rem = 12.6px, essentially the
+   13px macOS uses for its own window titles — a cap-height a little under the
+   dot diameter is the normal, balanced relationship.
+
+   (The real culprit was alignment rather than size: the dots were centred 3px
+   off this bar's centre line. Fixed via per-window `trafficLightPosition` in
+   main — see WINDOW_HEADER_HEIGHT there, which must track the heights below.) */
+.popout-header,
+.file-viewer-header {
   gap: 0.5rem;
-  padding: 0 12px 0 78px; /* leave room for the macOS traffic lights */
+  padding-right: 12px;
   border-bottom: 1px solid var(--app-border);
   background: var(--app-bg-raised);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.9rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--app-text-dim);
@@ -2714,20 +2764,11 @@ html, body, #app {
   overflow: hidden;
 }
 
+/* Only what the file viewer adds on top of the shared popup skin: the header
+   is a positioning context for the spinner slot, and sits above the body so the
+   lightbox / banners can't paint over it. */
 .file-viewer-header {
-  -webkit-app-region: drag;
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0 12px 0 78px; /* room for macOS traffic lights */
-  border-bottom: 1px solid var(--app-border);
-  background: var(--app-bg-raised);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--app-text-dim);
   z-index: 10;
 }
 
@@ -2933,6 +2974,11 @@ html, body, #app {
   font-family: var(--font-sans, var(--font-mono));
   line-height: 1.6;
   z-index: 0;
+  /* Content zoom (⌘+/⌘-). Everything inside sizes in em, so scaling the root
+     font-size here scales the whole document — prose, code, headings, the TOC
+     — without touching the title bar above it. Deliberately NOT page zoom:
+     see main/content-zoom.ts for why that broke traffic-light alignment. */
+  font-size: calc(1rem * var(--content-zoom));
 }
 
 /* Markdown content typography — close enough to the surrounding app

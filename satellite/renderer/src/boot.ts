@@ -140,6 +140,7 @@ import {
   railDragRelease,
   shouldStartWiggle,
 } from "./ui/rail-collapse";
+import { initContentZoom } from "./ui/content-zoom";
 import type { Pane, PaneKind, PaneUsage, Project, Stoplight } from "@proto/proto";
 import { mergeHybridProjects } from "./hybrid-merge";
 import type { StartupSplashController } from "./ui/startup-splash";
@@ -192,6 +193,18 @@ export async function boot(splash?: StartupSplashController) {
   // Dictation diagnostics — harmless global hook used by the e2e-electron
   // dictation spec and by humans in DevTools (`reckDictationSelfTest.run()`).
   registerDictationSelfTest();
+
+  // Content zoom (⌘+/⌘- via the View menu). Installed before ANY early return:
+  // the no-settings path below renders Preferences and never reaches the pane
+  // layout, but that view still has to honour the user's zoom.
+  //
+  // CSS handles the markup surfaces via `--content-zoom`. Terminals are
+  // canvases and need explicit font resizing, so the layout subscribes
+  // separately further down, once it exists.
+  //
+  // The app bar is intentionally excluded — a title bar that scaled slid out of
+  // alignment with the macOS traffic lights. See ui/window-header.ts.
+  const contentZoom = initContentZoom();
 
   // Theme: apply as early as possible to avoid flash. The <html>
   // data-theme attribute also lets the boot splash pick the right
@@ -1848,6 +1861,10 @@ export async function boot(splash?: StartupSplashController) {
     },
   });
   layout.setTheme(theme);
+  // Terminals can't inherit a CSS font-size (canvas), so they resize through
+  // xterm. Fires immediately, which also applies the persisted factor to panes
+  // restored at launch.
+  contentZoom.subscribe((factor) => layout.setContentZoom(factor));
   // Bind the rail-collapse/wiggle refit hook now that the layout exists.
   refitActiveTerminals = () => void layout.refitActive();
 

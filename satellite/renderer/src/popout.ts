@@ -19,6 +19,8 @@ import { TerminalPane } from "@client-core/terminal/terminal-pane";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
 import { installUrlLinkProvider } from "./viewer/UrlLinkProvider";
 import { resolveActivatePath } from "./viewer/resolveActivatePath";
+import { createWindowHeader } from "./ui/window-header";
+import { initContentZoom, zoomedTerminalFontSize } from "./ui/content-zoom";
 import type { HostRef } from "./host";
 // `loadSettings` reads via the same IPC channels the main renderer uses;
 // the popout's preload exposes the same `reckAPI` surface, so this works
@@ -113,8 +115,9 @@ async function bootPopout(): Promise<void> {
   // Header chrome: title + reattach button. -webkit-app-region: drag
   // on the header (set in styles.css) lets the user move the window
   // even when the OS title bar is hidden by `titleBarStyle: hiddenInset`.
-  const header = document.createElement("div");
-  header.className = "popout-header";
+  // Shared window title bar — owns the traffic-light inset, the drag region
+  // and the no-zoom rule. See ui/window-header.ts.
+  const header = createWindowHeader("popout-header");
   const titleEl = document.createElement("div");
   titleEl.className = "popout-title";
   titleEl.textContent = info.title || info.paneId;
@@ -177,6 +180,12 @@ async function bootPopout(): Promise<void> {
   });
   body.appendChild(term.container);
   term.mount();
+  // Content zoom. The terminal is a canvas, so it can't inherit a CSS
+  // font-size — resize it through xterm instead, which reflows the grid and
+  // re-fits the PTY. The subscription fires immediately, so a popout opened
+  // while the app is already zoomed starts at the right size.
+  const contentZoom = initContentZoom();
+  contentZoom.subscribe((factor) => term.setFontSize(zoomedTerminalFontSize(factor)));
   // Install the file-path xterm linkifier on the popout's terminal so
   // detached panes behave like main-window panes — Cmd+click on a path in
   // scrollback opens the file viewer popup.
