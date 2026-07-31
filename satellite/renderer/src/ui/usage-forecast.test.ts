@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { UsageQuotaForecast } from "@client-core/api/client";
 import {
   HORIZON_TAIL_FRACTION,
+  MIN_BRIDGE_BINS,
+  bridgeSegment,
   crossingTime,
   forecastGeometry,
   forecastXMax,
@@ -190,5 +192,41 @@ describe("forecastXMax", () => {
     // A forecast ending inside the plotted range must not pull the axis in.
     const g = geom({ resets_at: NOW + 600 })!;
     expect(forecastXMax([g], COUNT)).toBe(COUNT - 0.5);
+  });
+});
+
+describe("bridgeSegment", () => {
+  it("joins the last plotted bin to the projection's origin", () => {
+    // The reported bug: at 30-minute bins the last bin is drawn at its
+    // START, so it sits up to a full bin-width behind the latest reading
+    // and the projection appeared to begin out of nowhere.
+    const g = geom()!;
+    expect(g.originIdx).toBe(24); // the reading, 2h in
+    const seg = bridgeSegment(g, [22, 36]); // last bin drawn 10 min earlier
+    expect(seg).toEqual([
+      [22, 36],
+      [24, 40],
+    ]);
+  });
+
+  it("is null when the gap is too small to see", () => {
+    // Fine bins: the last bin and the latest reading effectively coincide,
+    // and the segment would be sub-pixel.
+    const g = geom()!;
+    expect(bridgeSegment(g, [g.originIdx, g.originPct])).toBeNull();
+    expect(bridgeSegment(g, [g.originIdx - MIN_BRIDGE_BINS / 2, 40])).toBeNull();
+  });
+
+  it("is null when the series has no plotted point to join from", () => {
+    expect(bridgeSegment(geom()!, undefined)).toBeNull();
+  });
+
+  it("bridges backwards too, if a bin is drawn ahead of the reading", () => {
+    // Defensive: the sign of the gap should not matter.
+    const g = geom()!;
+    expect(bridgeSegment(g, [26, 44])).toEqual([
+      [26, 44],
+      [24, 40],
+    ]);
   });
 });

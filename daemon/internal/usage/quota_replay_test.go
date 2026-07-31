@@ -108,12 +108,24 @@ func report(t *testing.T, label string, rs []quotaReading, window time.Duration,
 		return
 	}
 
-	// The plotted line's own average, as ground truth to judge the estimate
-	// against: where the series actually went over the span it covers.
-	first, last := rs[0], rs[len(rs)-1]
-	if span := float64(last.ts-first.ts) / 3600; span > 0 {
-		t.Logf("  series: %.1f%% → %.1f%% over %.1fh = %.4f %%/h (observed average)",
-			first.pct, last.pct, span, (last.pct-first.pct)/span)
+	// Ground truth to judge the estimate against, PER WINDOW. Not across the
+	// whole export: that spans resets, and a rate measured through one is
+	// meaningless — it was reading -0.04 %/h for a bucket that only ever
+	// climbs.
+	for i := 0; i < len(rs); {
+		j := i
+		for j < len(rs) && windowID(rs[j].resetsAt) == windowID(rs[i].resetsAt) {
+			j++
+		}
+		w := rs[i:j]
+		i = j
+		span := float64(w[len(w)-1].ts-w[0].ts) / 3600
+		if span < 1 {
+			continue
+		}
+		t.Logf("  window resetting %s: %.0f%% → %.0f%% over %.1fh = %.4f %%/h (actual)",
+			time.Unix(w[0].resetsAt, 0).Format("Mon 02 15:04"),
+			w[0].pct, w[len(w)-1].pct, span, (w[len(w)-1].pct-w[0].pct)/span)
 	}
 
 	slopes := observedSlopes(rs, now, rule)

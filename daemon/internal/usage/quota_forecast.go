@@ -67,6 +67,23 @@ type slopeRule struct {
 	minSpan, maxSpan int64
 	// dropIdle excludes intervals with no rise.
 	dropIdle bool
+	// sliding samples OVERLAPPING intervals — one per reading, each
+	// measured back to the reading ~minSpan earlier — instead of walking a
+	// chain of disjoint ones.
+	//
+	// It exists because the band is a set of quantiles, and quantiles need
+	// a distribution. Disjoint day-long intervals across a 91-hour export
+	// yielded FOUR slopes, at which point p10 is just the minimum and p90
+	// the maximum, and the centre lands wherever the sparse sample happens
+	// to fall. Overlapping spans over the same rows give hundreds, and the
+	// result is time-weighted: a rate the account actually held for a long
+	// stretch counts for more than one it touched briefly.
+	//
+	// The samples are correlated, so this is not a sampling distribution
+	// and the quantiles are not confidence bounds — but they were never
+	// claimed to be. The question is "what 24-hour rates has this account
+	// actually sustained", and overlapping windows answer exactly that.
+	sliding bool
 }
 
 var (
@@ -102,7 +119,9 @@ var (
 	// A day, by contrast, carries ~5 points of rise, so a 1-point step is a
 	// ~20% error rather than a 100x one — and the day-to-day spread is a
 	// real signal, which is what finally gives the band honest width.
-	sevenDayRule = slopeRule{minSpan: 20 * 3600, maxSpan: 30 * 3600, dropIdle: false}
+	sevenDayRule = slopeRule{
+		minSpan: 20 * 3600, maxSpan: 30 * 3600, dropIdle: false, sliding: true,
+	}
 )
 
 // ruleFor picks the measurement rule for a window width.
@@ -111,6 +130,32 @@ func ruleFor(window time.Duration) slopeRule {
 		return sevenDayRule
 	}
 	return fiveHourRule
+}
+
+// windowIDGranularity is the resolution at which two resets_at values are
+// considered the same window.
+//
+// They must not be compared exactly. The two ingest paths derive the value
+// differently — the poller parses an RFC3339 string with sub-second
+// precision and truncates (quota_poll.go), while the statusline supplies
+// its own integer — so ONE window is recorded as two timestamps a second
+// apart, alternating as the paths interleave.
+//
+// Measured on a real 4.6-day export: the 7-day bucket had two genuine
+// windows recorded across 386 alternating runs, and the 5-hour bucket five
+// windows across 306. Since slopes are never measured across a window
+// boundary, exact grouping shattered the series into fragments too short to
+// measure anything over — the 7d forecast came out empty and the 5h one
+// lost a slope at every flicker.
+//
+// A minute is far below the hours between real windows and far above the
+// jitter. Rounding rather than a tolerance comparison keeps grouping
+// transitive, so a run of near-equal values can't chain into one bucket.
+const windowIDGranularity = 60
+
+// windowID identifies the rate-limit window a reading belongs to.
+func windowID(resetsAt int64) int64 {
+	return (resetsAt + windowIDGranularity/2) / windowIDGranularity
 }
 
 // QuotaForecast is the live state of one rate-limit window plus the burn
@@ -260,12 +305,31 @@ func observedSlopes(readings []quotaReading, now int64, rule slopeRule) []weight
 
 	for start := 0; start < len(readings); {
 		end := start
-		for end < len(readings) && readings[end].resetsAt == readings[start].resetsAt {
+		for end < len(readings) && windowID(readings[end].resetsAt) == windowID(readings[start].resetsAt) {
 			end++
 		}
 		window := readings[start:end]
 		start = end
 
+		// Drop the impossible readings once, up front, so both walks below
+		// see the same cleaned series. Within a window quota is cumulative,
+		// so anything under the running maximum is a stale cached block.
+		clean := window[:0:0]
+		runningMaxFilter := math.Inf(-1)
+		for _, r := range window {
+			if r.pct < runningMaxFilter {
+				continue
+			}
+			runningMaxFilter = r.pct
+			clean = append(clean, r)
+		}
+
+		if rule.sliding {
+			out = append(out, slidingSlopes(clean, now, rule)...)
+			continue
+		}
+
+		window = clean
 		runningMax := math.Inf(-1)
 		var anchor *quotaReading
 		for i := range window {
@@ -349,4 +413,37 @@ func weightedQuantile(slopes []weightedSlope, q float64) float64 {
 		}
 	}
 	return slopes[len(slopes)-1].rate
+}
+
+// slidingSlopes measures one rate per reading, each against the most
+// recent earlier reading at least minSpan back, skipping any pair further
+// apart than maxSpan (a gap in the data, not a slow burn).
+//
+// `clean` must already be filtered to non-decreasing readings and belong to
+// a single window. Two pointers, so it stays linear.
+func slidingSlopes(clean []quotaReading, now int64, rule slopeRule) []weightedSlope {
+	var out []weightedSlope
+	lo := 0
+	for hi := range clean {
+		r := clean[hi]
+		// Advance to the LATEST reading still at least minSpan behind, so
+		// the span stays as close to minSpan as the data allows rather than
+		// stretching back to the start of the window.
+		for lo+1 < hi && r.ts-clean[lo+1].ts >= rule.minSpan {
+			lo++
+		}
+		span := r.ts - clean[lo].ts
+		if span < rule.minSpan || span > rule.maxSpan {
+			continue
+		}
+		rate := (r.pct - clean[lo].pct) / (float64(span) / 3600)
+		if rate <= 0 && rule.dropIdle {
+			continue
+		}
+		out = append(out, weightedSlope{
+			rate:   math.Max(rate, 0),
+			weight: recencyWeight(r.ts, now),
+		})
+	}
+	return out
 }

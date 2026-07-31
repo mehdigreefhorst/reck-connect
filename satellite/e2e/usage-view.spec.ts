@@ -595,6 +595,33 @@ test.describe("quota forecast", () => {
     await expect(readout).not.toContainText("projected");
   });
 
+  test("stays joined to the series at coarse bin widths", async ({ page }) => {
+    // A bin is drawn at its START, so at 30-minute bins the bin containing
+    // now sits up to half an hour behind the latest reading — and the
+    // projection appeared to start out of nowhere, disconnected from the
+    // line it continues. bridgeSegment closes that.
+    await openHarness(page);
+    await page.locator('.usage-chip[data-g="session"]').click();
+    await page.waitForTimeout(200);
+
+    const chart = page.locator(".usage-chart");
+    await page.locator(".usage-bins").selectOption("30m");
+    await expect(page.locator(".usage-bins")).toHaveValue("30m");
+    await page.waitForTimeout(250);
+    const coarse = await chart.screenshot();
+
+    // Fine bins put the last bin essentially on top of the latest reading,
+    // so no bridge is drawn — the two renderings must differ.
+    await page.locator(".usage-bins").selectOption("1m");
+    await expect(page.locator(".usage-bins")).toHaveValue("1m");
+    await page.waitForTimeout(250);
+    expect(coarse.equals(await chart.screenshot())).toBe(false);
+
+    await page.locator(".usage-bins").selectOption("30m");
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: "e2e/artifacts/usage-forecast-coarse-bins.png" });
+  });
+
   test("vanishes on a range that does not contain now", async ({ page }) => {
     await openHarness(page);
     await page.locator('.usage-chip[data-g="day"]').click();

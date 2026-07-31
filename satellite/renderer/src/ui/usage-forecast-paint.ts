@@ -18,6 +18,7 @@
 //     draw hook, `data` stays exactly what it is today.
 
 import type uPlot from "uplot";
+import { bridgeSegment } from "./usage-forecast";
 import type { ForecastGeometry, ProjectedLine } from "./usage-forecast";
 
 /** One bucket's forecast, ready to draw. */
@@ -29,6 +30,15 @@ export interface ForecastLayer {
   label: string;
   /** Local-time formatter for the reset and crossing labels. */
   formatTime: (unixSeconds: number) => string;
+  /** Where the plotted series stops, as (bin index, percent).
+   *
+   * A bin is drawn at its START, so the bin holding `now` is plotted up to
+   * a full bin-width in the past — while the forecast begins at the latest
+   * actual reading. At 30-minute bins that is half an hour of blank between
+   * the line and the projection, which reads as the forecast having lost
+   * the data rather than continuing it. Given this, the painter bridges the
+   * two. */
+  connectFrom?: [number, number];
 }
 
 export interface ForecastPaintOpts {
@@ -107,6 +117,21 @@ function paintLayer(
   trace(g.centre);
   ctx.stroke();
   ctx.setLineDash([]);
+
+  // --- bridge from the drawn line to the projection --------------------
+  // Only when there is a real gap: at fine bins the last bin and the latest
+  // reading nearly coincide and the segment would be sub-pixel. Drawn solid
+  // and in the series colour, because it spans REAL elapsed time that the
+  // binning simply hasn't caught up with — it is data, not projection.
+  const bridge = bridgeSegment(g, layer.connectFrom);
+  if (bridge) {
+    ctx.beginPath();
+    ctx.moveTo(X(bridge[0][0]), Y(bridge[0][1]));
+    ctx.lineTo(X(bridge[1][0]), Y(bridge[1][1]));
+    ctx.lineWidth = 1.5 * r;
+    ctx.strokeStyle = layer.color;
+    ctx.stroke();
+  }
 
   // --- origin dot ------------------------------------------------------
   // The plotted series ends at a per-bin MAX() that has been forward-filled;

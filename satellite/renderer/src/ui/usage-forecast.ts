@@ -166,3 +166,36 @@ export function forecastXMax(geometries: Array<ForecastGeometry | null>, binCoun
   }
   return max;
 }
+
+/** Smallest gap, in bins, worth drawing a bridge across. Below this the
+ * last bin and the latest reading effectively coincide and the segment
+ * would be sub-pixel. */
+export const MIN_BRIDGE_BINS = 0.05;
+
+/**
+ * The segment joining where the plotted line stops to where the projection
+ * starts, or null when there is nothing worth drawing.
+ *
+ * These are genuinely different points, and the difference grows with bin
+ * width: a bin is drawn at its START, so the bin containing `now` is
+ * plotted up to a full bin-width in the past, while the forecast begins at
+ * the latest actual reading. At 30-minute bins that leaves half an hour of
+ * blank, which reads as the projection having lost the series rather than
+ * continuing it.
+ *
+ * The segment spans real elapsed time the binning has not caught up with,
+ * so it is data rather than projection — the caller draws it solid, in the
+ * series colour.
+ */
+export function bridgeSegment(
+  geometry: ForecastGeometry,
+  connectFrom: readonly [number, number] | undefined,
+): [[number, number], [number, number]] | null {
+  if (!connectFrom) return null;
+  const [idx, pct] = connectFrom;
+  if (Math.abs(geometry.originIdx - idx) < MIN_BRIDGE_BINS) return null;
+  return [
+    [idx, pct],
+    [geometry.originIdx, geometry.originPct],
+  ];
+}

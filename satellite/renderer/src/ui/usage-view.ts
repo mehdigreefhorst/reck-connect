@@ -711,23 +711,64 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       range.start.getTime() / 1000 <= now && now < range.until.getTime() / 1000;
     if (!inRange) return [];
 
-    const wanted: Array<[UsageQuotaForecast | undefined, string, string]> = [
-      [forecasts?.five_hour, sage, "5h"],
-      [forecasts?.seven_day, mustard, "7d"],
+    /** The last bin that actually carries a value for a series, as
+     *  (index, percent) — where the drawn line stops.
+     *
+     *  This is NOT where the forecast starts, and at coarse bins the two are
+     *  far apart: a bin is plotted at its START, so the bin holding `now` is
+     *  drawn up to a full bin-width in the past while the forecast begins at
+     *  the latest actual reading. At 30-minute bins that leaves a half-hour
+     *  of blank between the line and the projection. The layer carries this
+     *  point so the painter can bridge it. */
+    const lastPlotted = (pick: (b: UsageHistogramBin) => number | undefined):
+      [number, number] | undefined => {
+      for (let i = bins.length - 1; i >= 0; i--) {
+        const v = pick(bins[i]);
+        if (v !== undefined) return [i, v];
+      }
+      return undefined;
+    };
+
+    const wanted: Array<{
+      forecast: UsageQuotaForecast | undefined;
+      color: string;
+      label: string;
+      visible: boolean;
+      connectFrom: [number, number] | undefined;
+    }> = [
+      {
+        forecast: forecasts?.five_hour,
+        color: sage,
+        label: "5h",
+        visible: shown.fiveHour,
+        connectFrom: lastPlotted((b) => b.five_hour_peak),
+      },
+      {
+        forecast: forecasts?.seven_day,
+        color: mustard,
+        label: "7d",
+        visible: shown.sevenDay,
+        connectFrom: lastPlotted((b) => b.seven_day_peak),
+      },
     ];
     const out: ForecastLayer[] = [];
-    for (const [forecast, color, label] of wanted) {
-      if (!forecast) continue;
-      if (label === "5h" && !shown.fiveHour) continue;
-      if (label === "7d" && !shown.sevenDay) continue;
+    for (const w of wanted) {
+      if (!w.forecast || !w.visible) continue;
       const geometry = forecastGeometry({
-        forecast,
+        forecast: w.forecast,
         firstBinSec: bins[0].t,
         binWidthSec: width,
         binCount: bins.length,
         now,
       });
-      if (geometry) out.push({ geometry, color, label, formatTime: whenLabel });
+      if (!geometry) continue;
+      out.push({
+        geometry,
+        color: w.color,
+        label: w.label,
+        formatTime: whenLabel,
+        connectFrom: w.connectFrom,
+      });
     }
     return out;
   }
