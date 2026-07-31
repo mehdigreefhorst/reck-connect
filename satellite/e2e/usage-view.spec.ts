@@ -548,6 +548,23 @@ test("the plan reads the entitlement, not the stale subscriptionType", async ({ 
 // reset, a tinted fill between the bounds, a reset marker and a 100%
 // crossing. The harness pins the live windows on the real clock, exactly as
 // the daemon's `quota_forecast` does.
+test("a tier that names no plan falls back to the subscription", async ({ page }) => {
+  // A Pro account's entitlement is the generic "default_claude_ai". Parsing
+  // it produced "Ai" in the header and the footer — meaningless, and worse
+  // than the "Pro" it displaced. See issue #130.
+  await page.goto(`${HARNESS}?theme=light&tier=default_claude_ai`);
+  await expect(page.locator(".usage-chart canvas")).toBeVisible();
+
+  await expect(page.locator(".usage-plan")).toHaveText("Pro");
+  await expect(page.locator(".usage-stats")).toContainText("Pro");
+  await expect(page.locator(".usage-plan")).not.toHaveText(/Ai/);
+
+  // A tier that DOES name a plan still wins over the stale subscription.
+  await page.goto(`${HARNESS}?theme=light&tier=default_claude_max_20x`);
+  await expect(page.locator(".usage-chart canvas")).toBeVisible();
+  await expect(page.locator(".usage-plan")).toHaveText("Max 20x");
+});
+
 test.describe("quota forecast", () => {
   test("draws a band on Day view and honours the series toggles", async ({ page }) => {
     await openHarness(page);

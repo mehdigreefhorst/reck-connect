@@ -195,6 +195,13 @@ function synthForecast(bins: UsageHistogramBin[]): UsageHistogramResponse["quota
 function synthPlan(
   params: UsageHistogramParams,
 ): Pick<UsageHistogramResponse, "plan_days" | "plan_summary"> {
+  // ?tier= overrides the entitlement so both label paths can be exercised:
+  // a tier that names a plan ("default_claude_max_5x" -> "Max 5x") and the
+  // generic one a Pro account reports ("default_claude_ai"), which names no
+  // plan and must fall back to the subscription rather than rendering "Ai".
+  const tier =
+    new URLSearchParams(location.search).get("tier") ?? "default_claude_max_5x";
+
   const plan_days: UsagePlanDay[] = [];
   const cur = new Date(params.since * 1000);
   cur.setHours(0, 0, 0, 0);
@@ -202,7 +209,7 @@ function synthPlan(
     plan_days.push({
       day: Math.floor(cur.getTime() / 1000),
       subscription: "pro",
-      rate_limit_tier: "default_claude_max_5x",
+      rate_limit_tier: tier,
     });
     cur.setDate(cur.getDate() + 1);
   }

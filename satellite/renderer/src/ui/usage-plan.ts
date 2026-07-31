@@ -27,31 +27,38 @@ export const PLAN_UNKNOWN = "unknown";
 /** Prefix Anthropic puts on every entitlement string. */
 const TIER_PREFIX = "default_claude_";
 
+/** Plan families an entitlement can name. A tier mentioning none of these
+ * describes no plan and is not worth displaying — see tierLabel. */
+const PLAN_FAMILIES = ["max", "pro", "team", "enterprise", "free"];
+
 /**
  * Display label for a `rate_limit_tier` (e.g. `default_claude_max_5x` →
- * "Max 5x"). Returns "" when absent, so callers can treat "nothing to show"
- * uniformly.
+ * "Max 5x"), or "" when the tier names no plan.
  *
- * PREFER THIS over planLabel(). The two sources disagree: `subscription`
- * comes from the credential blob's `subscriptionType`, which goes stale
- * after an upgrade — it reads "pro" on an account that has been Max 5x for
- * months — while the entitlement tracks reality. It is also the ONLY field
- * that separates Max 5x from Max 20x, and "80% of Max 5x" is not the same
- * amount of work as "80% of Max 20x".
+ * Preferred over planLabel() WHERE IT SAYS SOMETHING. The two sources
+ * disagree: `subscription` comes from the credential blob's
+ * `subscriptionType`, which goes stale after an upgrade — it reads "pro" on
+ * an account that has been Max 5x for months — while the entitlement tracks
+ * reality. It is also the ONLY field separating Max 5x from Max 20x, and
+ * "80% of Max 5x" is not the same amount of work as "80% of Max 20x".
  *
- * Parsed rather than table-mapped so a tier Anthropic adds later still
+ * But not every tier names a plan. A Pro account reports the generic
+ * `default_claude_ai`, and blindly parsing that yielded "Ai" — meaningless,
+ * and strictly worse than the "Pro" it displaced. So the tier is used only
+ * when it mentions a plan family; otherwise the caller falls back to the
+ * subscription.
+ *
+ * Parsed rather than table-mapped, so a tier Anthropic adds later still
  * reads ("default_claude_max_50x" → "Max 50x") instead of vanishing. A
- * multiplier like "5x" survives title-casing unchanged, which is why no
- * special case is needed for it.
+ * multiplier like "5x" survives title-casing unchanged, which is why it
+ * needs no special case.
  */
 export function tierLabel(tier: string | undefined): string {
   if (!tier) return "";
   const body = tier.startsWith(TIER_PREFIX) ? tier.slice(TIER_PREFIX.length) : tier;
-  return body
-    .split("_")
-    .filter((part) => part !== "")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+  const parts = body.split("_").filter((part) => part !== "");
+  if (!parts.some((part) => PLAN_FAMILIES.includes(part.toLowerCase()))) return "";
+  return parts.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 
 /** The shape of one plan day as it arrives on the wire. Declared
@@ -84,14 +91,16 @@ export function currentTierLabel(days: readonly PlanDayLike[] | undefined): stri
 
 /**
  * Per-entitlement shares of a range, largest first. Empty when no day
- * carries an entitlement — which is the signal to fall back to the
- * subscription-based composition.
+ * carries an entitlement THAT NAMES A PLAN — which is the signal to fall
+ * back to the subscription-based composition. A week on Pro reports the
+ * generic `default_claude_ai` every day; counting those would compose a
+ * range as "5d Ai" instead of "Pro".
  */
 export function planTierShares(days: readonly PlanDayLike[] | undefined): PlanShare[] {
   if (!days) return [];
   const counts = new Map<string, number>();
   for (const d of days) {
-    if (!d.rate_limit_tier) continue;
+    if (!d.rate_limit_tier || tierLabel(d.rate_limit_tier) === "") continue;
     counts.set(d.rate_limit_tier, (counts.get(d.rate_limit_tier) ?? 0) + 1);
   }
   return [...counts.entries()]

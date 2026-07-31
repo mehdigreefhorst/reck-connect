@@ -172,3 +172,40 @@ describe("planRangeLabel with plan days", () => {
     expect(planRangeLabel({ pro: 2 }, [d(1, "pro"), d(2, "pro")])).toBe("Pro");
   });
 });
+
+describe("tiers that name no plan", () => {
+  it("does not invent a label from the generic claude.ai tier", () => {
+    // A Pro account reports rate_limit_tier "default_claude_ai" — generic,
+    // carrying no tier information at all. Parsing it produced "Ai", which
+    // is both meaningless and WORSE than the subscription it displaced:
+    // the header read "Pro" before and "Ai" after.
+    expect(tierLabel("default_claude_ai")).toBe("");
+    expect(tierLabel("ai")).toBe("");
+  });
+
+  it("still reads tiers that do name a plan, including future ones", () => {
+    expect(tierLabel("default_claude_max_5x")).toBe("Max 5x");
+    expect(tierLabel("default_claude_max_20x")).toBe("Max 20x");
+    expect(tierLabel("default_claude_pro")).toBe("Pro");
+    expect(tierLabel("default_claude_max_50x")).toBe("Max 50x");
+    expect(tierLabel("default_claude_team_premium")).toBe("Team Premium");
+  });
+
+  it("falls back to the subscription when the tier names nothing", () => {
+    // The reported bug, end to end.
+    expect(currentTierLabel([{ subscription: "pro", rate_limit_tier: "default_claude_ai" }]))
+      .toBe("Pro");
+    expect(currentTierLabel([{ subscription: "max", rate_limit_tier: "default_claude_ai" }]))
+      .toBe("Max");
+  });
+
+  it("keeps a range on an uninformative tier out of the composition", () => {
+    // Otherwise a week on Pro would read "5d Ai" instead of "Pro".
+    expect(
+      planRangeLabel({ pro: 2 }, [
+        { subscription: "pro", rate_limit_tier: "default_claude_ai" },
+        { subscription: "pro", rate_limit_tier: "default_claude_ai" },
+      ]),
+    ).toBe("Pro");
+  });
+});
