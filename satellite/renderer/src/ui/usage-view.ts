@@ -43,6 +43,7 @@ import {
   binLabelFor,
   binOptionLabel,
   bucketSeconds,
+  defaultBinFor,
   defaultWidthForSpan,
   drillDown,
   drillUp,
@@ -63,7 +64,13 @@ import { iconClose, iconDownload, iconGear } from "./icons";
 import { confirmDialogOpen } from "./confirmDialog";
 import { openUsageExportDialog } from "./usage-export-dialog";
 import { openUsagePollDialog } from "./usage-poll-dialog";
-import { bucketFor, noSeriesVisible, type UsageBuckets } from "./usage-prefs";
+import {
+  SESSION_VIEW,
+  bucketFor,
+  noSeriesVisible,
+  type UsageBuckets,
+  type UsageViewKey,
+} from "./usage-prefs";
 import { loadUsagePrefs, saveUsagePrefs } from "../config";
 
 export interface UsageOverlayOpts {
@@ -122,6 +129,16 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
   // the chip put us there, so the chip can read as active and the label can
   // say "Session" instead of a bare pair of timestamps.
   let sessionMode = false;
+
+  /** Which view the bin width is remembered against. Session is a view in
+   *  its own right, not a zoom gesture — a width picked there used to be
+   *  discarded because it rides on a custom range. A genuine drag-zoom
+   *  returns null: its width is derived from the span and remembering it
+   *  would let a transient gesture redefine a calendar view. */
+  function viewKey(): UsageViewKey | null {
+    if (sessionMode) return SESSION_VIEW;
+    return custom ? null : granularity;
+  }
   // Series visibility, keyed to uPlot series index 1/2/3. Owned here
   // (not by uPlot's legend) so toggles survive the chart rebuilds that
   // every granularity/bin/theme change triggers.
@@ -308,10 +325,8 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
 
   binsSel.addEventListener("change", () => {
     bucket = binsSel.value;
-    // Only a calendar view's width is a preference worth keeping. Inside a
-    // zoom the width is derived from the span, so recording it would let a
-    // transient gesture redefine what Day means.
-    if (!custom) buckets = { ...buckets, [granularity]: bucket };
+    const view = viewKey();
+    if (view) buckets = { ...buckets, [view]: bucket };
     void refresh();
   });
 
@@ -447,7 +462,13 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
 
   function rebuildBinOptions(): void {
     const spanSec = (currentRange().until.getTime() - currentRange().start.getTime()) / 1000;
-    const options = custom ? widthsForSpan(spanSec) : BIN_OPTIONS[granularity];
+    // Session is a fixed five-hour span, so it offers Day's widths rather
+    // than span-derived ones — and remembers its own choice among them.
+    const options = sessionMode
+      ? BIN_OPTIONS.day
+      : custom
+        ? widthsForSpan(spanSec)
+        : BIN_OPTIONS[granularity];
     binsSel.innerHTML = "";
     for (const b of options) {
       const o = document.createElement("option");
@@ -455,8 +476,16 @@ export function openUsageOverlay(opts: UsageOverlayOpts): void {
       o.textContent = binOptionLabel(b);
       binsSel.appendChild(o);
     }
+    // The width always follows the VIEW, not whatever was left over from
+    // the one before it. Repairing only an invalid width was not enough:
+    // switching Week (30m) -> Session kept 30m, because 30m is a legal Day
+    // width — so Session's own remembered choice never came back. A width
+    // the user picks is written into `buckets` first, so reading it back
+    // here returns their selection, not a default.
+    const view = viewKey();
+    bucket = view ? bucketFor(buckets, view) : defaultWidthForSpan(spanSec);
     if (!options.includes(bucket)) {
-      bucket = custom ? defaultWidthForSpan(spanSec) : bucketFor(buckets, granularity);
+      bucket = view ? defaultBinFor(view === SESSION_VIEW ? "day" : view) : options[0];
     }
     binsSel.value = bucket;
   }

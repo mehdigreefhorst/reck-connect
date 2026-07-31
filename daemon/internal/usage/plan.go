@@ -196,10 +196,19 @@ type planStore interface {
 	LatestPlan() (*PlanSample, error)
 }
 
-// DefaultPlanProbeInterval is how often to re-read the tier. Plans change
-// a handful of times a year at most, so this only needs to be frequent
-// enough to notice an upgrade within the day it happened.
-const DefaultPlanProbeInterval = time.Hour
+// DefaultPlanProbeInterval is how often to re-read the tier.
+//
+// Plans themselves change a handful of times a year, so the old hourly
+// cadence was ample for that. But it is also what governs how long the
+// usage view keeps naming the WRONG plan after you sign in again — and an
+// hour of a station insisting you are still on your old tier reads as a
+// bug, not as eventual consistency.
+//
+// A probe costs a cached credential read plus one indexed query, and
+// usually writes nothing (rows are change-only). The quota poller already
+// refreshes that same cache every credMaxAge, so matching it here adds no
+// keychain traffic that was not happening anyway.
+const DefaultPlanProbeInterval = 5 * time.Minute
 
 // PlanProbe reads the subscription tier from the local credential blob
 // and records it when it differs from the last recorded value.

@@ -38,7 +38,21 @@ export interface UsageSeriesShown {
 
 /** Remembered bin width per granularity. Sparse: a granularity with no entry
  * has never been chosen for and uses its default. */
-export type UsageBuckets = Partial<Record<Granularity, UsageHistogramBucket>>;
+export type UsageBuckets = Partial<Record<UsageViewKey, UsageHistogramBucket>>;
+
+/** A view the bin width is remembered against.
+ *
+ * "session" sits alongside the calendar granularities because the Session
+ * chip is a first-class view, not a drag-zoom gesture. It is implemented as
+ * a custom range, and custom ranges derive their width from their span —
+ * which meant a width picked in Session was thrown away the moment you left
+ * it. Drag-zooms still derive, and still remember nothing. */
+export type UsageViewKey = Granularity | "session";
+
+/** The Session view's key. Declared `as const` so comparisons against it
+ * narrow, letting callers fall back to Day — whose five-hour-ish span and
+ * width list it shares. */
+export const SESSION_VIEW = "session" as const;
 
 export interface UsagePrefs {
   granularity: Granularity;
@@ -53,6 +67,7 @@ export interface UsagePrefs {
 }
 
 const GRANULARITIES: Granularity[] = ["day", "week", "month", "year"];
+const VIEW_KEYS: UsageViewKey[] = [...GRANULARITIES, SESSION_VIEW];
 
 /** Matches the overlay's own first-run state.
  *
@@ -145,8 +160,10 @@ function sanitizeBuckets(raw: unknown, legacy: unknown, granularity: Granularity
   const src: Record<string, unknown> =
     typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
   const out: UsageBuckets = {};
-  for (const g of GRANULARITIES) {
-    if (isBucketValidFor(g, src[g])) out[g] = src[g];
+  for (const v of VIEW_KEYS) {
+    // Session spans five hours, so it is validated against Day's widths.
+    const against: Granularity = v === SESSION_VIEW ? "day" : v;
+    if (isBucketValidFor(against, src[v])) out[v] = src[v];
   }
   if (out[granularity] === undefined && isBucketValidFor(granularity, legacy)) {
     out[granularity] = legacy;
@@ -155,8 +172,8 @@ function sanitizeBuckets(raw: unknown, legacy: unknown, granularity: Granularity
 }
 
 /** The width to use for a granularity: the remembered one, else its default. */
-export function bucketFor(buckets: UsageBuckets, granularity: Granularity): UsageHistogramBucket {
-  return buckets[granularity] ?? defaultBinFor(granularity);
+export function bucketFor(buckets: UsageBuckets, view: UsageViewKey): UsageHistogramBucket {
+  return buckets[view] ?? defaultBinFor(view === SESSION_VIEW ? "day" : view);
 }
 
 /**

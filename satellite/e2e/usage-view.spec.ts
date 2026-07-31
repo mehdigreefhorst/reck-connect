@@ -333,6 +333,34 @@ test.describe("usage view — remembered state", () => {
     await expect(page.locator(".usage-bins")).toHaveValue("1m");
   });
 
+  test("Session keeps its own bin width, like any other view", async ({ page }) => {
+    // Session rides on a custom range, and custom ranges derive their width
+    // from their span — so a width picked in Session was thrown away the
+    // moment you left it, and arriving there kept whatever the previous
+    // view had. It is a first-class view, so it remembers like one.
+    await openHarness(page);
+    await pickGranularity(page, "Week");
+    await page.locator(".usage-bins").selectOption("4h");
+
+    await page.locator('.usage-chip[data-g="session"]').click();
+    await page.waitForTimeout(200);
+    await page.locator(".usage-bins").selectOption("10m");
+    await expect(page.locator(".usage-bins")).toHaveValue("10m");
+
+    // Away and back: each view holds its own choice.
+    await pickGranularity(page, "Week");
+    await expect(page.locator(".usage-bins")).toHaveValue("4h");
+    await page.locator('.usage-chip[data-g="session"]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator(".usage-bins")).toHaveValue("10m");
+
+    // And it survives a reopen.
+    await page.reload();
+    await expect(page.locator(".usage-card")).toBeVisible();
+    await expect(page.locator('.usage-chip[data-g="session"]')).toHaveClass(/active/);
+    await expect(page.locator(".usage-bins")).toHaveValue("10m");
+  });
+
   test("reopens on the Session view when that is where it was left", async ({ page }) => {
     await openHarness(page);
     await page.locator('.usage-chip[data-g="session"]').click();
