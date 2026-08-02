@@ -59,6 +59,12 @@ describe("stepZoom", () => {
     expect(stepZoom("nonsense", "reset")).toBe(DEFAULT_ZOOM);
   });
 
+  // 0.7 used to be the floor, and it wasn't far enough down for a dense
+  // markdown document on a large display. One more step out.
+  it("steps out past the old 0.7 floor", () => {
+    expect(stepZoom(0.7, "out")).toBe(0.6);
+  });
+
   it("stops at the ends instead of running off", () => {
     const max = ZOOM_STEPS[ZOOM_STEPS.length - 1];
     const min = ZOOM_STEPS[0];
