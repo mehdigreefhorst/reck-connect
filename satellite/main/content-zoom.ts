@@ -17,8 +17,15 @@
 // So zoom is now content-only: the renderer multiplies content font sizes by
 // this factor and re-fits terminals, while title bars ignore it entirely.
 
-/** Zoom steps, as multipliers. 1 is unzoomed and must be present. */
-export const ZOOM_STEPS = [0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2] as const;
+/**
+ * Zoom steps, as multipliers. 1 is unzoomed and must be present.
+ *
+ * The floor was 0.7 and that turned out to be short of what a dense markdown
+ * document on a large display wants, so the ladder runs one step further out.
+ * 0.6 keeps the 0.1 spacing the low end already uses; the terminal follows at
+ * `round(13 * 0.6)` = 8px, which is small but still a legible cell.
+ */
+export const ZOOM_STEPS = [0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2] as const;
 
 export const DEFAULT_ZOOM = 1;
 
