@@ -16,6 +16,7 @@ import {
   nearestStep,
   stepZoom,
 } from "./content-zoom";
+import { pinPageZoom } from "./page-zoom";
 import { registerRsyncIpc } from "./rsync-copy";
 import { registerTranscriptionIpc } from "./transcription/router";
 import { checkExternalUrl, resolveInsideMountPoint } from "./ipc-validation";
@@ -607,6 +608,12 @@ function loadContentZoom(): void {
 function registerContentZoomPriming(): void {
   app.on("browser-window-created", (_e, win) => {
     win.webContents.on("did-finish-load", () => sendContentZoom(win));
+    // Same hook, the other half of the zoom story: hold PAGE zoom at 100% so
+    // the content factor above is the only thing that scales anything. Without
+    // this, a ctrl+wheel or pinch left a persisted per-host zoom level that
+    // scaled the title bars too, survived restarts, and had no in-app undo.
+    // See ./page-zoom.ts.
+    pinPageZoom(win.webContents);
   });
 }
 
