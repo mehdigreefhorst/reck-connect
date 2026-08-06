@@ -37,6 +37,7 @@ Reck Connect is a station/satellite dev environment: a powerful Mac runs `reck-s
 | [concepts/stoplight.md](./concepts/stoplight.md) | Per-pane stoplight state machine |
 | [concepts/hook-shims.md](./concepts/hook-shims.md) | Claude Code lifecycle hook installation and event flow |
 | [concepts/behaviors.md](./concepts/behaviors.md) | Intentional design behaviors and known quirks |
+| [concepts/dictation.md](./concepts/dictation.md) | Daemon-side speech providers using Claude/Codex subscription credentials |
 | [reference/agent-cli-dictation.md](./reference/agent-cli-dictation.md) | How Codex and Claude Code implement audio→text, and what our dictation borrows from them |
 
 ### DevOps & support
