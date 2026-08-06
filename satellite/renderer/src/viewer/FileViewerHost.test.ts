@@ -145,7 +145,9 @@ describe("mountFileViewer", () => {
         params: new URLSearchParams("path=/safe/shot.png"),
       });
       expect(files.read).not.toHaveBeenCalled();
-      expect(files.imageMeta).toHaveBeenCalledWith("/safe/shot.png");
+      expect(files.imageMeta).toHaveBeenCalledWith("/safe/shot.png", {
+        host: "local",
+      });
     });
 
     it("mounts an <img> pointing at the reck-img URL and no mode toggle", async () => {
@@ -193,7 +195,26 @@ describe("mountFileViewer", () => {
         ),
       });
       expect(files.readStation).not.toHaveBeenCalled();
-      expect(files.imageMeta).toHaveBeenCalled();
+      // host:"station" is load-bearing. Without it main judges the Pi
+      // path against the MAC's allowed roots -- and /tmp is one of them,
+      // so /tmp/claude-1000/... passes containment and then fails stat as
+      // "Image not found" instead of being fetched over SSH.
+      expect(files.imageMeta).toHaveBeenCalledWith(
+        "/home/pi/.claude/d.png",
+        { host: "station" },
+      );
+    });
+
+    it("asks for the local host for an ordinary path", async () => {
+      files.imageMeta = vi.fn().mockResolvedValue(META_OK);
+      installReckApi(files);
+      await mountFileViewer({
+        root,
+        params: new URLSearchParams("path=/safe/shot.png"),
+      });
+      expect(files.imageMeta).toHaveBeenCalledWith("/safe/shot.png", {
+        host: "local",
+      });
     });
   });
 

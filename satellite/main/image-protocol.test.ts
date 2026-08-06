@@ -20,6 +20,8 @@ import {
   buildReckImgUrl,
   parseReckImgUrl,
   decideImageResponse,
+  decideStationImageRequest,
+  stationCachePathFor,
 } from "./image-protocol";
 
 describe("imageMimeFor", () => {
@@ -300,5 +302,59 @@ describe("sips transcoding (TIFF / HEIC)", () => {
     );
     expect(res.status).toBe(403);
     fs.rmSync(outside, { recursive: true, force: true });
+  });
+});
+
+describe("decideStationImageRequest", () => {
+  const urlFor = (p: string) =>
+    buildReckImgUrl({ absPath: p, version: "1", host: "station" });
+
+  it("accepts a station image outside the projects mount", () => {
+    // The exact shape that regressed: a Claude scratchpad on the Pi.
+    const res = decideStationImageRequest(
+      urlFor("/tmp/claude-1000/-home-strijders-projects-Cyborg/abc/scratchpad/x.png"),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers["Content-Type"]).toBe("image/png");
+    expect(res.needsConversion).toBe(false);
+  });
+
+  // /tmp is an allowed root ON THE MAC. If station URLs went through
+  // resolveInsideAllowedRoots they'd pass containment and then fail stat
+  // as "not found" -- which is precisely the bug.
+  it("does not judge a station path against the Mac's allowed roots", () => {
+    const res = decideStationImageRequest(urlFor("/tmp/claude-1000/a/b.png"));
+    expect(res.status).toBe(200);
+    expect(res.stationPath).toBe("/tmp/claude-1000/a/b.png");
+  });
+
+  it("still refuses non-image extensions", () => {
+    expect(decideStationImageRequest(urlFor("/home/pi/.ssh/id_rsa")).status).toBe(415);
+    expect(decideStationImageRequest(urlFor("/etc/passwd")).status).toBe(415);
+  });
+
+  it("refuses paths isStationPathSafe rejects", () => {
+    expect(decideStationImageRequest(urlFor("/a/../../etc/x.png")).status).toBe(403);
+  });
+
+  it("refuses a local-host URL -- wrong gate entirely", () => {
+    expect(
+      decideStationImageRequest(buildReckImgUrl({ absPath: "/a/b.png", version: "1" }))
+        .status,
+    ).toBe(400);
+  });
+
+  it.runIf(canConvertImages())("marks HEIC for transcoding after fetch", () => {
+    const res = decideStationImageRequest(urlFor("/tmp/claude-1000/a/photo.heic"));
+    expect(res.status).toBe(200);
+    expect(res.needsConversion).toBe(true);
+    expect(res.headers["Content-Type"]).toBe("image/png");
+  });
+
+  it("keys the station cache separately from local files of the same name", () => {
+    const stat = { mtimeMs: 1, size: 2 };
+    expect(stationCachePathFor("/a/b.png", stat, ".png")).not.toBe(
+      convertedCachePathFor("/a/b.png", stat),
+    );
   });
 });

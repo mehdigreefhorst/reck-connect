@@ -37,6 +37,9 @@ import { deriveProjectAnchor } from "./project-anchor";
 import { normalizeProjectCwd } from "./project-cwd";
 import { rootRelativeCandidate } from "./root-relative";
 import {
+  STATION_IMAGE_MAX_BYTES,
+  isStationPathSafe,
+  statStationFile,
   readStationFile,
   writeStationFile,
   createStationFile,
@@ -368,6 +371,66 @@ export type ImageMetaResult =
   | { ok: false; code: ImageMetaErrorCode; error: string };
 
 /**
+ * Station-hosted image metadata (a Pi path OUTSIDE the sshfs projects
+ * mount — anything inside it arrives here as an ordinary local path).
+ *
+ * `resolveInsideAllowedRoots` must NOT be used: the Mac's allowed roots
+ * include `/tmp`, so a station path like `/tmp/claude-1000/…/shot.png`
+ * would sail through containment and then fail `stat` as "not found",
+ * which is exactly the bug this branch fixes. `isStationPathSafe` is the
+ * gate here, as it is for `file:readStation`.
+ */
+async function stationImageMeta(stationPath: string): Promise<ImageMetaResult> {
+  const safety = isStationPathSafe(stationPath);
+  if (!safety.ok) {
+    return {
+      ok: false,
+      code: "invalid-input",
+      error: `Path is not safe for station access: ${safety.reason}`,
+    };
+  }
+  const directMime = imageMimeFor(stationPath);
+  const convertible = directMime ? null : convertibleMimeFor(stationPath);
+  const mime = directMime ?? convertible;
+  if (!mime || (!directMime && !canConvertImages())) {
+    return {
+      ok: false,
+      code: "unsupported",
+      error: `Not a supported image format: ${stationPath}`,
+    };
+  }
+  const stat = await statStationFile(stationPath);
+  if (!stat.ok) {
+    return stat.code === "not-found"
+      ? { ok: false, code: "not-found", error: `No such file on station: ${stationPath}` }
+      : { ok: false, code: "io-error", error: stat.error };
+  }
+  if (stat.size > STATION_IMAGE_MAX_BYTES) {
+    return {
+      ok: false,
+      code: "too-large",
+      error: `Station image is ${stat.size} bytes (limit ${STATION_IMAGE_MAX_BYTES})`,
+    };
+  }
+  // Unlike the local path, the fetch+transcode is NOT warmed here: it
+  // needs a full SSH round trip, and doing it twice (once here, once in
+  // the protocol handler) would double the wait on a slow link. The
+  // handler owns it, and the spinner stays up until the <img> loads.
+  return {
+    ok: true,
+    resolvedPath: stationPath,
+    url: buildReckImgUrl({
+      absPath: stationPath,
+      version: versionTokenFor(stat),
+      host: "station",
+    }),
+    mime,
+    byteSize: stat.size,
+    mtimeMs: stat.mtimeMs,
+  };
+}
+
+/**
  * Metadata for an image, WITHOUT its bytes — the renderer needs
  * `resolvedPath` for the title/badge and `byteSize` for the meta line, and
  * reads the dimensions off the decoded <img>. The bytes arrive separately
@@ -381,10 +444,12 @@ export type ImageMetaResult =
 export async function handleImageMeta(
   deps: FileViewerDeps,
   rawPath: unknown,
+  opts?: { host?: "local" | "station" },
 ): Promise<ImageMetaResult> {
   if (typeof rawPath !== "string") {
     return { ok: false, code: "invalid-input", error: "path must be a string" };
   }
+  if (opts?.host === "station") return stationImageMeta(rawPath);
   const resolved = resolveInsideAllowedRoots(deps.roots(), rawPath);
   if (!resolved) {
     return {
@@ -1655,7 +1720,9 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
   ipcMain.removeHandler("file:openExternally");
 
   ipcMain.handle("file:read", (_e, p: unknown) => handleFileRead(deps, p));
-  ipcMain.handle("file:imageMeta", (_e, p: unknown) => handleImageMeta(deps, p));
+  ipcMain.handle("file:imageMeta", (_e, p: unknown, opts: unknown) =>
+    handleImageMeta(deps, p, opts as { host?: "local" | "station" } | undefined),
+  );
   ipcMain.handle("file:openExternally", (_e, p: unknown) =>
     handleOpenExternally(deps, p),
   );

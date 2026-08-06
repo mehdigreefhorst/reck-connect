@@ -158,8 +158,8 @@ contextBridge.exposeInMainWorld("reckAPI", {
      * `reck-img://` scheme, whose URL main mints here. Called instead of
      * `read` for image paths, which `read` refuses as binary by design.
      */
-    imageMeta: (filePath: string) =>
-      ipcRenderer.invoke("file:imageMeta", filePath) as Promise<
+    imageMeta: (filePath: string, opts?: { host?: "local" | "station" }) =>
+      ipcRenderer.invoke("file:imageMeta", filePath, opts) as Promise<
         | {
             ok: true;
             resolvedPath: string;
