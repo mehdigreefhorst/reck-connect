@@ -50,6 +50,7 @@ export const BARE_FILENAME_EXTENSIONS = new Set([
   // abbreviations, so they don't reopen the `e.g.` false-positive risk.
   // Lowercase only: the lookup below lowercases before matching.
   "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif",
+  "tiff", "tif", "heic", "heif",
   "pdf",
 ]);
 

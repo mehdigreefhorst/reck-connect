@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { launchApp } from "./harness";
@@ -149,6 +150,43 @@ test("reck-img:// refuses a path outside the allowed roots", async () => {
         }),
     );
     expect(loaded).toBe(false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+// HEIC is the iPhone capture default, so it is the format most likely to
+// land on the Mac and the one worth an end-to-end proof. Chromium has no
+// HEIC decoder — a non-zero naturalWidth here is only possible if the
+// sips transcode ran inside the protocol pipeline.
+test("HEIC is transcoded by sips and paints", async () => {
+  test.skip(process.platform !== "darwin", "sips is macOS-only");
+  const ctx = await launchApp();
+  try {
+    await expect(ctx.window.locator(".settings-card, .app-shell")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Build a real HEIC by round-tripping a generated PNG through sips.
+    const png = path.join(ctx.homeDir, "src.png");
+    fs.writeFileSync(png, makePng(200, 100));
+    const heic = path.join(ctx.homeDir, "photo.heic");
+    execFileSync("/usr/bin/sips", ["-s", "format", "heic", png, "--out", heic], {
+      stdio: "ignore",
+    });
+
+    const popup = await openPopup(ctx, heic);
+    const img = popup.locator("img.file-viewer-image-img");
+    await expect(img).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth), {
+        timeout: 20_000,
+      })
+      .toBe(200);
+    await expect(popup.locator(".file-viewer-image-meta-text")).toContainText(
+      "200 × 100",
+    );
+    await popup.screenshot({ path: "e2e/artifacts/image-popup-heic.png" });
   } finally {
     await ctx.close();
   }
