@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/rudie-verweij/reck-connect/daemon/internal/config"
+	"github.com/rudie-verweij/reck-connect/daemon/internal/dictation"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/events"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/httpx"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/pty"
@@ -113,6 +114,11 @@ type Server struct {
 	// takes effect without a daemon restart. Nil when telemetry is
 	// disabled; the settings routes 404 in that case.
 	UsageQuotaPoller *usage.QuotaPoller
+
+	// DictationCreds, when non-nil, replaces the real credential readers
+	// used by the /dictation routes. Tests inject this so they never touch
+	// a keychain or a user's ~/.codex; production leaves it nil.
+	DictationCreds func(dictation.Provider) (dictation.Credential, error)
 }
 
 // hookNonceStore returns the server's nonce store, lazily creating one
@@ -190,6 +196,12 @@ func (s *Server) Router() *chi.Mux {
 	// chip. NSPasteboard rejection → 500 with the error text; renderer
 	// falls back to the /uploads path above on any 5xx.
 	r.Post("/panes/{pane_id}/clipboard-image", s.handleClipboardImage)
+	// Dictation runs here rather than in the satellite because the tokens
+	// are here: this daemon shares a machine with Claude Code and Codex, and
+	// therefore with their subscription credentials. The satellite supplies
+	// the microphone. See internal/dictation.
+	r.Get("/dictation/providers", s.handleDictationProviders)
+	r.HandleFunc("/dictation/stream", s.handleDictationStream)
 	r.HandleFunc("/ws/{id}/{pane_id}", s.handleWS)
 	return r
 }
