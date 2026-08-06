@@ -15,10 +15,17 @@ import {
   restoreExternalRefs,
 } from "./externalRefs";
 import {
+  isImagePath,
   isRenderablePath,
   pickViewerMode,
   type PersistedRenderMode,
 } from "./pickViewerMode";
+import {
+  mountImage,
+  renderImageError,
+  type ImageFailureReason,
+  type ImageRendererHandle,
+} from "./ImageRenderer";
 import { mountCodeEditor, type CodeEditorHandle } from "./CodeEditor";
 import { installCodeMirrorPathLinkifier } from "./CodeMirrorPathLinkifier";
 import {
@@ -943,6 +950,8 @@ async function renderStationRemote(
   speakHandles.delete(root);
   searchHandles.get(root)?.dispose();
   searchHandles.delete(root);
+  imageHandles.get(root)?.dispose();
+  imageHandles.delete(root);
   disposeSession(root);
   // Round 3 follow-up — the mode toggle re-enters this function after
   // writing the new mode. Without clearing the body here, the previous
@@ -951,6 +960,14 @@ async function renderStationRemote(
   // though the source CodeMirror is mounted out of view. Same fix
   // pattern as renderForPath's source branch.
   shell.body.innerHTML = "";
+
+  // Same short-circuit as renderForPath. readStation has no binary probe
+  // at all, so an image here would return mojibake with ok:true and render
+  // a screenful of replacement characters.
+  if (isImagePath(filePath)) {
+    await renderImageSurface(root, shell, filePath, { isStationRemote: true });
+    return;
+  }
 
   const spinner = mountSpinner(shell.spinnerSlot);
   spinner.show();
@@ -1300,6 +1317,83 @@ const speakHandles = new WeakMap<HTMLElement, SpeakHandle>();
 // alongside the speak handle.
 const searchHandles = new WeakMap<HTMLElement, ViewerSearchHandle>();
 
+// Per-host image surface, torn down on re-render alongside the others.
+const imageHandles = new WeakMap<HTMLElement, ImageRendererHandle>();
+
+/** main's ImageMetaErrorCode -> the renderer's failure vocabulary. */
+function imageReasonFor(code: string): ImageFailureReason {
+  switch (code) {
+    case "out-of-roots":
+    case "not-found":
+    case "too-large":
+    case "unsupported":
+    case "is-directory":
+      return code;
+    default:
+      return "io-error";
+  }
+}
+
+/**
+ * Mount the image surface for `filePath`.
+ *
+ * Called INSTEAD of the normal read-then-dispatch flow, because
+ * `files.read` refuses binary content by design — see the call sites in
+ * renderForPath / renderStationRemote for why the interception has to
+ * happen before the read rather than in the mode dispatch.
+ *
+ * Deliberately skips the Speak bar, the search bar and the watcher: there
+ * is no text to read aloud or search.
+ */
+async function renderImageSurface(
+  root: HTMLElement,
+  shell: ViewerShell,
+  filePath: string,
+  opts: { isStationRemote: boolean },
+): Promise<void> {
+  shell.body.innerHTML = "";
+  // Images have no source view, so no rendered/source toggle.
+  shell.modeToggleSlot.innerHTML = "";
+
+  const spinner = mountSpinner(shell.spinnerSlot);
+  spinner.show();
+  const meta = await window.reckAPI.files.imageMeta(filePath);
+  spinner.hide();
+
+  // Unconditionally, and BEFORE branching on success: the normal error
+  // paths in this file return before their mountTitleAndBadge call, which
+  // would leave an image error showing only the bare basename with no host
+  // badge. The popup should look the same whether or not the image loaded.
+  await mountTitleAndBadge({
+    titleEl: shell.titleEl,
+    resolvedPath: meta.ok ? meta.resolvedPath : filePath,
+    isStationRemote: opts.isStationRemote,
+  });
+
+  const openExternally = (): void => {
+    void window.reckAPI.files.openExternally(
+      meta.ok ? meta.resolvedPath : filePath,
+    );
+  };
+
+  if (!meta.ok) {
+    renderImageError(shell.body, {
+      reason: imageReasonFor(meta.code),
+      filePath,
+      onOpenExternally: openExternally,
+    });
+    return;
+  }
+
+  const handle = mountImage(shell.body, {
+    filePath: meta.resolvedPath,
+    src: meta.url,
+    byteSize: meta.byteSize,
+    onOpenExternally: openExternally,
+  });
+  imageHandles.set(root, handle);
+}
+
 /**
  * Attach the unified TTS engine + search bar to whichever surface the
  * viewer just mounted. When a CodeMirror editor exists we speak/search the
@@ -1359,7 +1453,20 @@ async function renderForPath(
   speakHandles.delete(root);
   searchHandles.get(root)?.dispose();
   searchHandles.delete(root);
+  imageHandles.get(root)?.dispose();
+  imageHandles.delete(root);
   disposeSession(root);
+
+  // Images short-circuit BEFORE files.read. That read probes for a NUL
+  // byte and refuses binary content — every PNG has one at byte 12 — so
+  // reaching the mode dispatch below is impossible for an image. Moving
+  // this into the `if (mode === …)` chain reintroduces "binary content
+  // detected" for every image; FileViewerHost.test.ts pins that
+  // files.read is never called for an image path.
+  if (isImagePath(filePath)) {
+    await renderImageSurface(root, shell, filePath, { isStationRemote: false });
+    return;
+  }
 
   const spinner = mountSpinner(shell.spinnerSlot);
   spinner.show();

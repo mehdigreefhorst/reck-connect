@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, dialog, shell, clipboard } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, dialog, shell, clipboard, protocol } from "electron";
 import path from "node:path";
 import { readConfig, writeConfig, hasConfigKey, isAllowedConfigKey } from "./storage";
 import {
@@ -28,6 +28,7 @@ import {
   type CreateViewerOptions,
 } from "./file-viewer";
 import { composeFileViewerRoots } from "./file-roots";
+import { RECK_IMG_SCHEME, installReckImgProtocol } from "./image-protocol";
 import {
   NAV_HEIGHT,
   POPUP_HEADER_HEIGHT,
@@ -55,6 +56,34 @@ app.commandLine.appendSwitch("enable-dawn-features", "allow_unsafe_apis");
 // single-threaded WASM Whisper is ~4-8× slower, which is the difference
 // between live dictation keeping up and lagging hopelessly behind.
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
+
+// The `reck-img://` scheme must be declared BEFORE `app.whenReady()` —
+// Electron throws "Cannot register scheme after app is ready", and this
+// module body evaluates before the whenReady callback below fires. DO NOT
+// move this inside whenReady or into registerFileViewerIpc.
+//
+// See main/image-protocol.ts for the threat model. Briefly:
+//   supportFetchAPI / corsEnabled stay OFF so a compromised renderer can
+//   paint these responses but never read them into JS; `<img>` needs
+//   neither. bypassCSP stays OFF so that when a CSP does land (issue #54)
+//   it must name `img-src reck-img:` explicitly rather than be ignored.
+try {
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: RECK_IMG_SCHEME,
+      privileges: {
+        standard: true, // real origin + standard URL parsing for searchParams
+        secure: true, // else it reads as insecure content and is blocked
+        stream: true, // stream large images instead of buffering
+        supportFetchAPI: false,
+        corsEnabled: false,
+        bypassCSP: false,
+      },
+    },
+  ]);
+} catch (err) {
+  console.error("[satellite] failed to register reck-img scheme", err);
+}
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -623,6 +652,12 @@ app.whenReady().then(async () => {
   // run before the first window is created so nothing opens unzoomed.
   loadContentZoom();
   registerContentZoomPriming();
+
+  // Serve image bytes to the file-viewer popup. The scheme itself was
+  // declared pre-ready at the top of this module; this attaches the
+  // handler. Same live roots getter as the file:* IPC channels, so a
+  // Settings edit to fileViewerExtraRoots applies without a restart.
+  installReckImgProtocol({ roots: resolveFileViewerRoots });
 
   // Phase 2 (an earlier release, plan rev 3.1): migrate the legacy
   // mode/stationUrl/daemonToken triplet into the new `settings` +
