@@ -84,7 +84,7 @@ func TestClaudeDecode(t *testing.T) {
 		{name: "endpoint", raw: `{"type":"TranscriptEndpoint"}`,
 			wantOK: true, wantEv: event{Endpoint: true}},
 		{name: "transcript error prefers description",
-			raw: `{"type":"TranscriptError","description":"bad audio","error_code":"E1"}`,
+			raw:    `{"type":"TranscriptError","description":"bad audio","error_code":"E1"}`,
 			wantOK: true, wantErr: true},
 		{name: "bare error frame", raw: `{"type":"error","message":"nope"}`,
 			wantOK: true, wantErr: true},
