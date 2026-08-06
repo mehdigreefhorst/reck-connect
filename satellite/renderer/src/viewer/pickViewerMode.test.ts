@@ -4,6 +4,7 @@ import {
   isRenderablePath,
   pickViewerMode,
   isHtmlPath,
+  isImagePath,
 } from "./pickViewerMode";
 
 describe("isMarkdownPath", () => {
@@ -36,6 +37,46 @@ describe("pickViewerMode", () => {
   it("classifies extensions case-insensitively", () => {
     expect(pickViewerMode("/a/b.HTML", undefined)).toBe("html-static");
     expect(pickViewerMode("/a/README.MD", undefined)).toBe("markdown-rendered");
+  });
+});
+
+describe("isImagePath", () => {
+  it("matches every Phase 1 image extension, case-insensitively", () => {
+    for (const ext of [
+      "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "svg",
+    ]) {
+      expect(isImagePath(`/a/b.${ext}`)).toBe(true);
+      expect(isImagePath(`/a/b.${ext.toUpperCase()}`)).toBe(true);
+    }
+  });
+  it("does not match non-images or Phase 2 formats", () => {
+    for (const p of ["/a/b.md", "/a/b.ts", "/a/b.pdf", "/a/b.tiff", "/a/b.heic"]) {
+      expect(isImagePath(p)).toBe(false);
+    }
+  });
+  it("requires a real extension, not a substring", () => {
+    expect(isImagePath("/a/pngfile")).toBe(false);
+    expect(isImagePath("/a/b.png.txt")).toBe(false);
+  });
+});
+
+describe("pickViewerMode (image)", () => {
+  it("returns 'image' for image paths", () => {
+    expect(pickViewerMode("/a/b.png", undefined)).toBe("image");
+  });
+  // An image has no source view -- the bytes are binary and files.read
+  // refuses them. A stale per-path "source" preference (easy to acquire on
+  // .svg, which IS text) must not strand the file in CodeMirror.
+  it("ignores a persisted 'source' choice -- images have no source view", () => {
+    expect(pickViewerMode("/a/b.png", "source")).toBe("image");
+    expect(pickViewerMode("/a/b.svg", "source")).toBe("image");
+  });
+  // isRenderablePath drives the rendered/source TOGGLE BUTTON, not "has a
+  // non-source renderer". Adding images to it ships a broken "Edit source"
+  // button on every PNG.
+  it("keeps images out of isRenderablePath so no mode toggle is mounted", () => {
+    expect(isRenderablePath("/a/b.png")).toBe(false);
+    expect(isRenderablePath("/a/b.svg")).toBe(false);
   });
 });
 

@@ -13,7 +13,7 @@ vi.mock("electron", () => ({
   screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) },
   app: { on: vi.fn() },
   dialog: { showMessageBox: vi.fn() },
-  shell: { openExternal: vi.fn() },
+  shell: { openExternal: vi.fn(), openPath: vi.fn().mockResolvedValue("") },
 }));
 
 const {
@@ -40,6 +40,8 @@ const {
   translateStationCwdToMount,
   translateSearchRootsToStation,
   shouldFocusExistingViewer,
+  handleImageMeta,
+  isOpenExternallyPath,
 } = await import("./file-viewer");
 
 describe("file-viewer pure handlers", () => {
@@ -508,6 +510,95 @@ describe("file-viewer pure handlers", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.content).toContain("Émigré");
+    });
+  });
+
+  describe("handleImageMeta()", () => {
+    // 1x1 GIF -- the smallest real image bytes available inline.
+    const IMG_BYTES = Buffer.from(
+      "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+      "base64",
+    );
+    const writeImage = (name: string): string => {
+      const p = path.join(rootA, name);
+      fs.writeFileSync(p, IMG_BYTES);
+      return p;
+    };
+
+    it("returns a reck-img URL, MIME and byte size -- but no bytes", async () => {
+      const png = writeImage("shot.png");
+      const res = await handleImageMeta(deps, png);
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.resolvedPath).toBe(fs.realpathSync(png));
+      expect(res.url.startsWith("reck-img://")).toBe(true);
+      expect(res.mime).toBe("image/png");
+      expect(res.byteSize).toBe(IMG_BYTES.length);
+      expect(res).not.toHaveProperty("content");
+    });
+
+    it("carries a cache-buster that changes when the file changes", async () => {
+      const png = writeImage("v.png");
+      const first = await handleImageMeta(deps, png);
+      fs.writeFileSync(png, Buffer.concat([IMG_BYTES, Buffer.from([0])]));
+      const second = await handleImageMeta(deps, png);
+      expect(first.ok && second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      // Without this, an edited image would keep showing stale bytes:
+      // Chromium caches custom-scheme responses by URL.
+      expect(second.url).not.toBe(first.url);
+    });
+
+    it("refuses formats the viewer cannot decode", async () => {
+      const res = await handleImageMeta(deps, writeImage("scan.tiff"));
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.code).toBe("unsupported");
+    });
+
+    it("refuses a path outside the allowed roots", async () => {
+      const outside = path.join(outsideDir, "x.png");
+      fs.writeFileSync(outside, IMG_BYTES);
+      const res = await handleImageMeta(deps, outside);
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.code).toBe("out-of-roots");
+    });
+
+    it("reports a missing image as not-found", async () => {
+      const res = await handleImageMeta(deps, path.join(rootA, "gone.png"));
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.code).toBe("not-found");
+    });
+
+    it("rejects a non-string path", async () => {
+      const res = await handleImageMeta(deps, 42);
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.code).toBe("invalid-input");
+    });
+
+    // Defence in depth: the renderer short-circuits images before ever
+    // calling files.read, but a .png renamed to .md would still reach the
+    // text path, and must still be refused rather than rendered as garbage.
+    it("leaves handleFileRead still refusing image bytes", async () => {
+      const disguised = path.join(rootA, "actually-an-image.md");
+      fs.writeFileSync(disguised, Buffer.concat([Buffer.from([0x89, 0x50, 0x00]), IMG_BYTES]));
+      const res = await handleFileRead(deps, disguised);
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.code).toBe("binary");
+    });
+  });
+
+  describe("isOpenExternallyPath()", () => {
+    it("matches .pdf case-insensitively and nothing else", () => {
+      expect(isOpenExternallyPath("/a/report.pdf")).toBe(true);
+      expect(isOpenExternallyPath("/a/report.PDF")).toBe(true);
+      expect(isOpenExternallyPath("/a/report.pdfx")).toBe(false);
+      expect(isOpenExternallyPath("/a/shot.png")).toBe(false);
+      expect(isOpenExternallyPath("/a/pdf")).toBe(false);
     });
   });
 

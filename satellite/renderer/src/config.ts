@@ -100,6 +100,26 @@ declare global {
           | { ok: false; code: string; error: string }
         >;
         /**
+         * Metadata for an image, WITHOUT its bytes. Called instead of
+         * `read` for image paths — `read` refuses binary by design. The
+         * bytes arrive over the `reck-img://` URL this returns.
+         */
+        imageMeta(filePath: string): Promise<
+          | {
+              ok: true;
+              resolvedPath: string;
+              url: string;
+              mime: string;
+              byteSize: number;
+              mtimeMs: number;
+            }
+          | { ok: false; code: string; error: string }
+        >;
+        /** Hand a viewer file to the OS default application. */
+        openExternally(filePath: string): Promise<
+          { ok: true } | { ok: false; code: string; error: string }
+        >;
+        /**
          * SSH-backed read for station files outside the sshfs mount. Used
          * by the file viewer popup when its URL carries
          * `?host=station-remote`.

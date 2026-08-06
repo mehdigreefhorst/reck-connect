@@ -43,6 +43,14 @@ export const BARE_FILENAME_EXTENSIONS = new Set([
   "sh", "bash", "zsh", "fish",
   "conf", "cfg", "ini",
   "txt", "log",
+  // Images + pdf: agents constantly write "saved to screenshot.png" with
+  // no leading ./ or path, and without these the token never underlines,
+  // so the image viewer would rarely be reachable. Unambiguous as
+  // extensions -- unlike `md`/`js`, none of them collide with English
+  // abbreviations, so they don't reopen the `e.g.` false-positive risk.
+  // Lowercase only: the lookup below lowercases before matching.
+  "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif",
+  "pdf",
 ]);
 
 /**

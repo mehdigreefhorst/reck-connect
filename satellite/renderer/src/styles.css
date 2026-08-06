@@ -3186,6 +3186,82 @@ html, body, #app {
   max-width: 100%;
   height: auto;
 }
+/* --- Image viewer surface -------------------------------------------
+   All lengths here are %, vh or auto -- NEVER em. `.file-viewer-body` is
+   `font-size: calc(1rem * var(--content-zoom))` and everything inside it
+   sizes in em, which would let content-zoom silently rescale what is
+   supposed to be exactly 1:1. */
+.file-viewer-image {
+  display: flex;
+  flex-direction: column;
+  /* Fill the body so the stage has a height to fit against; without this
+     the flex stage collapses to the image's intrinsic height and "fit"
+     never shrinks anything vertically. */
+  min-height: 100%;
+}
+.file-viewer-image-stage {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+}
+/* max-width/max-height ONLY ever shrink, so a small image renders at its
+   true size and is never blown up. `object-fit: contain` would upscale --
+   which is why it is not used here. */
+.file-viewer-image[data-fit="fit"] .file-viewer-image-img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+}
+.file-viewer-image[data-fit="fit"][data-zoomable="true"] .file-viewer-image-img {
+  cursor: zoom-in;
+}
+/* 1:1. The `!important` overrides the generic `.file-viewer-body img
+   { max-width: 100% }` rule above, which exists for markdown-embedded
+   images and would otherwise keep the image shrunk. */
+.file-viewer-image[data-fit="actual"] .file-viewer-image-stage {
+  overflow: auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+.file-viewer-image[data-fit="actual"] .file-viewer-image-img {
+  max-width: none !important;
+  max-height: none;
+  width: auto;
+  height: auto;
+  cursor: zoom-out;
+}
+.file-viewer-image-meta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 2px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+.file-viewer-image-open {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.file-viewer-image-open:hover {
+  opacity: 1;
+}
+.file-viewer-image-error {
+  align-self: center;
+  text-align: center;
+  max-width: 90%;
+}
+
 .file-viewer-body figure {
   margin: 1em 0;
 }

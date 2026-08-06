@@ -7,6 +7,8 @@ interface FilesApiStub {
   readStation?: ReturnType<typeof vi.fn>;
   writeStation?: ReturnType<typeof vi.fn>;
   stat: ReturnType<typeof vi.fn>;
+  imageMeta?: ReturnType<typeof vi.fn>;
+  openExternally?: ReturnType<typeof vi.fn>;
   openInViewer: ReturnType<typeof vi.fn>;
   resolve?: ReturnType<typeof vi.fn>;
   create?: ReturnType<typeof vi.fn>;
@@ -120,6 +122,79 @@ describe("mountFileViewer", () => {
     expect(files.read).toHaveBeenCalledWith("/safe/notes.md");
     expect(root.querySelector("h1")).not.toBeNull();
     expect(root.textContent).toContain("body");
+  });
+
+  describe("image surface", () => {
+    const META_OK = {
+      ok: true as const,
+      resolvedPath: "/safe/shot.png",
+      url: "reck-img://local/?p=%2Fsafe%2Fshot.png&v=1-2",
+      mime: "image/png",
+      byteSize: 421_888,
+      mtimeMs: 1,
+    };
+
+    // THE regression test. files.read probes for a NUL byte and refuses
+    // binary content, so if the image branch ever moves back behind the
+    // read, every image renders "binary content detected" instead.
+    it("never calls files.read for an image path", async () => {
+      files.imageMeta = vi.fn().mockResolvedValue(META_OK);
+      installReckApi(files);
+      await mountFileViewer({
+        root,
+        params: new URLSearchParams("path=/safe/shot.png"),
+      });
+      expect(files.read).not.toHaveBeenCalled();
+      expect(files.imageMeta).toHaveBeenCalledWith("/safe/shot.png");
+    });
+
+    it("mounts an <img> pointing at the reck-img URL and no mode toggle", async () => {
+      files.imageMeta = vi.fn().mockResolvedValue(META_OK);
+      installReckApi(files);
+      await mountFileViewer({
+        root,
+        params: new URLSearchParams("path=/safe/shot.png"),
+      });
+      const img = root.querySelector("img.file-viewer-image-img");
+      expect(img).not.toBeNull();
+      expect(img!.getAttribute("src")).toContain("reck-img://");
+      expect(root.querySelector(".file-viewer-mode-toggle")).toBeNull();
+    });
+
+    // The normal error paths return BEFORE their mountTitleAndBadge call,
+    // which would leave an image error showing a bare basename and no host
+    // badge. The image branch mounts the header unconditionally.
+    it("keeps the full header on the error path, and offers no create banner", async () => {
+      files.imageMeta = vi
+        .fn()
+        .mockResolvedValue({ ok: false, code: "not-found", error: "nope" });
+      files.create = vi.fn();
+      installReckApi(files);
+      await mountFileViewer({
+        root,
+        params: new URLSearchParams("path=/safe/gone.png"),
+      });
+      expect(root.querySelector(".file-viewer-title-text")).not.toBeNull();
+      expect(root.querySelector(".file-viewer-host-badge")).not.toBeNull();
+      expect(root.querySelector(".file-viewer-image-error")).not.toBeNull();
+      // An empty .png would be useless, so a missing image is an error,
+      // not a "Create it?" offer.
+      expect(files.create).not.toHaveBeenCalled();
+    });
+
+    it("routes a station-remote image through imageMeta, not readStation", async () => {
+      files.imageMeta = vi.fn().mockResolvedValue(META_OK);
+      files.readStation = vi.fn();
+      installReckApi(files);
+      await mountFileViewer({
+        root,
+        params: new URLSearchParams(
+          "path=/home/pi/.claude/d.png&host=station-remote",
+        ),
+      });
+      expect(files.readStation).not.toHaveBeenCalled();
+      expect(files.imageMeta).toHaveBeenCalled();
+    });
   });
 
   it("renders code in a CodeMirror surface for non-markdown extensions", async () => {

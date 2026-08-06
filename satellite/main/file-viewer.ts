@@ -23,6 +23,12 @@ import { Worker } from "node:worker_threads";
 import { BrowserWindow, dialog, ipcMain, screen, shell } from "electron";
 
 import { resolveInsideAllowedRoots } from "./file-allowlist";
+import {
+  IMAGE_VIEWER_MAX_BYTES,
+  buildReckImgUrl,
+  imageMimeFor,
+  versionTokenFor,
+} from "./image-protocol";
 import { checkExternalUrl } from "./ipc-validation";
 import { deriveProjectAnchor } from "./project-anchor";
 import { normalizeProjectCwd } from "./project-cwd";
@@ -335,6 +341,135 @@ export type FileReadResult =
       writable: boolean;
     }
   | { ok: false; code: FileReadErrorCode; error: string };
+
+export type ImageMetaErrorCode =
+  | "invalid-input"
+  | "out-of-roots"
+  | "not-found"
+  | "is-directory"
+  | "too-large"
+  | "unsupported"
+  | "io-error";
+
+export type ImageMetaResult =
+  | {
+      ok: true;
+      resolvedPath: string;
+      /** `reck-img://` URL. Minted HERE, never in the renderer or the
+       *  sandboxed preload, so the encoding rules live in one place. */
+      url: string;
+      mime: string;
+      byteSize: number;
+      mtimeMs: number;
+    }
+  | { ok: false; code: ImageMetaErrorCode; error: string };
+
+/**
+ * Metadata for an image, WITHOUT its bytes — the renderer needs
+ * `resolvedPath` for the title/badge and `byteSize` for the meta line, and
+ * reads the dimensions off the decoded <img>. The bytes arrive separately
+ * over `reck-img://`.
+ *
+ * Running this before setting `src` is what makes the seven error states
+ * distinguishable: an <img> onerror alone cannot tell "outside allowed
+ * roots" from "corrupt file". If this returns ok and the <img> still
+ * errors, it is unambiguously a decode failure.
+ */
+export async function handleImageMeta(
+  deps: FileViewerDeps,
+  rawPath: unknown,
+): Promise<ImageMetaResult> {
+  if (typeof rawPath !== "string") {
+    return { ok: false, code: "invalid-input", error: "path must be a string" };
+  }
+  const resolved = resolveInsideAllowedRoots(deps.roots(), rawPath);
+  if (!resolved) {
+    return {
+      ok: false,
+      code: "out-of-roots",
+      error: `Path is outside the allowed roots: ${rawPath}`,
+    };
+  }
+  const mime = imageMimeFor(resolved);
+  if (!mime) {
+    return {
+      ok: false,
+      code: "unsupported",
+      error: `Not a supported image format: ${resolved}`,
+    };
+  }
+  let stat: fs.Stats;
+  try {
+    stat = await fsp.stat(resolved);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") {
+      return { ok: false, code: "not-found", error: `No such file: ${resolved}` };
+    }
+    return { ok: false, code: "io-error", error: String(err) };
+  }
+  if (stat.isDirectory()) {
+    return { ok: false, code: "is-directory", error: `${resolved} is a directory` };
+  }
+  if (stat.size > IMAGE_VIEWER_MAX_BYTES) {
+    return {
+      ok: false,
+      code: "too-large",
+      error: `Image is ${stat.size} bytes (limit ${IMAGE_VIEWER_MAX_BYTES})`,
+    };
+  }
+  return {
+    ok: true,
+    resolvedPath: resolved,
+    url: buildReckImgUrl({ absPath: resolved, version: versionTokenFor(stat) }),
+    mime,
+    byteSize: stat.size,
+    mtimeMs: stat.mtimeMs,
+  };
+}
+
+/**
+ * Extensions handed to the OS rather than rendered in-app. A Set, not a
+ * hardcoded `.pdf`, so `.pages`/`.docx`/`.zip` can join without touching
+ * the branch in `file:openInViewer`.
+ */
+export const OPEN_EXTERNALLY_EXTENSIONS: ReadonlySet<string> = new Set(["pdf"]);
+
+export function isOpenExternallyPath(p: string): boolean {
+  const ext = path.extname(p).slice(1).toLowerCase();
+  return ext.length > 0 && OPEN_EXTERNALLY_EXTENSIONS.has(ext);
+}
+
+/**
+ * Hand a file to the OS default application.
+ *
+ * NOT a reuse of main.ts's `shell:openPath`: that one takes a project SLUG
+ * and validates with `resolveInsideMountPoint`, which cannot express an
+ * arbitrary viewer file under `homedir()`, `/tmp`, or `fileViewerExtraRoots`.
+ * Different domain, different gate.
+ *
+ * Note the extension check is on the NAME. LaunchServices sniffs content and
+ * may open something else entirely — the same exposure as double-clicking in
+ * Finder, and not a content guarantee.
+ */
+export async function handleOpenExternally(
+  deps: FileViewerDeps,
+  rawPath: unknown,
+): Promise<{ ok: true } | { ok: false; code: string; error: string }> {
+  if (typeof rawPath !== "string") {
+    return { ok: false, code: "invalid-input", error: "path must be a string" };
+  }
+  const resolved = resolveInsideAllowedRoots(deps.roots(), rawPath);
+  if (!resolved) {
+    return {
+      ok: false,
+      code: "out-of-roots",
+      error: `Path is outside the allowed roots: ${rawPath}`,
+    };
+  }
+  const err = await shell.openPath(resolved);
+  return err === "" ? { ok: true } : { ok: false, code: "open-failed", error: err };
+}
 
 export async function handleFileRead(
   deps: FileViewerDeps,
@@ -1489,8 +1624,14 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
   ipcMain.removeHandler("file:openInViewer");
   ipcMain.removeHandler("file:suffix:cancel");
   ipcMain.removeHandler("file:createStation");
+  ipcMain.removeHandler("file:imageMeta");
+  ipcMain.removeHandler("file:openExternally");
 
   ipcMain.handle("file:read", (_e, p: unknown) => handleFileRead(deps, p));
+  ipcMain.handle("file:imageMeta", (_e, p: unknown) => handleImageMeta(deps, p));
+  ipcMain.handle("file:openExternally", (_e, p: unknown) =>
+    handleOpenExternally(deps, p),
+  );
   // Phase 8 of linkifier-followups: SSH-backed read for station files
   // OUTSIDE the sshfs projects mount. The renderer popup hits this
   // when its URL carries `?host=station-remote`. No allowlist check —
@@ -1915,6 +2056,18 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
       //   - relative input → open the popup IMMEDIATELY with a
       //     suffixSearchPending flag and stream worker results into it.
       const exists = await pathExists(resolved);
+      // PDFs (and anything else in OPEN_EXTERNALLY_EXTENSIONS) are handed
+      // to the OS rather than rendered in-app. Deliberately only in the
+      // exists branch: a missing PDF should still reach the suffix search,
+      // whose picker re-enters openInViewer and lands here cleanly.
+      if (exists && isOpenExternallyPath(resolved)) {
+        console.log("[file-viewer] open externally", { resolved });
+        const openErr = await shell.openPath(resolved);
+        if (openErr) {
+          return { ok: false, code: "open-failed", error: openErr };
+        }
+        return { ok: true, code: "opened-externally" };
+      }
       if (exists) {
         console.log("[file-viewer] exists -> spawn popup", { resolved });
         const existing = fileViewerWindows.get(resolved);

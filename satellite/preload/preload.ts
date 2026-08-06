@@ -154,6 +154,29 @@ contextBridge.exposeInMainWorld("reckAPI", {
         | { ok: false; code: string; error: string }
       >,
     /**
+     * Metadata for an image, WITHOUT its bytes — the bytes arrive over the
+     * `reck-img://` scheme, whose URL main mints here. Called instead of
+     * `read` for image paths, which `read` refuses as binary by design.
+     */
+    imageMeta: (filePath: string) =>
+      ipcRenderer.invoke("file:imageMeta", filePath) as Promise<
+        | {
+            ok: true;
+            resolvedPath: string;
+            url: string;
+            mime: string;
+            byteSize: number;
+            mtimeMs: number;
+          }
+        | { ok: false; code: string; error: string }
+      >,
+    /** Hand a viewer file to the OS default app (the "Open in system
+     *  viewer" action, and the .pdf click-through). */
+    openExternally: (filePath: string) =>
+      ipcRenderer.invoke("file:openExternally", filePath) as Promise<
+        { ok: true } | { ok: false; code: string; error: string }
+      >,
+    /**
      * SSH-backed read for station files OUTSIDE the sshfs projects mount
      * (an earlier release). Used by the file viewer popup
      * when the URL carries `?host=station-remote`. Read-only; writes
