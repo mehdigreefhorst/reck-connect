@@ -549,8 +549,8 @@ describe("file-viewer pure handlers", () => {
       expect(second.url).not.toBe(first.url);
     });
 
-    it("refuses formats the viewer cannot decode", async () => {
-      const res = await handleImageMeta(deps, writeImage("scan.tiff"));
+    it("refuses formats the viewer cannot display at all", async () => {
+      const res = await handleImageMeta(deps, writeImage("scan.raw"));
       expect(res.ok).toBe(false);
       if (res.ok) return;
       expect(res.code).toBe("unsupported");

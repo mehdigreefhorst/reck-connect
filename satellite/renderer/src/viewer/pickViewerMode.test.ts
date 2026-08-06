@@ -41,16 +41,19 @@ describe("pickViewerMode", () => {
 });
 
 describe("isImagePath", () => {
-  it("matches every Phase 1 image extension, case-insensitively", () => {
+  it("matches every image extension, case-insensitively", () => {
     for (const ext of [
       "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "svg",
+      // Transcoded to PNG in main; still image paths as far as the
+      // viewer's dispatch is concerned.
+      "tiff", "tif", "heic", "heif",
     ]) {
       expect(isImagePath(`/a/b.${ext}`)).toBe(true);
       expect(isImagePath(`/a/b.${ext.toUpperCase()}`)).toBe(true);
     }
   });
-  it("does not match non-images or Phase 2 formats", () => {
-    for (const p of ["/a/b.md", "/a/b.ts", "/a/b.pdf", "/a/b.tiff", "/a/b.heic"]) {
+  it("does not match non-images", () => {
+    for (const p of ["/a/b.md", "/a/b.ts", "/a/b.pdf", "/a/b.raw", "/a/b.psd"]) {
       expect(isImagePath(p)).toBe(false);
     }
   });

@@ -26,6 +26,9 @@ import { resolveInsideAllowedRoots } from "./file-allowlist";
 import {
   IMAGE_VIEWER_MAX_BYTES,
   buildReckImgUrl,
+  canConvertImages,
+  convertibleMimeFor,
+  ensureConvertedImage,
   imageMimeFor,
   versionTokenFor,
 } from "./image-protocol";
@@ -390,8 +393,13 @@ export async function handleImageMeta(
       error: `Path is outside the allowed roots: ${rawPath}`,
     };
   }
-  const mime = imageMimeFor(resolved);
-  if (!mime) {
+  // A convertible source (TIFF/HEIC) reports its OWN mime here — that's
+  // what the file on disk is, and what the user is looking at. The wire
+  // Content-Type becomes image/png once the protocol handler transcodes.
+  const directMime = imageMimeFor(resolved);
+  const convertible = directMime ? null : convertibleMimeFor(resolved);
+  const mime = directMime ?? convertible;
+  if (!mime || (!directMime && !canConvertImages())) {
     return {
       ok: false,
       code: "unsupported",
@@ -417,6 +425,25 @@ export async function handleImageMeta(
       code: "too-large",
       error: `Image is ${stat.size} bytes (limit ${IMAGE_VIEWER_MAX_BYTES})`,
     };
+  }
+  if (!directMime) {
+    // Transcode HERE rather than on first paint: the viewer's spinner is
+    // up for this call, so a slow HEIC decode reads as loading instead of
+    // a blank popup. The protocol handler then hits a warm cache.
+    const conv = await ensureConvertedImage(resolved, stat);
+    if (!conv.ok) {
+      return conv.code === "too-large"
+        ? {
+            ok: false,
+            code: "too-large",
+            error: `Converted image exceeds ${IMAGE_VIEWER_MAX_BYTES} bytes`,
+          }
+        : {
+            ok: false,
+            code: "unsupported",
+            error: `Could not convert ${resolved} for display`,
+          };
+    }
   }
   return {
     ok: true,

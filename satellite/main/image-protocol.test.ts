@@ -4,6 +4,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 // logic under test never touches Electron.
 vi.mock("electron", () => ({ protocol: { handle: vi.fn() } }));
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +12,10 @@ import {
   RECK_IMG_SCHEME,
   IMAGE_VIEWER_MAX_BYTES,
   imageMimeFor,
+  convertibleMimeFor,
+  convertedCachePathFor,
+  ensureConvertedImage,
+  canConvertImages,
   isImageFile,
   buildReckImgUrl,
   parseReckImgUrl,
@@ -33,9 +38,19 @@ describe("imageMimeFor", () => {
     expect(imageMimeFor("/a/PHOTO.PNG")).toBe("image/png");
   });
   it("returns null for anything not an image -- this is the gate that stops the scheme serving .env", () => {
-    for (const p of ["/a/b.env", "/a/b.ts", "/a/id_rsa", "/a/b.md", "/a/b.tiff"]) {
+    for (const p of ["/a/b.env", "/a/b.ts", "/a/id_rsa", "/a/b.md", "/a/b.raw"]) {
       expect(imageMimeFor(p)).toBeNull();
     }
+  });
+  // imageMimeFor means "servable as-is". TIFF/HEIC are images but
+  // Chromium can't decode them, so they must NOT appear here or the
+  // handler would serve undecodable bytes with a confident Content-Type.
+  it("does not claim formats that need transcoding first", () => {
+    for (const p of ["/a/b.tiff", "/a/b.tif", "/a/b.heic", "/a/b.heif"]) {
+      expect(imageMimeFor(p)).toBeNull();
+      expect(convertibleMimeFor(p)).not.toBeNull();
+    }
+    expect(convertibleMimeFor("/a/b.png")).toBeNull();
   });
   it("never infers a type from a bare name", () => {
     expect(imageMimeFor("/a/png")).toBeNull();
@@ -182,5 +197,108 @@ describe("decideImageResponse", () => {
 
   it("refuses a malformed URL outright", () => {
     expect(decideImageResponse(deps(), "https://evil.example/x.png").status).toBe(400);
+  });
+});
+
+describe("sips transcoding (TIFF / HEIC)", () => {
+  let dir: string;
+  const deps = () => ({ roots: () => [dir] });
+  const darwin = canConvertImages();
+
+  beforeAll(() => {
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "reck-conv-")));
+  });
+  afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  /** Build a real HEIC/TIFF by round-tripping a PNG through sips itself. */
+  const makeSource = (name: string, format: "tiff" | "heic"): string => {
+    const png = path.join(dir, `${name}.png`);
+    // 2x2 red PNG.
+    fs.writeFileSync(
+      png,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP8z4AATAxDlgcAWpwBFHCiVQwAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    const out = path.join(dir, `${name}.${format}`);
+    execFileSync("/usr/bin/sips", ["-s", "format", format, png, "--out", out], {
+      stdio: "ignore",
+    });
+    return out;
+  };
+
+  it.runIf(darwin)("converts a HEIC and serves it as PNG", async () => {
+    const heic = makeSource("photo", "heic");
+    const decision = decideImageResponse(
+      deps(),
+      buildReckImgUrl({ absPath: heic, version: "1" }),
+    );
+    expect(decision.status).toBe(200);
+    expect(decision.needsConversion).toBe(true);
+    // Chromium can't decode HEIC, so the wire type must be PNG.
+    expect(decision.headers["Content-Type"]).toBe("image/png");
+    // Length isn't knowable until the transcode runs; sending a wrong one
+    // would truncate the response.
+    expect(decision.headers["Content-Length"]).toBeUndefined();
+
+    const conv = await ensureConvertedImage(heic, fs.statSync(heic));
+    expect(conv.ok).toBe(true);
+    if (!conv.ok) return;
+    expect(fs.readFileSync(conv.filePath).subarray(0, 8)).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    );
+  });
+
+  it.runIf(darwin)("converts a TIFF too", async () => {
+    const tiff = makeSource("scan", "tiff");
+    const conv = await ensureConvertedImage(tiff, fs.statSync(tiff));
+    expect(conv.ok).toBe(true);
+  });
+
+  it.runIf(darwin)("reuses the cache on a second call", async () => {
+    const heic = makeSource("cached", "heic");
+    const stat = fs.statSync(heic);
+    const first = await ensureConvertedImage(heic, stat);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const marker = Date.now();
+    fs.utimesSync(first.filePath, new Date(marker), new Date(marker));
+    const second = await ensureConvertedImage(heic, stat);
+    expect(second.ok && second.filePath).toBe(first.filePath);
+    // Same file, untouched — a re-convert would have rewritten it.
+    expect(fs.statSync(first.filePath).mtimeMs).toBeCloseTo(marker, -3);
+  });
+
+  it("keys the cache on mtime and size, so an edit re-converts", () => {
+    const a = convertedCachePathFor("/a/b.heic", { mtimeMs: 1, size: 10 });
+    const b = convertedCachePathFor("/a/b.heic", { mtimeMs: 2, size: 10 });
+    const c = convertedCachePathFor("/a/b.heic", { mtimeMs: 1, size: 11 });
+    const d = convertedCachePathFor("/other.heic", { mtimeMs: 1, size: 10 });
+    expect(new Set([a, b, c, d]).size).toBe(4);
+    expect(a).toBe(convertedCachePathFor("/a/b.heic", { mtimeMs: 1, size: 10 }));
+  });
+
+  it.runIf(darwin)("fails cleanly when the source isn't really an image", async () => {
+    const fake = path.join(dir, "lies.heic");
+    fs.writeFileSync(fake, "this is not a HEIC file");
+    const conv = await ensureConvertedImage(fake, fs.statSync(fake));
+    expect(conv.ok).toBe(false);
+    if (conv.ok) return;
+    expect(conv.code).toBe("convert-failed");
+  });
+
+  it.runIf(darwin)("still refuses a convertible extension outside the roots", () => {
+    const outside = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "reck-conv-out-")),
+    );
+    const heic = path.join(outside, "sneaky.heic");
+    fs.writeFileSync(heic, "x");
+    const res = decideImageResponse(
+      deps(),
+      buildReckImgUrl({ absPath: heic, version: "1" }),
+    );
+    expect(res.status).toBe(403);
+    fs.rmSync(outside, { recursive: true, force: true });
   });
 });

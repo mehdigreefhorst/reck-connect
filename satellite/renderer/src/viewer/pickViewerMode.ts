@@ -21,18 +21,22 @@ export function isHtmlPath(p: string): boolean {
 }
 
 /**
- * Phase 1 image formats — every one of these is decoded natively by
- * Chromium, so the viewer needs no conversion step and no npm dependency.
- * TIFF/HEIC deliberately excluded: Chromium cannot decode them, so they
- * need a `sips` pass (tracked as a follow-up) and would render as a broken
- * image if listed here.
+ * Every format the image surface claims. Most are decoded natively by
+ * Chromium; tiff/heic are transcoded to PNG by `sips` in the main process
+ * before the bytes are served.
  *
- * Kept in sync with IMAGE_MIME_BY_EXT in main/image-protocol.ts — that map
- * is the authoritative server-side gate; this is the renderer-side
- * classifier. A format must be in BOTH to work.
+ * tiff/heic are listed here even though they only work on macOS. The
+ * renderer can't see the platform, and claiming them is still the better
+ * behaviour: on a non-darwin host `file:imageMeta` returns `unsupported`
+ * and the popup shows a clear inline message, which beats dropping a HEIC
+ * into CodeMirror to render as binary garbage.
+ *
+ * Kept in sync with IMAGE_MIME_BY_EXT + CONVERTIBLE_MIME_BY_EXT in
+ * main/image-protocol.ts — those are the authoritative server-side gate;
+ * this is only the renderer-side classifier. A format must be in BOTH.
  */
 export function isImagePath(p: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i.test(p);
+  return /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg|tiff?|heic|heif)$/i.test(p);
 }
 
 /**
