@@ -35,6 +35,13 @@ const MAX_QUEUED_FRAMES = 250;
 // periodic KeepAlive covers gaps (permission prompts, long pauses).
 const KEEPALIVE_INTERVAL_MS = 4000;
 
+// How long Deepgram waits for silence before closing an utterance and emitting
+// a final. Its default is 10ms, which is aggressive enough to cut finals at any
+// natural mid-sentence pause. 300ms matches what Claude Code's dictation asks
+// of the same engine. NB: the parameter is `endpointing` — `endpointing_ms` is
+// that proxy's own name for it and Deepgram would ignore it.
+const ENDPOINTING_MS = 300;
+
 // After CloseStream, wait this long for Deepgram to flush trailing finals
 // and close from its side before force-closing the socket. Must exceed the
 // renderer's own flush wait so the finals beat the provider teardown.
@@ -64,16 +71,19 @@ export class DeepgramSession {
     const { DeepgramClient } = await import("@deepgram/sdk");
     const client = new DeepgramClient({ apiKey });
     const socket = await client.listen.v1.connect({
-      model: "nova-2",
+      model: "nova-3",
       encoding: "linear16",
       sample_rate: sampleRate,
       channels: 1,
       interim_results: "true",
       punctuate: "true",
       smart_format: "true",
-      // Undefined = Deepgram's default (English); set from the dictation
-      // language menu otherwise.
-      ...(language ? { language } : {}),
+      endpointing: ENDPOINTING_MS,
+      // The language menu's "Detect" entry reaches us as undefined (the router
+      // drops "auto"). Leaving it unset makes Deepgram assume English, so
+      // "Detect" silently wouldn't detect — nova-3's multilingual mode is what
+      // that entry actually promises.
+      language: language ?? "multi",
       Authorization: `Token ${apiKey}`,
       // The SDK's ReconnectingWebSocket retries 30× by default; a rejected
       // key would silently loop connect/close. Fail once, loudly.

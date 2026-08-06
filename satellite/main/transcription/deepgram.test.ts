@@ -130,22 +130,30 @@ afterEach(() => {
 });
 
 describe("DeepgramSession.open — connect args", () => {
-  it("connects with nova-2 / linear16 / the given rate / interim + reconnectAttempts 0", async () => {
+  it("connects with nova-3 / linear16 / the given rate / interim + reconnectAttempts 0", async () => {
     const session = new DeepgramSession();
     await session.open("secret-key", 24000, undefined, makeHandlers());
 
     expect(dg.connectArgs).toHaveLength(1);
     const args = dg.connectArgs[0] as Record<string, unknown>;
-    expect(args.model).toBe("nova-2");
+    expect(args.model).toBe("nova-3");
     expect(args.encoding).toBe("linear16");
     expect(args.sample_rate).toBe(24000);
     expect(args.interim_results).toBe("true");
     expect(args.reconnectAttempts).toBe(0);
     expect(dg.apiKeys[0]).toBe("secret-key");
-    // No language arg unless one was chosen.
-    expect(args.language).toBeUndefined();
     // startClosed socket: without this call nothing ever dials.
     expect(dg.sockets[0].connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("sets endpointing so finals aren't cut at Deepgram's 10 ms default", async () => {
+    const session = new DeepgramSession();
+    await session.open("k", 16000, undefined, makeHandlers());
+    const args = dg.connectArgs[0] as Record<string, unknown>;
+    // Deepgram's own parameter is `endpointing` — `endpointing_ms` is the name
+    // Claude Code's proxy uses, and would be silently ignored here.
+    expect(args.endpointing).toBe(300);
+    expect(args.endpointing_ms).toBeUndefined();
   });
 
   it("passes a chosen language through to the connect args", async () => {
@@ -153,6 +161,15 @@ describe("DeepgramSession.open — connect args", () => {
     await session.open("k", 16000, "nl", makeHandlers());
     const args = dg.connectArgs[0] as Record<string, unknown>;
     expect(args.language).toBe("nl");
+  });
+
+  it("falls back to nova-3 multilingual when no language was chosen", async () => {
+    const session = new DeepgramSession();
+    await session.open("k", 16000, undefined, makeHandlers());
+    const args = dg.connectArgs[0] as Record<string, unknown>;
+    // The router maps the "auto" (Detect) menu entry to undefined. Leaving it
+    // unset makes Deepgram assume English, so "Detect" wouldn't detect.
+    expect(args.language).toBe("multi");
   });
 });
 
