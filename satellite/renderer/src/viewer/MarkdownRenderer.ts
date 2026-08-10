@@ -29,6 +29,7 @@ import {
   type MermaidTheme,
 } from "./markdownEnhancers";
 import { enhanceLocalImages } from "./localImages";
+import { wikiImagePlugin } from "./wikiImage";
 
 export interface MarkdownRendererOptions {
   /**
@@ -148,6 +149,10 @@ function createMarkdownIt(): MarkdownIt {
         .replace(/\s+/g, "-"),
   });
   md.use(taskLists, { enabled: false, label: true, labelAfter: true });
+  // Obsidian-style `![[a.png]]` embeds. Emits a plain `image` token, so it
+  // inherits the image renderer rule below, DOMPurify, and the local-image
+  // enhancer without a second code path.
+  md.use(wikiImagePlugin);
 
   // Override the default link renderer to add `class="reck-internal-link"`
   // for hrefs we treat as file references. We don't strip dangerous schemes
