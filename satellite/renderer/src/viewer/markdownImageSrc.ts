@@ -14,9 +14,10 @@
 // validateLink at all.
 
 export type MarkdownImageSrc =
-  /** http(s), protocol-relative, or a self-contained data:image URI. Left
-   *  exactly as authored — the browser loads it directly. */
-  | { kind: "remote" }
+  /** http(s), protocol-relative, or a self-contained data:image URI. `src` is
+   *  what the browser should actually load: the trimmed input, except for
+   *  protocol-relative URLs, which are normalized (see below). */
+  | { kind: "remote"; src: string }
   /** A filesystem path. Must be resolved against a base dir and handed to
    *  `files.imageMeta` before it can be displayed. */
   | { kind: "local"; rawPath: string }
@@ -28,20 +29,44 @@ export type MarkdownImageSrc =
  *  Requires 2+ chars so a Windows drive letter (`C:/…`) reads as a path. */
 const SCHEME_RE = /^[a-z][a-z0-9+.-]+:/i;
 
+/** C0 controls and DEL. A browser strips tab/LF/CR from *anywhere* in a URL
+ *  before it detects the scheme, so `jav\tascript:` is a live `javascript:`
+ *  URL to it while `SCHEME_RE` sees no scheme at all and would fall through
+ *  to `local`. Nothing legitimate in this pipeline carries a control char, so
+ *  we refuse the whole class rather than try to mirror the browser's
+ *  normalization. */
+const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/;
+
 export function classifyMarkdownImageSrc(src: string): MarkdownImageSrc {
   const trimmed = src.trim();
   if (trimmed === "") return { kind: "unsupported" };
   if (trimmed.startsWith("#") || trimmed.startsWith("?")) {
     return { kind: "unsupported" };
   }
-  // Protocol-relative — the page origin supplies http(s).
-  if (trimmed.startsWith("//")) return { kind: "remote" };
+  // Must precede the scheme test — see CONTROL_CHAR_RE.
+  if (CONTROL_CHAR_RE.test(trimmed)) return { kind: "unsupported" };
+
+  // Protocol-relative. Normalized to https: rather than passed through,
+  // because it inherits the *page* scheme and our two environments do not
+  // share one: dev loads `http://localhost:5173` (main.ts:207) while prod
+  // uses `loadFile`, i.e. a `file:` origin (main.ts:209). Left alone,
+  // `//host/a.png` would load in dev and silently fail in prod as
+  // `file://host/a.png` — exactly the divergence that makes us refuse `file:`
+  // below. https is the correct modern resolution of a mixed-HTTP-era idiom.
+  // Do not "simplify" this back to a pass-through.
+  if (trimmed.startsWith("//")) {
+    return { kind: "remote", src: `https:${trimmed}` };
+  }
 
   const scheme = SCHEME_RE.exec(trimmed)?.[0]?.toLowerCase();
   if (scheme) {
-    if (scheme === "http:" || scheme === "https:") return { kind: "remote" };
+    // http is left as authored — only protocol-relative is rewritten; we do
+    // not silently upgrade an explicit http: URL to https:.
+    if (scheme === "http:" || scheme === "https:") {
+      return { kind: "remote", src: trimmed };
+    }
     if (trimmed.slice(0, 11).toLowerCase() === "data:image/") {
-      return { kind: "remote" };
+      return { kind: "remote", src: trimmed };
     }
     // file:, reck-img:, javascript:, mailto:, anything else — not ours to
     // serve. Notably `file:` is refused on purpose: it works from a
