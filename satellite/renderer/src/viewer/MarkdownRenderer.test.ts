@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createMarkdownRenderer } from "./MarkdownRenderer";
 
 describe("createMarkdownRenderer", () => {
@@ -654,6 +654,104 @@ describe("createMarkdownRenderer — images", () => {
       const html = r.render("```\n![a](./a.png)\n```");
       expect(html).not.toContain("data-reck-src");
       expect(html).toContain("![a](./a.png)");
+    });
+  });
+
+  describe("local image enhancement", () => {
+    // The pass reaches for window.reckAPI.files.imageMeta when no injectable
+    // is supplied, which is exactly what production does — so these install a
+    // stub API and tear it back down rather than injecting past the wiring
+    // under test.
+    afterEach(() => {
+      delete (window as unknown as { reckAPI?: unknown }).reckAPI;
+      document.body.innerHTML = "";
+    });
+
+    it("swaps a local image's src for the minted url after mount", async () => {
+      const imageMeta = vi.fn(async () => ({
+        ok: true as const,
+        resolvedPath: "/base/a.png",
+        url: "reck-img://local/?p=/base/a.png&v=1-1",
+        mime: "image/png",
+        byteSize: 1,
+        mtimeMs: 1,
+      }));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({ imageBaseDir: "/base" });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+
+      expect(imageMeta).toHaveBeenCalledWith("/base/a.png");
+      expect(host.querySelector("img")!.getAttribute("src")).toBe(
+        "reck-img://local/?p=/base/a.png&v=1-1",
+      );
+    });
+
+    it("placeholders local images when no imageBaseDir was supplied", async () => {
+      const imageMeta = vi.fn();
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer();
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+
+      expect(imageMeta).not.toHaveBeenCalled();
+      expect(host.querySelector(".reck-image-missing")).not.toBeNull();
+    });
+
+    it("placeholders every local image when the host cannot be served", async () => {
+      // Station/SSH markdown: reck-img:// parses a `station` host but only
+      // implements `local`, so no IPC should be attempted at all.
+      const imageMeta = vi.fn();
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({
+        imageBaseDir: "/base",
+        imagesUnsupportedHost: true,
+      });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+
+      expect(imageMeta).not.toHaveBeenCalled();
+      expect(host.querySelector(".reck-image-missing")).not.toBeNull();
+      expect(host.querySelector("img")).toBeNull();
+    });
+
+    it("does not write into a container that was re-mounted mid-flight", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((res) => {
+        release = res;
+      });
+      const imageMeta = vi.fn(async () => {
+        await gate;
+        return {
+          ok: true as const,
+          resolvedPath: "/base/a.png",
+          url: "reck-img://local/?p=/base/a.png&v=1-1",
+          mime: "image/png",
+          byteSize: 1,
+          mtimeMs: 1,
+        };
+      });
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({ imageBaseDir: "/base" });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      r.mount(host, r.render("# replaced"));
+      release();
+      await r.whenEnhanced();
+
+      expect(host.querySelector("img")).toBeNull();
+      expect(host.textContent).toContain("replaced");
     });
   });
 });

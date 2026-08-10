@@ -67,6 +67,12 @@ export function attachLightbox(container: HTMLElement): LightboxHandle {
     // An image wrapped in a link is a navigation affordance, not a picture to
     // inspect; the anchor handler owns that click.
     if (target.closest("a")) return;
+    // No usable src, no lightbox. A local markdown image is deliberately
+    // src-less between render and enhanceLocalImages minting its reck-img://
+    // URL (see RECK_IMAGE_SRC_ATTR), and an empty `src` on the overlay copy
+    // would resolve to the current document and re-request it — the exact
+    // failure parking the path off `src` exists to prevent.
+    if (!(target.getAttribute("src") ?? "").trim()) return;
 
     open(target);
   };

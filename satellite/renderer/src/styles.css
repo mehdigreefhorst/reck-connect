@@ -3158,6 +3158,22 @@ html, body, #app {
   cursor: zoom-in;
 }
 
+/* Stand-in for a markdown image we could not display. Inline-block so it
+   sits in the flow where the image would have been, and visually distinct
+   from prose without shouting — a missing figure is information, not an
+   error state the user caused. */
+.reck-image-missing {
+  display: inline-block;
+  padding: 0.35em 0.6em;
+  border: 1px dashed var(--border, #999);
+  border-radius: 4px;
+  color: var(--text-muted, #777);
+  font-size: 0.9em;
+  font-style: italic;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 /* Mermaid diagrams. The ```mermaid fence is unwrapped out of its <pre><code>
    before rendering (see markdownEnhancers.ts) precisely so the SVG does NOT
    inherit the code-block treatment below — a diagram is a figure, not source.

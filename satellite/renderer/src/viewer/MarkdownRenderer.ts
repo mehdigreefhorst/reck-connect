@@ -18,12 +18,17 @@ import taskLists from "markdown-it-task-lists";
 import hljs from "highlight.js/lib/common";
 import DOMPurify, { type Config as DOMPurifyConfig } from "dompurify";
 import { createRenderedDom, isInternalLinkHref } from "./renderedDom";
-import { classifyMarkdownImageSrc } from "./markdownImageSrc";
+import {
+  classifyMarkdownImageSrc,
+  RECK_IMAGE_SRC_ATTR,
+  RECK_IMAGE_UNSUPPORTED_ATTR,
+} from "./markdownImageSrc";
 import {
   enhanceMath,
   enhanceMermaid,
   type MermaidTheme,
 } from "./markdownEnhancers";
+import { enhanceLocalImages } from "./localImages";
 
 export interface MarkdownRendererOptions {
   /**
@@ -45,6 +50,22 @@ export interface MarkdownRendererOptions {
    * no-op (still no in-popup navigation).
    */
   onExternalActivate?: (href: string, ev: MouseEvent) => void;
+  /**
+   * Directory that relative image paths in the markdown resolve against.
+   *
+   * The renderer is handed only the markdown *text*, so it cannot know where
+   * that text came from — the host must say. The file viewer passes the open
+   * file's own directory; the transcript passes the session's project cwd.
+   * Omit it and local images render as an explanatory placeholder instead of
+   * silently vanishing.
+   */
+  imageBaseDir?: string | null;
+  /**
+   * Set when the markdown came from a host this process cannot serve files
+   * for (today: station/SSH). Local images become placeholders and no
+   * `imageMeta` IPC is attempted.
+   */
+  imagesUnsupportedHost?: boolean;
 }
 
 export interface MarkdownRenderer {
@@ -57,7 +78,7 @@ export interface MarkdownRenderer {
   mount(container: HTMLElement, html: string): void;
   /**
    * Resolves once the post-mount enhancement passes (mermaid diagrams, KaTeX
-   * math) kicked off by the most recent `mount()` have settled.
+   * math, local images) kicked off by the most recent `mount()` have settled.
    *
    * `mount()` stays synchronous — callers that only need the prose on screen
    * are unaffected — but anything that depends on the *final* layout must
@@ -81,25 +102,14 @@ const INTERNAL_LINK_CLASS = "reck-internal-link";
  */
 const PATH_LINK_TOOLTIP = "⌘+click to open";
 
-/**
- * Where a local image's authored path is parked between render and the
- * post-mount enhancer.
- *
- * The `src` attribute cannot hold it: a filesystem path resolves against the
- * popup page's origin (`file-viewer.html`, or `localhost:5173` in dev), so the
- * browser would fire a doomed request and paint a broken-image glyph in the
- * gap before `enhanceLocalImages` runs. Parking the path here and leaving the
- * element `src`-less makes that gap silent.
- *
- * The real URL is minted in main (`file:imageMeta`) and written onto the live
- * DOM *after* DOMPurify — which is why `reck-img:` never has to be added to
- * any sanitizer allowlist.
- */
-export const RECK_IMAGE_SRC_ATTR = "data-reck-src";
-
-/** Marks an image whose scheme we refuse to serve, so the enhancer can render
- *  a placeholder rather than leaving a 0×0 invisible element. */
-export const RECK_IMAGE_UNSUPPORTED_ATTR = "data-reck-image-unsupported";
+// Both constants are defined in markdownImageSrc (a leaf module) and
+// re-exported here for callers that already reach for them on this module.
+// They cannot live here: localImages imports them and this module imports
+// localImages — see RECK_IMAGE_SRC_ATTR's docstring for what that cycle broke.
+export {
+  RECK_IMAGE_SRC_ATTR,
+  RECK_IMAGE_UNSUPPORTED_ATTR,
+} from "./markdownImageSrc";
 
 function createMarkdownIt(): MarkdownIt {
   const md = new MarkdownIt({
@@ -318,7 +328,7 @@ export function createMarkdownRenderer(
     const stillCurrent = (): boolean =>
       generation === mine && container.isConnected;
     if (!stillCurrent()) return;
-    // Sequential, not concurrent: both passes mutate the same subtree, and
+    // Sequential, not concurrent: every pass mutates the same subtree, and
     // running them one after the other keeps the post-enhancement layout
     // deterministic for whoever awaits whenEnhanced().
     await enhanceMermaid(container, {
@@ -326,6 +336,14 @@ export function createMarkdownRenderer(
       stillCurrent,
     });
     await enhanceMath(container, { stillCurrent });
+    // Last: the other two passes can inject or unwrap nodes, and this one
+    // should see the final tree. It is also the only pass that does IPC,
+    // so leaving it last keeps the cheap synchronous work off its latency.
+    await enhanceLocalImages(container, {
+      baseDir: opts.imageBaseDir ?? null,
+      unsupportedHost: opts.imagesUnsupportedHost === true,
+      stillCurrent,
+    });
   }
 
   return {

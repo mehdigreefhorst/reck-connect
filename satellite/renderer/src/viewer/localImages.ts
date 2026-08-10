@@ -16,10 +16,14 @@
 // construct a reck-img URL here, and do NOT copy an author-supplied string
 // into `src`.
 
+// From markdownImageSrc, not MarkdownRenderer: MarkdownRenderer imports this
+// module to run the pass, so importing back would make the two mutually
+// dependent — and the selectors below are built at module scope, where a
+// half-initialised cyclic import reads the constants as `undefined`.
 import {
   RECK_IMAGE_SRC_ATTR,
   RECK_IMAGE_UNSUPPORTED_ATTR,
-} from "./MarkdownRenderer";
+} from "./markdownImageSrc";
 import { resolveActivatePath } from "./resolveActivatePath";
 
 /** Mirrors the `file:imageMeta` IPC contract (preload/preload.ts). */

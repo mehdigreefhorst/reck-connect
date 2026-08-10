@@ -25,6 +25,34 @@ export type MarkdownImageSrc =
    *  serve. Rendered as a placeholder. */
   | { kind: "unsupported" };
 
+/**
+ * Where a local image's authored path is parked between render and the
+ * post-mount enhancer.
+ *
+ * The `src` attribute cannot hold it: a filesystem path resolves against the
+ * popup page's origin (`file-viewer.html`, or `localhost:5173` in dev), so the
+ * browser would fire a doomed request and paint a broken-image glyph in the
+ * gap before `enhanceLocalImages` runs. Parking the path here and leaving the
+ * element `src`-less makes that gap silent.
+ *
+ * The real URL is minted in main (`file:imageMeta`) and written onto the live
+ * DOM *after* DOMPurify — which is why `reck-img:` never has to be added to
+ * any sanitizer allowlist.
+ *
+ * Lives in this leaf module rather than next to the markdown-it rule that
+ * writes it: the rule (MarkdownRenderer) and the enhancer (localImages) both
+ * need it, and MarkdownRenderer imports localImages. Defining it there made
+ * the two modules mutually dependent, and localImages — which builds its
+ * querySelector strings at module scope — read the constant as `undefined`
+ * whenever MarkdownRenderer happened to load first, i.e. in production.
+ */
+export const RECK_IMAGE_SRC_ATTR = "data-reck-src";
+
+/** Marks an image whose scheme we refuse to serve, so the enhancer can render
+ *  a placeholder rather than leaving a 0×0 invisible element. Same
+ *  no-cycles reasoning as RECK_IMAGE_SRC_ATTR above. */
+export const RECK_IMAGE_UNSUPPORTED_ATTR = "data-reck-image-unsupported";
+
 /** A URI scheme per RFC 3986: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
  *  Requires 2+ chars so a Windows drive letter (`C:/…`) reads as a path. */
 const SCHEME_RE = /^[a-z][a-z0-9+.-]+:/i;
