@@ -1,8 +1,19 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+// IMPORT ORDER IS LOAD-BEARING — do not reorder or let a formatter sort it.
+// MarkdownRenderer must be imported BEFORE localImages, because that is the
+// order production uses (the app entry reaches MarkdownRenderer, never
+// localImages directly) and it is the order under which an import cycle
+// between the two breaks. localImages builds its querySelector strings at
+// module scope from RECK_IMAGE_SRC_ATTR, so if that constant is ever moved
+// back into MarkdownRenderer — which imports localImages — this import
+// initialises localImages while MarkdownRenderer is still half-evaluated.
+// The selector pin below is what catches that.
+import "./MarkdownRenderer";
 import {
   enhanceLocalImages,
   IMAGE_PLACEHOLDER_CLASS,
+  LOCAL_IMAGE_SELECTOR,
   type ImageMetaResult,
 } from "./localImages";
 
@@ -23,6 +34,17 @@ const okMeta = (url: string): ImageMetaResult => ({
 });
 
 describe("enhanceLocalImages", () => {
+  it("builds its selector from a fully-initialised RECK_IMAGE_SRC_ATTR", () => {
+    // Guards the constants' home (markdownImageSrc, a leaf module) against a
+    // well-meaning move back into MarkdownRenderer. Under the import order
+    // above, that move makes this read `undefined` and the selector becomes
+    // the literal string `img[undefined]` — valid CSS that matches nothing,
+    // so every local image would silently fail to render. Pinned explicitly
+    // rather than left to emerge from the behavioural tests, because a
+    // failure that throws nothing and logs nothing deserves a named guard.
+    expect(LOCAL_IMAGE_SELECTOR).toBe("img[data-reck-src]");
+  });
+
   it("resolves a relative path against baseDir and sets the minted url", async () => {
     const el = mount('<p><img data-reck-src="./a.png" alt="a"></p>');
     const imageMeta = vi.fn(async () => okMeta("reck-img://local/?p=/base/a.png&v=1-10"));

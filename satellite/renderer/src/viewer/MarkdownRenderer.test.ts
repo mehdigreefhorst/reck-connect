@@ -746,11 +746,74 @@ describe("createMarkdownRenderer — images", () => {
       const host = document.createElement("div");
       document.body.appendChild(host);
       r.mount(host, r.render("![a](./a.png)"));
+      // Grab the element BEFORE the re-mount. The second mount() replaces
+      // container.innerHTML, so this node is detached afterwards — and a
+      // stale write would land on it where `host.querySelector` can no
+      // longer see it. Asserting via the container would pass whether the
+      // staleness contract is honored or violated; only holding the
+      // reference makes the guard falsifiable.
+      const stale = host.querySelector("img")!;
       r.mount(host, r.render("# replaced"));
       release();
       await r.whenEnhanced();
 
+      expect(stale.getAttribute("src")).toBeNull();
       expect(host.querySelector("img")).toBeNull();
+      expect(host.textContent).toContain("replaced");
+      // The re-mount beat the pass to the container, so the IPC is never
+      // even attempted. That is the entry guard in enhanceLocalImages, NOT
+      // the post-await re-checks — those are covered by the mid-flight test
+      // below, which is the only one that can reach them.
+      expect(imageMeta).not.toHaveBeenCalled();
+    });
+
+    it("does not write a minted url onto an image re-mounted while its IPC was in flight", async () => {
+      // The test above re-mounts before the pass ever starts, so it can only
+      // reach enhanceLocalImages' entry guard. This one parks the pass inside
+      // imageMeta first, so the re-mount genuinely lands mid-flight and the
+      // post-await `stillCurrent` / `isConnected` re-checks are the only
+      // thing standing between a stale IPC reply and a write.
+      let entered!: () => void;
+      const enteredIpc = new Promise<void>((res) => {
+        entered = res;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((res) => {
+        release = res;
+      });
+      const imageMeta = vi.fn(async () => {
+        entered();
+        await gate;
+        return {
+          ok: true as const,
+          resolvedPath: "/base/a.png",
+          url: "reck-img://local/?p=/base/a.png&v=1-1",
+          mime: "image/png",
+          byteSize: 1,
+          mtimeMs: 1,
+        };
+      });
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({ imageBaseDir: "/base" });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      // Captured before the re-mount detaches it, and captured as the promise
+      // of THIS mount — whenEnhanced() would otherwise hand back the second
+      // mount's pass and let the stale one settle after the assertions.
+      const stale = host.querySelector("img")!;
+      const firstPass = r.whenEnhanced();
+
+      await enteredIpc; // the pass is now parked inside the IPC
+      r.mount(host, r.render("# replaced"));
+      release();
+      await firstPass;
+      await r.whenEnhanced();
+
+      expect(imageMeta).toHaveBeenCalledWith("/base/a.png");
+      expect(stale.getAttribute("src")).toBeNull();
+      expect(stale.getAttribute("data-reck-src")).toBe("./a.png");
       expect(host.textContent).toContain("replaced");
     });
   });
