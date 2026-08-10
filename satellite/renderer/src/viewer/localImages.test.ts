@@ -194,4 +194,69 @@ describe("enhanceLocalImages", () => {
     expect(el.querySelector(`.${IMAGE_PLACEHOLDER_CLASS}`)).not.toBeNull();
     warn.mockRestore();
   });
+
+  // The three tests below cover the two post-await guards in `resolveOne`,
+  // which the entry guard alone never reaches. Each was verified to go red
+  // when its guard is deleted — see the task-3 fix report.
+
+  it("writes nothing when stillCurrent goes false DURING the imageMeta round-trip", async () => {
+    const el = mount('<img data-reck-src="./a.png">');
+    // True at the entry guard, false by the time the IPC resolves — the
+    // mid-flight re-render this branch exists for.
+    let live = true;
+    const imageMeta = vi.fn(async () => {
+      live = false;
+      return okMeta("reck-img://local/?p=/base/a.png&v=1-1");
+    });
+
+    await enhanceLocalImages(el, {
+      baseDir: "/base",
+      imageMeta,
+      stillCurrent: () => live,
+    });
+
+    expect(imageMeta).toHaveBeenCalledTimes(1);
+    const img = el.querySelector("img")!;
+    expect(img.hasAttribute("src")).toBe(false);
+    expect(img.getAttribute("data-reck-src")).toBe("./a.png");
+    expect(el.querySelector(`.${IMAGE_PLACEHOLDER_CLASS}`)).toBeNull();
+  });
+
+  it("leaves unsupported-scheme images untouched when stillCurrent is false on entry", async () => {
+    const el = mount('<img data-reck-image-unsupported="1" alt="x">');
+    const imageMeta = vi.fn();
+
+    await enhanceLocalImages(el, {
+      baseDir: "/base",
+      imageMeta,
+      stillCurrent: () => false,
+    });
+
+    // The synchronous placeholder loop is a DOM write too, so the entry guard
+    // must precede it.
+    expect(el.querySelector("img")).not.toBeNull();
+    expect(el.querySelector(`.${IMAGE_PLACEHOLDER_CLASS}`)).toBeNull();
+  });
+
+  it("writes nothing to an image detached from the DOM during the round-trip", async () => {
+    const el = mount('<p><img data-reck-src="./a.png"></p>');
+    const img = el.querySelector("img")!;
+    // stillCurrent stays true: this exercises the isConnected guard alone,
+    // i.e. the container survived but this element did not.
+    const imageMeta = vi.fn(async () => {
+      img.remove();
+      return okMeta("reck-img://local/?p=/base/a.png&v=1-1");
+    });
+
+    await enhanceLocalImages(el, {
+      baseDir: "/base",
+      imageMeta,
+      stillCurrent: () => true,
+    });
+
+    expect(imageMeta).toHaveBeenCalledTimes(1);
+    expect(img.isConnected).toBe(false);
+    expect(img.hasAttribute("src")).toBe(false);
+    expect(img.getAttribute("data-reck-src")).toBe("./a.png");
+  });
 });
