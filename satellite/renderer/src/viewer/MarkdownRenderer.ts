@@ -18,6 +18,7 @@ import taskLists from "markdown-it-task-lists";
 import hljs from "highlight.js/lib/common";
 import DOMPurify, { type Config as DOMPurifyConfig } from "dompurify";
 import { createRenderedDom, isInternalLinkHref } from "./renderedDom";
+import { classifyMarkdownImageSrc } from "./markdownImageSrc";
 import {
   enhanceMath,
   enhanceMermaid,
@@ -79,6 +80,26 @@ const INTERNAL_LINK_CLASS = "reck-internal-link";
  * the CodeMirror linkifier decoration). The OS surfaces it after ~1s.
  */
 const PATH_LINK_TOOLTIP = "⌘+click to open";
+
+/**
+ * Where a local image's authored path is parked between render and the
+ * post-mount enhancer.
+ *
+ * The `src` attribute cannot hold it: a filesystem path resolves against the
+ * popup page's origin (`file-viewer.html`, or `localhost:5173` in dev), so the
+ * browser would fire a doomed request and paint a broken-image glyph in the
+ * gap before `enhanceLocalImages` runs. Parking the path here and leaving the
+ * element `src`-less makes that gap silent.
+ *
+ * The real URL is minted in main (`file:imageMeta`) and written onto the live
+ * DOM *after* DOMPurify — which is why `reck-img:` never has to be added to
+ * any sanitizer allowlist.
+ */
+export const RECK_IMAGE_SRC_ATTR = "data-reck-src";
+
+/** Marks an image whose scheme we refuse to serve, so the enhancer can render
+ *  a placeholder rather than leaving a 0×0 invisible element. */
+export const RECK_IMAGE_UNSUPPORTED_ATTR = "data-reck-image-unsupported";
 
 function createMarkdownIt(): MarkdownIt {
   const md = new MarkdownIt({
@@ -146,6 +167,9 @@ function createMarkdownIt(): MarkdownIt {
   // MarkView reaches for the observer because it wants custom fade-in
   // transitions, which we don't — and native works everywhere Electron does.
   // Same wrapper idiom as `link_open` above.
+  //
+  // Also routes local paths out of `src` and into RECK_IMAGE_SRC_ATTR — see
+  // that constant's docstring for why.
   const defaultImage =
     md.renderer.rules.image ??
     ((tokens, idx, options, _env, self) =>
@@ -154,6 +178,23 @@ function createMarkdownIt(): MarkdownIt {
     const token = tokens[idx];
     token.attrSet("loading", "lazy");
     token.attrSet("decoding", "async");
+
+    const classified = classifyMarkdownImageSrc(token.attrGet("src") ?? "");
+    if (classified.kind === "remote") {
+      // Write the classifier's src back, don't just leave the authored one:
+      // a protocol-relative `//host/a.png` is normalized to `https:` there,
+      // and skipping this would silently discard that.
+      token.attrSet("src", classified.src);
+    } else {
+      // New array rather than an in-place splice: markdown-it has no
+      // attrDelete, and tokens are shared with the anchor plugin's walk.
+      token.attrs = (token.attrs ?? []).filter(([name]) => name !== "src");
+      if (classified.kind === "local") {
+        token.attrSet(RECK_IMAGE_SRC_ATTR, classified.rawPath);
+      } else {
+        token.attrSet(RECK_IMAGE_UNSUPPORTED_ATTR, "1");
+      }
+    }
     return defaultImage(tokens, idx, options, env, self);
   };
 
@@ -191,6 +232,16 @@ const PURIFY_CONFIG: DOMPurifyConfig = {
     "disabled",
     "loading",
     "decoding",
+    // Parked local-image path + the unsupported-scheme marker, both set by
+    // the image rule above. DOMPurify's ALLOW_DATA_ATTR default would
+    // probably keep them, but an explicit allowlist entry is the only
+    // version that cannot change under a dependency bump.
+    "data-reck-src",
+    "data-reck-image-unsupported",
+    // Wikilink size hints (`![[a.png|300]]`). Attributes, never `style`:
+    // a style attribute here would be a CSS-injection surface.
+    "width",
+    "height",
   ],
   ALLOWED_TAGS: [
     "a",
