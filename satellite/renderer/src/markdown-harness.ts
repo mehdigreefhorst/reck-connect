@@ -21,6 +21,18 @@ import { attachToc } from "./viewer/attachToc";
 const FIXTURES: Record<string, string> = {
   // Exercises every Phase 1–4 surface at once: a diagram, inline + display
   // math, an image, enough headings for a TOC, and both link flavours.
+  //
+  // The image is a self-contained `data:image/svg+xml;base64` URI, and must
+  // stay one. Anything else — including a web-root-relative `/fixtures/x.svg`
+  // served by Vite — classifies as a *filesystem path*
+  // (classifyMarkdownImageSrc), so the renderer parks it on `data-reck-src`
+  // and `enhanceLocalImages` reaches for `window.reckAPI.files.imageMeta`,
+  // which this page deliberately does not have (see installConfigStub): the
+  // image would be replaced by a `.reck-image-missing` placeholder and every
+  // `.file-viewer-body img` assertion in e2e/markdown-viewer.spec.ts would go
+  // red. A data: URI classifies as `remote` and paints with no IPC at all.
+  // It is still 1600×900 on purpose — wider than the reading column, which is
+  // what makes the lightbox tests non-vacuous.
   rich: `# Markdown viewer harness
 
 Prose paragraph before the diagram, with an internal link to
@@ -57,7 +69,7 @@ const notMath = "$E=mc^2$";
 
 ## Image
 
-![sample image](/fixtures/sample-image.svg)
+![sample image](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNjAwIiBoZWlnaHQ9IjkwMCIgdmlld0JveD0iMCAwIDE2MDAgOTAwIj48cmVjdCB3aWR0aD0iMTYwMCIgaGVpZ2h0PSI5MDAiIGZpbGw9IiMyYjJiMzMiLz48Y2lyY2xlIGN4PSI0NTAiIGN5PSI0NTAiIHI9IjIzMCIgZmlsbD0iI2Q5Nzc1NyIvPjxyZWN0IHg9IjgwMCIgeT0iMjYwIiB3aWR0aD0iNjAwIiBoZWlnaHQ9IjM4MCIgcng9IjI0IiBmaWxsPSIjNmE5ZmI1Ii8+PHRleHQgeD0iODAwIiB5PSI4MjAiIGZvbnQtZmFtaWx5PSJzeXN0ZW0tdWksIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNjQiIGZpbGw9IiNlOGU4ZWEiIHRleHQtYW5jaG9yPSJtaWRkbGUiPnNhbXBsZSBpbWFnZSAxNjAweDkwMDwvdGV4dD48L3N2Zz4=)
 
 ### Nested heading four
 
@@ -135,7 +147,13 @@ function buildShell(): HarnessShell {
 /** attachToc persists its open/closed state through window.reckAPI.config,
  *  which only exists behind the Electron preload. Back it with sessionStorage
  *  so the harness exercises the real persistence path (and so a Playwright
- *  reload can assert the state survived) without a preload. */
+ *  reload can assert the state survived) without a preload.
+ *
+ *  `config` is ALL this stub provides: there is no `files`, so no surface here
+ *  can do file IPC. That is the honest shape of a preload-less page, and the
+ *  fixtures are written to stay inside it (see the note on `rich` above).
+ *  Local-image rendering is covered where it can actually work —
+ *  e2e-electron/markdown-image.spec.ts. */
 function installConfigStub(): void {
   (window as unknown as { reckAPI: unknown }).reckAPI = {
     config: {
