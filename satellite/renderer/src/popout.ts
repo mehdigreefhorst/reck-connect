@@ -316,6 +316,11 @@ async function bootPopout(): Promise<void> {
     }),
     projectId: () => paneProjectId,
     api: () => api,
+    // Relative image paths in a transcript anchor to the pane's project cwd —
+    // the same anchor `resolveActivatePath` uses for ⌘+clicked paths in
+    // `linkHandlers` below. A station pane gets null: its files are served
+    // over SSH and reck-img:// only implements the local host.
+    imageBaseDir: (host) => (host === "station" ? null : paneProjectCwd),
     // ⌘+click a path in the transcript → open it in the file viewer. Mirrors
     // this popout's pane linkifier (above): anchor against the pane's project
     // cwd in the renderer, then thread that cwd through the IPC. Main cannot

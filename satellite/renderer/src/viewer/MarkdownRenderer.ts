@@ -79,7 +79,8 @@ export interface MarkdownRenderer {
   mount(container: HTMLElement, html: string): void;
   /**
    * Resolves once the post-mount enhancement passes (mermaid diagrams, KaTeX
-   * math, local images) kicked off by the most recent `mount()` have settled.
+   * math, local images) still in flight have settled — every container this
+   * renderer has mounted into, not only the most recent one.
    *
    * `mount()` stays synchronous — callers that only need the prose on screen
    * are unaffected — but anything that depends on the *final* layout must
@@ -322,16 +323,33 @@ export function createMarkdownRenderer(
     onExternalActivate: opts.onExternalActivate,
   });
 
-  // Every mount() (and dispose()) bumps the generation. The enhancement
-  // passes capture the value at kick-off and re-check it after their lazy
-  // import resolves, so a popup that re-rendered — or closed — while a
-  // several-hundred-KB chunk was in flight never gets written into.
-  let generation = 0;
-  let enhancing: Promise<void> = Promise.resolve();
+  // Every mount() bumps the generation OF ITS CONTAINER, and dispose() bumps
+  // a renderer-wide epoch. The enhancement passes capture both at kick-off
+  // and re-check them after their lazy import resolves, so a container that
+  // re-rendered — or a renderer that closed — while a several-hundred-KB
+  // chunk was in flight never gets written into.
+  //
+  // Per container rather than one counter for the whole renderer: the
+  // transcript overlay mounts a single renderer into many containers (one
+  // markdown block per assistant turn), and a shared counter would let each
+  // mount cancel the pass of every block mounted before it — only the last
+  // block's images would ever paint.
+  let epoch = 0;
+  const generations = new WeakMap<HTMLElement, number>();
+  // Passes still in flight. whenEnhanced() awaits all of them, not just the
+  // newest mount's, and each drops out as it settles so the set cannot grow
+  // with a long-lived renderer.
+  const pending = new Set<Promise<void>>();
 
-  async function enhance(container: HTMLElement, mine: number): Promise<void> {
+  async function enhance(
+    container: HTMLElement,
+    mine: number,
+    myEpoch: number,
+  ): Promise<void> {
     const stillCurrent = (): boolean =>
-      generation === mine && container.isConnected;
+      epoch === myEpoch &&
+      generations.get(container) === mine &&
+      container.isConnected;
     if (!stillCurrent()) return;
     // Sequential, not concurrent: every pass mutates the same subtree, and
     // running them one after the other keeps the post-enhancement layout
@@ -361,14 +379,20 @@ export function createMarkdownRenderer(
     },
     mount(container: HTMLElement, html: string): void {
       dom.mount(container, html);
-      const mine = ++generation;
-      enhancing = enhance(container, mine);
+      const mine = (generations.get(container) ?? 0) + 1;
+      generations.set(container, mine);
+      // `enhance` never rejects, so the tracked promise can never become an
+      // unhandled rejection while it sits in `pending`.
+      const pass: Promise<void> = enhance(container, mine, epoch).finally(() => {
+        pending.delete(pass);
+      });
+      pending.add(pass);
     },
     whenEnhanced(): Promise<void> {
-      return enhancing;
+      return Promise.all([...pending]).then(() => undefined);
     },
     dispose(): void {
-      generation++;
+      epoch++;
       dom.dispose();
     },
   };

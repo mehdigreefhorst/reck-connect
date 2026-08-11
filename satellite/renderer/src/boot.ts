@@ -1221,6 +1221,14 @@ export async function boot(splash?: StartupSplashController) {
     },
     projectId: () => currentProjectId,
     api: (host) => apiForHost(host),
+    // Relative image paths in a transcript anchor to the active project's
+    // cwd — the same anchor `resolveActivatePath` uses for ⌘+clicked paths
+    // in `linkHandlers` below. Station panes get null: their files are
+    // served over SSH and reck-img:// only implements the local host.
+    imageBaseDir: (host) =>
+      host === "station"
+        ? null
+        : currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null,
     // ⌘+click a path in the transcript → open it in the file viewer, reusing
     // the exact resolve/open pipeline the pane linkifier uses (below). `host`
     // is the pane's host, so `~/` and station-cwd translation route correctly.

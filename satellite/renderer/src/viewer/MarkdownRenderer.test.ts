@@ -724,6 +724,37 @@ describe("createMarkdownRenderer — images", () => {
       expect(host.querySelector("img")).toBeNull();
     });
 
+    it("enhances every container a renderer mounts into, not just the newest", async () => {
+      // The transcript overlay mounts ONE renderer into many containers (a
+      // markdown block per assistant turn). A staleness counter shared across
+      // containers would let each mount cancel the pass of every block
+      // mounted before it, so only the last block's images would ever paint.
+      const imageMeta = vi.fn(async (p: string) => ({
+        ok: true as const,
+        resolvedPath: p,
+        url: `reck-img://local/?p=${p}&v=1-1`,
+        mime: "image/png",
+        byteSize: 1,
+        mtimeMs: 1,
+      }));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({ imageBaseDir: "/base" });
+      const first = document.createElement("div");
+      const second = document.createElement("div");
+      document.body.append(first, second);
+      r.mount(first, r.render("![a](./a.png)"));
+      r.mount(second, r.render("![b](./b.png)"));
+      await r.whenEnhanced();
+
+      expect(first.querySelector("img")!.getAttribute("src")).toBe(
+        "reck-img://local/?p=/base/a.png&v=1-1",
+      );
+      expect(second.querySelector("img")!.getAttribute("src")).toBe(
+        "reck-img://local/?p=/base/b.png&v=1-1",
+      );
+    });
+
     it("does not write into a container that was re-mounted mid-flight", async () => {
       let release!: () => void;
       const gate = new Promise<void>((res) => {

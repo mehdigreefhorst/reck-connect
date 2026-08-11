@@ -25,6 +25,15 @@ const userLine = (text: string) =>
     uuid: "u1",
   }) + "\n";
 
+/** One assistant line, the mirror of `userLine` above. */
+const assistantLine = (text: string) =>
+  JSON.stringify({
+    isSidechain: false,
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "text", text }] },
+    uuid: "a1",
+  }) + "\n";
+
 function chunk(c: string, next: number, more = false): TranscriptChunk {
   return { chunk: c, nextOffset: next, hasMore: more };
 }
@@ -253,5 +262,110 @@ describe("TranscriptController", () => {
     expect(c.get("p_1")).toBeNull();
     await c.toggle("p_1");
     expect(c.get("p_1")?.view.body.classList.contains("transcript-body")).toBe(true);
+  });
+
+  // Local images in assistant markdown. The controller drives the REAL view
+  // (and through it the real MarkdownRenderer), so these cover the whole
+  // option chain: deps.imageBaseDir → view → renderer → enhanceLocalImages.
+  describe("local images", () => {
+    afterEach(() => {
+      delete (window as unknown as { reckAPI?: unknown }).reckAPI;
+    });
+
+    /** Let the post-mount enhancement pass (a short chain of awaits ending in
+     *  the imageMeta IPC) settle; the tail's own fetch resolves on the first. */
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(0);
+    };
+
+    const metaFor = (p: string) => ({
+      ok: true as const,
+      resolvedPath: p,
+      url: `reck-img://local/?p=${p}&v=1-1`,
+      mime: "image/png",
+      byteSize: 1,
+      mtimeMs: 1,
+    });
+
+    it("resolves transcript images against the host's image base dir", async () => {
+      const imageMeta = vi.fn(async () => metaFor("/proj/shot.png"));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const d = makeDeps({
+        sessionId: SID,
+        getTranscript: vi.fn(async () => chunk(assistantLine("![s](./shot.png)"), 7)),
+      });
+      const c = createTranscriptController({
+        resolvePane: (paneId) =>
+          paneId === "p_1"
+            ? { wrapper: d.wrapper, kind: d.kind, host: "local", title: "p", sessionId: d.sessionId }
+            : null,
+        projectId: () => "proj",
+        api: () => ({ listSessions: d.listSessions, getTranscript: d.getTranscript }),
+        imageBaseDir: (host) => (host === "station" ? null : "/proj"),
+        intervalMs: 1000,
+        log: d.log,
+      });
+
+      await c.toggle("p_1");
+      await settle();
+
+      expect(imageMeta).toHaveBeenCalledWith("/proj/shot.png");
+      expect(d.wrapper.querySelector("img")?.getAttribute("src")).toBe(
+        "reck-img://local/?p=/proj/shot.png&v=1-1",
+      );
+    });
+
+    it("resolves images in every assistant text block, not just the last", async () => {
+      // A turn holds one markdown container per text block, and a live
+      // transcript has many. Each must get its own enhancement pass.
+      const imageMeta = vi.fn(async (p: string) => metaFor(p));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const d = makeDeps({
+        sessionId: SID,
+        getTranscript: vi.fn(async () =>
+          chunk(assistantLine("![a](./a.png)") + assistantLine("![b](./b.png)"), 9),
+        ),
+      });
+      const c = createTranscriptController({
+        resolvePane: (paneId) =>
+          paneId === "p_1"
+            ? { wrapper: d.wrapper, kind: d.kind, host: "local", title: "p", sessionId: d.sessionId }
+            : null,
+        projectId: () => "proj",
+        api: () => ({ listSessions: d.listSessions, getTranscript: d.getTranscript }),
+        imageBaseDir: () => "/proj",
+        intervalMs: 1000,
+        log: d.log,
+      });
+
+      await c.toggle("p_1");
+      await settle();
+
+      const srcs = [...d.wrapper.querySelectorAll("img")].map((i) => i.getAttribute("src"));
+      expect(srcs).toEqual([
+        "reck-img://local/?p=/proj/a.png&v=1-1",
+        "reck-img://local/?p=/proj/b.png&v=1-1",
+      ]);
+    });
+
+    it("placeholders transcript images on a station pane instead of fetching", async () => {
+      const imageMeta = vi.fn();
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      // makeController pins host: "station".
+      const d = makeDeps({
+        sessionId: SID,
+        getTranscript: vi.fn(async () => chunk(assistantLine("![s](./shot.png)"), 7)),
+      });
+      const c = makeController(d);
+
+      await c.toggle("p_1");
+      await settle();
+
+      expect(imageMeta).not.toHaveBeenCalled();
+      expect(d.wrapper.querySelector(".reck-image-missing")).not.toBeNull();
+    });
   });
 });

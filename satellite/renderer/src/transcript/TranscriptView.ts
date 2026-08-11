@@ -40,6 +40,16 @@ export interface TranscriptViewOptions {
   onLinkActivate?(href: string, ev: MouseEvent): void;
   /** ⌘+click on an external link (http/mailto/…). */
   onExternalActivate?(href: string, ev: MouseEvent): void;
+  /**
+   * Directory relative image paths in assistant markdown resolve against —
+   * the session's project cwd. Supplied by the owner (boot/popout), which is
+   * the layer that knows about projects; `null` renders local images as
+   * placeholders rather than guessing an anchor.
+   */
+  imageBaseDir?: string | null;
+  /** True for a station-hosted pane: those files are served over SSH and
+   *  `reck-img://` only implements the `local` host today. */
+  imagesUnsupportedHost?: boolean;
 }
 
 /** Visible overlay state. The overlay must never look silently dead:
@@ -119,7 +129,10 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   root.appendChild(body);
   opts.host.appendChild(root);
 
-  const md: MarkdownRenderer = createMarkdownRenderer();
+  const md: MarkdownRenderer = createMarkdownRenderer({
+    imageBaseDir: opts.imageBaseDir ?? null,
+    imagesUnsupportedHost: opts.imagesUnsupportedHost === true,
+  });
   const scrollbar: OverlayScrollbar = createOverlayScrollbar({
     host: root,
     surface: domScrollSurface(body),
@@ -161,12 +174,21 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   }
   body.addEventListener("click", onBodyClick);
 
-  function textBlockEl(role: TranscriptTurn["role"], text: string): HTMLElement {
+  // Appends rather than returning an element: assistant markdown must be IN
+  // the document before md.mount(), because the renderer's post-mount
+  // enhancement passes (local images, mermaid, math) abandon a container that
+  // isn't connected — mounting first and appending after silently skips them.
+  function appendTextBlock(
+    parent: HTMLElement,
+    role: TranscriptTurn["role"],
+    text: string,
+  ): void {
     if (role === "assistant") {
       const el = document.createElement("div");
       el.className = "transcript-md";
+      parent.appendChild(el);
       md.mount(el, md.render(text));
-      return el;
+      return;
     }
     const el = document.createElement("div");
     el.className = "transcript-text";
@@ -178,7 +200,7 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     // A long user message (e.g. a pasted plan) is clamped behind "Show more"
     // so it doesn't dominate — via a height clip, NOT display:none, so the
     // search bar still finds the hidden text.
-    return isLongText(text) ? clampable(el) : el;
+    parent.appendChild(isLongText(text) ? clampable(el) : el);
   }
 
   // A slash command (/clear, /model, …) the user ran — a slim chip, not a
@@ -193,9 +215,15 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   // A plan Claude presented via ExitPlanMode. Compact by design: a header,
   // the plan file path as a ⌘-clickable link, and the full markdown tucked in
   // a collapsed <details> so it never dominates the chat.
-  function planCardEl(block: Extract<TranscriptBlock, { kind: "plan" }>): HTMLElement {
+  // Appended by this function for the same reason as appendTextBlock: the
+  // plan body is markdown and must be connected before md.mount().
+  function appendPlanCard(
+    parent: HTMLElement,
+    block: Extract<TranscriptBlock, { kind: "plan" }>,
+  ): void {
     const card = document.createElement("div");
     card.className = "transcript-plan";
+    parent.appendChild(card);
     const head = document.createElement("div");
     head.className = "transcript-plan-head";
     head.textContent = "📋 Plan";
@@ -216,11 +244,10 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
       details.appendChild(summary);
       const bodyEl = document.createElement("div");
       bodyEl.className = "transcript-md";
-      md.mount(bodyEl, md.render(block.text));
       details.appendChild(bodyEl);
       card.appendChild(details);
+      md.mount(bodyEl, md.render(block.text));
     }
-    return card;
   }
 
   // A question Claude asked via AskUserQuestion — surfaced, not buried in the
@@ -338,11 +365,11 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     const toolBlocks: TranscriptBlock[] = [];
     for (const block of turn.blocks) {
       if (block.kind === "text") {
-        el.appendChild(textBlockEl(turn.role, block.text));
+        appendTextBlock(el, turn.role, block.text);
       } else if (block.kind === "command") {
         el.appendChild(commandPillEl(block.name));
       } else if (block.kind === "plan") {
-        el.appendChild(planCardEl(block));
+        appendPlanCard(el, block);
       } else if (block.kind === "question") {
         el.appendChild(questionCardEl(block));
       } else if (block.kind === "plan_approved") {
