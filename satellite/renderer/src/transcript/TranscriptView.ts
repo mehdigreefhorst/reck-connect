@@ -177,11 +177,11 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
 
   // One delegated ⌘+click handler for EVERY path link in the body — assistant
   // markdown, user prose, whichever turn. Delegating on `body` (a) survives
-  // incremental appends with no per-turn bookkeeping, and (b) sidesteps the
-  // shared markdown renderer's per-mount handler only surviving on the
-  // last-mounted turn (mount() detaches the previous listener). We always
-  // preventDefault so a file href never navigates the app window; opening
-  // requires ⌘, matching the terminal + file-viewer linkifiers.
+  // incremental appends with no per-turn bookkeeping, and (b) covers user
+  // prose, which never goes through the markdown renderer and so has no
+  // per-container handler of its own. We always preventDefault so a file href
+  // never navigates the app window; opening requires ⌘, matching the terminal
+  // + file-viewer linkifiers.
   function onBodyClick(ev: MouseEvent): void {
     const target = ev.target as HTMLElement | null;
     // Match ANY anchor, not just `.reck-internal-link`: external links
