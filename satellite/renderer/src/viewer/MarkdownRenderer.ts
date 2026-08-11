@@ -109,15 +109,6 @@ const INTERNAL_LINK_CLASS = "reck-internal-link";
  */
 const PATH_LINK_TOOLTIP = "⌘+click to open";
 
-// Both constants are defined in markdownImageSrc (a leaf module) and
-// re-exported here for callers that already reach for them on this module.
-// They cannot live here: localImages imports them and this module imports
-// localImages — see RECK_IMAGE_SRC_ATTR's docstring for what that cycle broke.
-export {
-  RECK_IMAGE_SRC_ATTR,
-  RECK_IMAGE_UNSUPPORTED_ATTR,
-} from "./markdownImageSrc";
-
 function createMarkdownIt(): MarkdownIt {
   const md = new MarkdownIt({
     html: false,
@@ -254,11 +245,17 @@ const PURIFY_CONFIG: DOMPurifyConfig = {
     "loading",
     "decoding",
     // Parked local-image path + the unsupported-scheme marker, both set by
-    // the image rule above. DOMPurify's ALLOW_DATA_ATTR default would
-    // probably keep them, but an explicit allowlist entry is the only
-    // version that cannot change under a dependency bump.
-    "data-reck-src",
-    "data-reck-image-unsupported",
+    // the image rule above. What actually keeps them is DOMPurify's
+    // `ALLOW_DATA_ATTR` default (true), which short-circuits on the `data-*`
+    // branch before any URI test runs; these two entries are belt-and-braces.
+    //
+    // Do NOT set `ALLOW_DATA_ATTR: false` to make them "load-bearing". With
+    // it off, `data-reck-src` falls through to `IS_ALLOWED_URI`, which
+    // rejects any value carrying an early colon — so a Windows path like
+    // `data-reck-src="C:/tmp/a.png"` would be silently stripped and the
+    // parked path would vanish.
+    RECK_IMAGE_SRC_ATTR,
+    RECK_IMAGE_UNSUPPORTED_ATTR,
     // Wikilink size hints (`![[a.png|300]]`). Attributes, never `style`:
     // a style attribute here would be a CSS-injection surface.
     "width",

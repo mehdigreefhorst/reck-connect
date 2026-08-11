@@ -1208,11 +1208,12 @@ export async function boot(splash?: StartupSplashController) {
   // console logs — set localStorage["reck-transcript-debug"]="1" for
   // per-poll/per-render verbosity.
   //
-  // The anchor a transcript resolves relative paths against. ONE definition on
-  // purpose: ⌘+clicked paths and inline images must resolve identically, and
-  // two copies of this expression ten lines apart is the weakest possible way
-  // to guarantee that. Read at use time — the active project changes under a
-  // long-lived overlay.
+  // The anchor every surface resolves relative paths against — the transcript
+  // overlay's inline images, its ⌘+clicked paths, and the pane linkifier's
+  // ⌘+clicked paths further down. ONE definition on purpose: those three must
+  // resolve identically, and separate copies of the expression are the weakest
+  // possible way to guarantee that. Read at use time — the active project
+  // changes under a long-lived overlay.
   const activeProjectCwd = (): string | null =>
     currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null;
   const transcripts = createTranscriptController({
@@ -1359,11 +1360,7 @@ export async function boot(splash?: StartupSplashController) {
           // anchor from the resolved path; it doesn't, and believing it was
           // what left detached pane windows unable to open relative paths
           // at all.)
-          const projectCwd =
-            directHost !== null
-              ? currentProjects.find((p) => p.id === currentProjectId)?.cwd ??
-                null
-              : null;
+          const projectCwd = directHost !== null ? activeProjectCwd() : null;
           const target = resolveActivatePath(filePath, projectCwd);
           console.log("[click:pane] activate -> openInViewer", {
             paneId,
