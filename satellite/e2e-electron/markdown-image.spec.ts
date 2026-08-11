@@ -33,7 +33,15 @@ test("a relative markdown image decodes through reck-img://", async () => {
 
     const img = popup.locator(".file-viewer-body img").first();
     await expect(img).toBeVisible({ timeout: 10_000 });
-    expect(await img.getAttribute("src")).toContain("reck-img://");
+    // Auto-retrying, because a local image carries NO `src` at all until the
+    // async enhancement pass fills it in — and the parked <img> is already
+    // visible before then (its alt text gives it a non-zero box). A plain
+    // getAttribute here races the pass. The pattern also pins the resolved
+    // file, so a mis-resolution that happened to land on some other readable
+    // image would not slip through.
+    await expect(img).toHaveAttribute("src", /^reck-img:\/\/.*rack\.png/, {
+      timeout: 10_000,
+    });
 
     // THE assertion: non-zero only if the handler served bytes and Chromium
     // decoded them.
@@ -61,11 +69,19 @@ test("a wikilink embed decodes the same way", async () => {
 
     const img = popup.locator(".file-viewer-body img").first();
     await expect(img).toBeVisible({ timeout: 10_000 });
+    // Same scheme + filename assertion as the `![](…)` case: naturalWidth
+    // alone would still be 240 if the wikilink rule regressed to emitting a
+    // plain `file://` src, which decodes fine in a file://-origin renderer.
+    // The embed must go through the SAME minting path, not merely paint.
+    await expect(img).toHaveAttribute("src", /^reck-img:\/\/.*rack\.png/, {
+      timeout: 10_000,
+    });
     await expect
       .poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth), {
         timeout: 10_000,
       })
       .toBe(240);
+    await expect(popup.locator(".reck-image-missing")).toHaveCount(0);
   } finally {
     await ctx.close();
   }
@@ -77,11 +93,13 @@ test("a markdown image outside the allowed roots becomes a placeholder", async (
     await expect(ctx.window.locator(".settings-card, .app-shell")).toBeVisible({
       timeout: 15_000,
     });
-    // Enough `../` to climb out of the temp HOME entirely.
-    const docPath = writeDoc(
-      ctx.homeDir,
-      "# Doc\n\n![x](../../../../../../etc/passwd.png)\n",
-    );
+    // An ABSOLUTE path outside every allowed root, rather than a `../` chain:
+    // a chain's escape depth is a function of how deep os.tmpdir() happens to
+    // be, so it could silently stop escaping. This states the intent directly.
+    // The path need not exist — main's roots gate
+    // (`resolveInsideAllowedRoots`, main/file-viewer.ts) runs before any stat,
+    // so the failure is `out-of-roots` and never degrades to `not-found`.
+    const docPath = writeDoc(ctx.homeDir, "# Doc\n\n![x](/etc/passwd.png)\n");
     const popup = await openPopup(ctx, docPath);
 
     const placeholder = popup.locator(".reck-image-missing");
