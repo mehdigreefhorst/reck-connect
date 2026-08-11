@@ -69,6 +69,19 @@ const UNSUPPORTED_IMAGE_SELECTOR = `img[${RECK_IMAGE_UNSUPPORTED_ATTR}]`;
 export const IMAGE_PLACEHOLDER_CLASS = "reck-image-missing";
 
 /**
+ * How many `imageMeta` round-trips may be in flight at once.
+ *
+ * Not a latency knob — a resource cap. For PNG/JPEG the handler is an
+ * `fs.stat`, but for HEIC/TIFF it calls `ensureConvertedImage`, which SPAWNS
+ * `/usr/bin/sips` (main/image-protocol.ts). Unbounded, a markdown file
+ * embedding 20 HEICs would spawn 20 transcode processes simultaneously.
+ *
+ * Small enough to bound the process count, large enough that a page of cheap
+ * stats still overlaps its IPC latency instead of paying it serially.
+ */
+export const IMAGE_META_CONCURRENCY = 4;
+
+/**
  * Human-readable reason per `handleImageMeta` failure code
  * (main/file-viewer.ts). Kept exhaustive on purpose: collapsing these into
  * one generic string is exactly the regression PR #146 called out — seven
@@ -169,8 +182,24 @@ export async function enhanceLocalImages(
   const imageMeta =
     opts.imageMeta ?? ((p: string) => window.reckAPI.files.imageMeta(p));
 
-  // Concurrent: each image is an independent IPC round-trip, and a doc with
-  // a dozen figures should not pay a dozen serial latencies. resolveOne
-  // never throws, so allSettled would add nothing over all().
-  await Promise.all(locals.map((img) => resolveOne(img, opts, imageMeta)));
+  // Concurrent but capped: each image is an independent IPC round-trip and a
+  // doc with a dozen figures should not pay a dozen serial latencies, but an
+  // uncapped fan-out can spawn one `sips` per HEIC — see
+  // IMAGE_META_CONCURRENCY. A shared cursor over `locals` rather than chunked
+  // batches, so one slow transcode stalls its own worker instead of a whole
+  // batch boundary. resolveOne never throws, so allSettled would add nothing
+  // over all().
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < locals.length) {
+      const img = locals[next];
+      next += 1;
+      await resolveOne(img, opts, imageMeta);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(IMAGE_META_CONCURRENCY, locals.length) }, () =>
+      worker(),
+    ),
+  );
 }

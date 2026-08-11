@@ -12,6 +12,7 @@ import { describe, it, expect, vi } from "vitest";
 import "./MarkdownRenderer";
 import {
   enhanceLocalImages,
+  IMAGE_META_CONCURRENCY,
   IMAGE_PLACEHOLDER_CLASS,
   LOCAL_IMAGE_SELECTOR,
   type ImageMetaResult,
@@ -280,5 +281,59 @@ describe("enhanceLocalImages", () => {
     expect(img.isConnected).toBe(false);
     expect(img.hasAttribute("src")).toBe(false);
     expect(img.getAttribute("data-reck-src")).toBe("./a.png");
+  });
+
+  describe("imageMeta fan-out", () => {
+    /** `count` local images plus an imageMeta stub that records the peak
+     *  number of simultaneously in-flight calls. */
+    function harness(count: number) {
+      const el = mount(
+        Array.from(
+          { length: count },
+          (_, i) => `<p><img data-reck-src="./${i}.png"></p>`,
+        ).join(""),
+      );
+
+      let inFlight = 0;
+      let peak = 0;
+      const imageMeta = vi.fn(async (p: string): Promise<ImageMetaResult> => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        // Suspend for a few microtask turns so overlap is observable at all:
+        // a stub that returns without ever yielding makes any scheduler look
+        // serial, and the assertion below would pass for a broken cap too.
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        inFlight -= 1;
+        return okMeta(`reck-img://local/?p=${p}&v=1-1`);
+      });
+
+      return { el, imageMeta, peak: () => peak };
+    }
+
+    it("never runs more than IMAGE_META_CONCURRENCY round-trips at once", async () => {
+      // The cap is a resource bound, not a latency knob: for HEIC/TIFF each
+      // imageMeta call spawns a `sips` process in main, so the uncapped
+      // Promise.all this replaced meant 20 concurrent transcodes for a doc
+      // with 20 HEICs. Peak would be `total` without the cap.
+      const total = IMAGE_META_CONCURRENCY * 5;
+      const { el, imageMeta, peak } = harness(total);
+
+      await enhanceLocalImages(el, { baseDir: "/base", imageMeta });
+
+      expect(peak()).toBe(IMAGE_META_CONCURRENCY);
+      // …and the cap throttles rather than drops: every image still resolved.
+      expect(imageMeta).toHaveBeenCalledTimes(total);
+      expect(el.querySelectorAll(LOCAL_IMAGE_SELECTOR)).toHaveLength(0);
+      expect(el.querySelectorAll('img[src^="reck-img://local/"]')).toHaveLength(
+        total,
+      );
+    });
+
+    it("starts no more workers than there are images", async () => {
+      const { el, imageMeta, peak } = harness(2);
+      await enhanceLocalImages(el, { baseDir: "/base", imageMeta });
+      expect(peak()).toBe(2);
+      expect(imageMeta).toHaveBeenCalledTimes(2);
+    });
   });
 });
