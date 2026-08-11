@@ -59,8 +59,13 @@ export interface MarkdownRendererOptions {
    * file's own directory; the transcript passes the session's project cwd.
    * Omit it and local images render as an explanatory placeholder instead of
    * silently vanishing.
+   *
+   * A function is re-read at every enhancement pass, for surfaces whose anchor
+   * is not known when the renderer is built: the popout resolves its project
+   * cwd asynchronously, and a snapshot taken before that lands would leave the
+   * overlay placeholdering images whose paths ⌘+click resolves happily.
    */
-  imageBaseDir?: string | null;
+  imageBaseDir?: string | null | (() => string | null);
   /**
    * Set when the markdown came from a host this process cannot serve files
    * for (today: station/SSH). Local images become placeholders and no
@@ -363,7 +368,10 @@ export function createMarkdownRenderer(
     // should see the final tree. It is also the only pass that does IPC,
     // so leaving it last keeps the cheap synchronous work off its latency.
     await enhanceLocalImages(container, {
-      baseDir: opts.imageBaseDir ?? null,
+      baseDir:
+        typeof opts.imageBaseDir === "function"
+          ? opts.imageBaseDir()
+          : opts.imageBaseDir ?? null,
       unsupportedHost: opts.imagesUnsupportedHost === true,
       stillCurrent,
     });
@@ -381,15 +389,26 @@ export function createMarkdownRenderer(
       dom.mount(container, html);
       const mine = (generations.get(container) ?? 0) + 1;
       generations.set(container, mine);
-      // `enhance` never rejects, so the tracked promise can never become an
-      // unhandled rejection while it sits in `pending`.
-      const pass: Promise<void> = enhance(container, mine, epoch).finally(() => {
-        pending.delete(pass);
-      });
+      // The tracked promise is deliberately made un-rejectable. `enhance`
+      // catches everything today, but a pass sitting in `pending` is
+      // unawaited until someone calls whenEnhanced() — and the transcript
+      // never does — so a future rejecting enhancer would surface as an
+      // unhandled rejection rather than a degraded render.
+      const pass: Promise<void> = enhance(container, mine, epoch)
+        .catch((err: unknown) => {
+          console.warn("[markdown] enhancement pass failed", err);
+        })
+        .finally(() => {
+          pending.delete(pass);
+        });
       pending.add(pass);
     },
     whenEnhanced(): Promise<void> {
-      return Promise.all([...pending]).then(() => undefined);
+      // allSettled, not all: `all` is fail-fast, so one rejecting pass would
+      // reject the aggregate and break this method's documented "never
+      // rejects" contract. `enhance` catches everything today, but that is a
+      // property of three other modules — this makes it structural.
+      return Promise.allSettled([...pending]).then(() => undefined);
     },
     dispose(): void {
       epoch++;

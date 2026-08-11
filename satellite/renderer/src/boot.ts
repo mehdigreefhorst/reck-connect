@@ -1207,6 +1207,14 @@ export async function boot(splash?: StartupSplashController) {
   // failing silently, and traces every decision with `[transcript]`
   // console logs — set localStorage["reck-transcript-debug"]="1" for
   // per-poll/per-render verbosity.
+  //
+  // The anchor a transcript resolves relative paths against. ONE definition on
+  // purpose: ⌘+clicked paths and inline images must resolve identically, and
+  // two copies of this expression ten lines apart is the weakest possible way
+  // to guarantee that. Read at use time — the active project changes under a
+  // long-lived overlay.
+  const activeProjectCwd = (): string | null =>
+    currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null;
   const transcripts = createTranscriptController({
     resolvePane: (paneId) => {
       const rec = layout.getTerminalRecordByPane(paneId);
@@ -1225,10 +1233,7 @@ export async function boot(splash?: StartupSplashController) {
     // cwd — the same anchor `resolveActivatePath` uses for ⌘+clicked paths
     // in `linkHandlers` below. Station panes get null: their files are
     // served over SSH and reck-img:// only implements the local host.
-    imageBaseDir: (host) =>
-      host === "station"
-        ? null
-        : currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null,
+    imageBaseDir: (host) => (host === "station" ? null : activeProjectCwd()),
     // ⌘+click a path in the transcript → open it in the file viewer, reusing
     // the exact resolve/open pipeline the pane linkifier uses (below). `host`
     // is the pane's host, so `~/` and station-cwd translation route correctly.
@@ -1236,8 +1241,7 @@ export async function boot(splash?: StartupSplashController) {
     // active project's cwd is the right anchor for relative paths.
     linkHandlers: (host) => ({
       onLinkActivate: (href) => {
-        const projectCwd =
-          currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null;
+        const projectCwd = activeProjectCwd();
         const target = resolveActivatePath(href, projectCwd);
         console.log("[click:transcript] activate -> openInViewer", {
           host,

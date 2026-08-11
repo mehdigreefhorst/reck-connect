@@ -57,6 +57,76 @@ describe("TranscriptView", () => {
     expect(turns[0].textContent).toContain("more");
   });
 
+  // A streaming turn is re-rendered on EVERY appended JSONL line. Rebuilding
+  // its markdown blocks each time would re-run the post-mount enhancement
+  // passes (mermaid re-imports and re-runs, images re-issue their IPC) for
+  // prose that has not changed, so unchanged blocks must survive in place.
+  it("reuses the elements of unchanged blocks when a turn grows", () => {
+    view.render([{ role: "assistant", blocks: [{ kind: "text", text: "first" }] }], 0);
+    const before = view.body.querySelector(".transcript-md");
+    view.render(
+      [
+        {
+          role: "assistant",
+          blocks: [
+            { kind: "text", text: "first" },
+            { kind: "text", text: "second" },
+          ],
+        },
+      ],
+      0,
+    );
+    const blocks = view.body.querySelectorAll(".transcript-md");
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toBe(before); // same node — not torn down and re-mounted
+    expect(blocks[1].textContent).toContain("second");
+  });
+
+  it("still repaints a block whose content changed", () => {
+    view.render([{ role: "assistant", blocks: [{ kind: "text", text: "draft" }] }], 0);
+    view.render([{ role: "assistant", blocks: [{ kind: "text", text: "final" }] }], 0);
+    const blocks = view.body.querySelectorAll(".transcript-md");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].textContent).toContain("final");
+    expect(blocks[0].textContent).not.toContain("draft");
+  });
+
+  it("keeps the tool group last and current as a turn grows", () => {
+    view.render(
+      [
+        {
+          role: "assistant",
+          blocks: [
+            { kind: "text", text: "working" },
+            { kind: "tool_use", name: "Bash", input: "{}" },
+          ],
+        },
+      ],
+      0,
+    );
+    const text = view.body.querySelector(".transcript-md");
+    view.render(
+      [
+        {
+          role: "assistant",
+          blocks: [
+            { kind: "text", text: "working" },
+            { kind: "tool_use", name: "Bash", input: "{}" },
+            { kind: "tool_use", name: "Read", input: "{}" },
+          ],
+        },
+      ],
+      0,
+    );
+    const t = view.body.querySelector(".transcript-turn") as HTMLElement;
+    expect(t.querySelector(".transcript-md")).toBe(text); // prose untouched
+    const groups = t.querySelectorAll("details.transcript-tools");
+    expect(groups).toHaveLength(1); // rebuilt, not duplicated
+    expect(groups[0].querySelector("summary")?.textContent).toContain("2 tool calls");
+    // The group stays the LAST child, after the prose it belongs to.
+    expect(t.lastElementChild).toBe(groups[0]);
+  });
+
   it("groups thinking/tool_use/tool_result into ONE collapsed group after the text", () => {
     view.render(
       [

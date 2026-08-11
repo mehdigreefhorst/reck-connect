@@ -350,6 +350,98 @@ describe("TranscriptController", () => {
       ]);
     });
 
+    it("does not re-resolve an unchanged image when the tail appends a line", async () => {
+      // The tail re-renders a turn on every appended JSONL line. Before the
+      // block-level reuse in TranscriptView that meant tearing down and
+      // re-mounting every markdown block in the turn — re-running the whole
+      // enhancement chain (mermaid re-imports and re-runs; images re-issue
+      // their IPC) for prose that had not changed.
+      const imageMeta = vi.fn(async () => metaFor("/proj/shot.png"));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      let call = 0;
+      const d = makeDeps({
+        sessionId: SID,
+        getTranscript: vi.fn(async () => {
+          call += 1;
+          if (call === 1) return chunk(assistantLine("![s](./shot.png)"), 7);
+          if (call === 2) return chunk(assistantLine("a later line of prose"), 14);
+          return chunk("", 14);
+        }),
+      });
+      const c = createTranscriptController({
+        resolvePane: (paneId) =>
+          paneId === "p_1"
+            ? { wrapper: d.wrapper, kind: d.kind, host: "local", title: "p", sessionId: d.sessionId }
+            : null,
+        projectId: () => "proj",
+        api: () => ({ listSessions: d.listSessions, getTranscript: d.getTranscript }),
+        imageBaseDir: () => "/proj",
+        intervalMs: 1000,
+        log: d.log,
+      });
+
+      await c.toggle("p_1");
+      await settle();
+      const img = d.wrapper.querySelector("img");
+      expect(imageMeta).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1000); // the tail appends a line
+      await settle();
+
+      expect(d.wrapper.textContent).toContain("a later line of prose");
+      expect(imageMeta).toHaveBeenCalledTimes(1); // NOT re-resolved
+      // The same <img> is still on screen, still painted.
+      expect(img?.isConnected).toBe(true);
+      expect(img?.getAttribute("src")).toBe("reck-img://local/?p=/proj/shot.png&v=1-1");
+    });
+
+    it("picks up a project cwd that resolves after the overlay opened", async () => {
+      // The popout fills `paneProjectCwd` from a fire-and-forget fetch, so an
+      // overlay can open before the anchor exists. Snapshotting the dep at
+      // open would strand that overlay without one for its whole lifetime,
+      // placeholdering the very paths its ⌘+click handler opens fine.
+      const imageMeta = vi.fn(async (p: string) => metaFor(p));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      let cwd: string | null = null; // not resolved yet
+      let call = 0;
+      const d = makeDeps({
+        sessionId: SID,
+        getTranscript: vi.fn(async () => {
+          call += 1;
+          if (call === 1) return chunk(assistantLine("![a](./a.png)"), 7);
+          if (call === 2) return chunk(assistantLine("![b](./b.png)"), 14);
+          return chunk("", 14);
+        }),
+      });
+      const c = createTranscriptController({
+        resolvePane: (paneId) =>
+          paneId === "p_1"
+            ? { wrapper: d.wrapper, kind: d.kind, host: "local", title: "p", sessionId: d.sessionId }
+            : null,
+        projectId: () => "proj",
+        api: () => ({ listSessions: d.listSessions, getTranscript: d.getTranscript }),
+        imageBaseDir: () => cwd,
+        intervalMs: 1000,
+        log: d.log,
+      });
+
+      await c.toggle("p_1");
+      await settle();
+      expect(imageMeta).not.toHaveBeenCalled();
+      expect(d.wrapper.querySelector(".reck-image-missing")).not.toBeNull();
+
+      cwd = "/late"; // listProjects() finally lands
+      await vi.advanceTimersByTimeAsync(1000);
+      await settle();
+
+      expect(imageMeta).toHaveBeenCalledWith("/late/b.png");
+      expect(d.wrapper.querySelector("img")?.getAttribute("src")).toBe(
+        "reck-img://local/?p=/late/b.png&v=1-1",
+      );
+    });
+
     it("placeholders transcript images on a station pane instead of fetching", async () => {
       const imageMeta = vi.fn();
       (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };

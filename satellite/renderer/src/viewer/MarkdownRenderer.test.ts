@@ -755,6 +755,40 @@ describe("createMarkdownRenderer — images", () => {
       );
     });
 
+    it("re-reads a function imageBaseDir at every pass, so a late anchor applies", async () => {
+      // The transcript passes a function because its anchor (the project cwd)
+      // can arrive after the overlay opened — the popout fetches it
+      // asynchronously. A value snapshotted at construction would leave that
+      // surface placeholdering paths its own ⌘+click handler resolves fine.
+      const imageMeta = vi.fn(async (p: string) => ({
+        ok: true as const,
+        resolvedPath: p,
+        url: `reck-img://local/?p=${p}&v=1-1`,
+        mime: "image/png",
+        byteSize: 1,
+        mtimeMs: 1,
+      }));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      let base: string | null = null;
+      const r = createMarkdownRenderer({ imageBaseDir: () => base });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+      expect(imageMeta).not.toHaveBeenCalled(); // no anchor yet
+      expect(host.querySelector(".reck-image-missing")).not.toBeNull();
+
+      base = "/late"; // the cwd lands
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+      expect(imageMeta).toHaveBeenCalledWith("/late/a.png");
+      expect(host.querySelector("img")!.getAttribute("src")).toBe(
+        "reck-img://local/?p=/late/a.png&v=1-1",
+      );
+    });
+
     it("does not write into a container that was re-mounted mid-flight", async () => {
       let release!: () => void;
       const gate = new Promise<void>((res) => {

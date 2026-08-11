@@ -54,6 +54,10 @@ export interface TranscriptControllerDeps {
    * Directory that relative image paths in this host's transcripts resolve
    * against (the active project's cwd). Same ownership split as
    * `linkHandlers`: the controller stays free of project/cwd knowledge.
+   *
+   * Called at every enhancement pass rather than once per overlay, so an
+   * anchor that lands after the overlay opened still applies — and so it
+   * cannot drift from the anchor `linkHandlers` resolves at click time.
    */
   imageBaseDir?(host: HostRef): string | null;
   /** Tail poll interval; default 1500ms. */
@@ -138,7 +142,7 @@ export function createTranscriptController(
       host: pane.wrapper,
       sessionId: pane.sessionId,
       onClose: () => close(paneId, "user"),
-      imageBaseDir: deps.imageBaseDir ? deps.imageBaseDir(pane.host) : null,
+      imageBaseDir: () => (deps.imageBaseDir ? deps.imageBaseDir(pane.host) : null),
       imagesUnsupportedHost: pane.host === "station",
       ...(deps.linkHandlers ? deps.linkHandlers(pane.host) : {}),
     });
