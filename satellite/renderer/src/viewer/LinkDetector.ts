@@ -336,3 +336,37 @@ export function detectUrlsInLine(line: string): UrlMatch[] {
   }
   return out;
 }
+
+export interface ImageMarkerMatch {
+  text: string;
+  start: number;
+  end: number;
+  /** The N in `[Image #N]` — session-global, so it names exactly one image. */
+  pasteId: number;
+}
+
+// The placeholder Claude Code prints when you paste a screenshot. The bytes
+// never reach the terminal (and never touch disk); the session JSONL is what
+// holds them, keyed by this number via the message's `imagePasteIds`.
+const IMAGE_MARKER_RE = /\[Image #(\d{1,6})\]/g;
+
+/**
+ * Scan a line for `[Image #N]` placeholders. Ids are session-global and
+ * monotonic, so the number alone identifies one image — no counting of
+ * placeholder occurrences in scrollback, and therefore none of the
+ * desynchronisation that truncation, `/clear`, or a resumed session would
+ * cause.
+ */
+export function detectImageMarkersInLine(line: string): ImageMarkerMatch[] {
+  if (typeof line !== "string" || line.length === 0) return [];
+  const out: ImageMarkerMatch[] = [];
+  IMAGE_MARKER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = IMAGE_MARKER_RE.exec(line)) !== null) {
+    const pasteId = Number(m[1]);
+    // `[Image #0]` is not an id Claude Code ever assigns; treat it as prose.
+    if (!Number.isInteger(pasteId) || pasteId <= 0) continue;
+    out.push({ text: m[0], start: m.index, end: m.index + m[0].length, pasteId });
+  }
+  return out;
+}

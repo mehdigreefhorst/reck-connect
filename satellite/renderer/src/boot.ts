@@ -38,6 +38,9 @@ import { openUsageOverlay } from "./ui/usage-view";
 import { PaneLayout } from "./ui/pane-layout";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
 import { installUrlLinkProvider } from "./viewer/UrlLinkProvider";
+import { installImageMarkerLinkProvider } from "./viewer/ImageMarkerLinkProvider";
+import { showImageOverlay } from "./viewer/ImageOverlay";
+import { openPastedImage } from "./transcript/openPastedImage";
 import { ensurePaneControls } from "./ui/paneControls";
 import { resolveActivatePath } from "./viewer/resolveActivatePath";
 import {
@@ -1402,6 +1405,28 @@ export async function boot(splash?: StartupSplashController) {
       installUrlLinkProvider(pane.getXterm(), {
         onActivateUrl: (url) => {
           window.open(url, "_blank", "noopener");
+        },
+      });
+      // ⌘-click the `[Image #N]` placeholder Claude Code prints for a pasted
+      // screenshot → show it over the pane. The bytes are in the session
+      // JSONL and nowhere else, so this reads them back through the same
+      // transcript endpoint the History overlay tails.
+      installImageMarkerLinkProvider(pane.getXterm(), {
+        onActivateImage: (pasteId) => {
+          void openPastedImage(paneId, pasteId, {
+            // Resolved at click time, never captured: onPaneCreated runs
+            // before the poll has stamped `tab.sessionId`.
+            resolvePane: (id) => {
+              const rec = layout.getTerminalRecordByPane(id);
+              return rec ? { wrapper: rec.wrapper, sessionId: rec.tab.sessionId } : null;
+            },
+            projectId: () => currentProjectId,
+            listSessions: (projectId) => apiForHost(paneHost(paneId) ?? primaryHost).listSessions(projectId),
+            getTranscript: (projectId, sessionId, offset) =>
+              apiForHost(paneHost(paneId) ?? primaryHost).getTranscript(projectId, sessionId, offset),
+            show: (host, o) => showImageOverlay({ host, ...o }),
+            notify: (msg) => showToast(document.body, msg, { kind: "error", durationMs: 6000 }),
+          });
         },
       });
     },

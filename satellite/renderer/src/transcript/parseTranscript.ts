@@ -56,6 +56,33 @@ export type TranscriptBlock =
       pasteId?: number;
     };
 
+export type TranscriptImageBlock = Extract<TranscriptBlock, { kind: "image" }>;
+
+/**
+ * The image blocks one raw JSONL line contributes, paste ids stamped.
+ *
+ * Exported for the `[Image #N]` lookup, which walks a whole transcript
+ * hunting for one id and must NOT accumulate turns while doing it — a long
+ * session holds hundreds of megabytes of base64. Shares every validation
+ * step with the streaming parser rather than re-deriving the envelope shapes.
+ */
+export function imagesFromLine(line: string): TranscriptImageBlock[] {
+  const trimmed = line.trim();
+  if (trimmed === "") return [];
+  let obj: unknown;
+  try {
+    obj = JSON.parse(trimmed);
+  } catch {
+    return [];
+  }
+  const rec = asRecord(obj);
+  const msg = asRecord(rec?.message);
+  if (!rec || !msg) return [];
+  return blocksFromContent(msg.content, rec.imagePasteIds).filter(
+    (b): b is TranscriptImageBlock => b.kind === "image",
+  );
+}
+
 /** Prefix Claude Code writes into the ExitPlanMode tool_result on approval. */
 const PLAN_APPROVED_PREFIX = "User has approved your plan";
 

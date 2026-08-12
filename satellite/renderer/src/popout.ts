@@ -18,6 +18,10 @@ import "@xterm/xterm/css/xterm.css";
 import { TerminalPane } from "@client-core/terminal/terminal-pane";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
 import { installUrlLinkProvider } from "./viewer/UrlLinkProvider";
+import { installImageMarkerLinkProvider } from "./viewer/ImageMarkerLinkProvider";
+import { showImageOverlay } from "./viewer/ImageOverlay";
+import { showToast } from "./viewer/Toast";
+import { openPastedImage } from "./transcript/openPastedImage";
 import { resolveActivatePath } from "./viewer/resolveActivatePath";
 import { createWindowHeader } from "./ui/window-header";
 import { initContentZoom, zoomedTerminalFontSize } from "./ui/content-zoom";
@@ -345,6 +349,24 @@ async function bootPopout(): Promise<void> {
         window.open(href, "_blank", "noopener");
       },
     }),
+  });
+
+  // ⌘-click the `[Image #N]` placeholder for a pasted screenshot → show it
+  // over the pane. Installed here rather than beside the path/URL providers
+  // above because it needs `api` and the pane ids, which are declared below
+  // them. The popout has no tab record, so the session is resolved by pane id.
+  installImageMarkerLinkProvider(term.getXterm(), {
+    onActivateImage: (pasteId) => {
+      void openPastedImage(panePaneId, pasteId, {
+        resolvePane: () => ({ wrapper: body }),
+        projectId: () => paneProjectId,
+        listSessions: (projectId) => api.listSessions(projectId),
+        getTranscript: (projectId, sessionId, offset) =>
+          api.getTranscript(projectId, sessionId, offset),
+        show: (host, o) => showImageOverlay({ host, ...o }),
+        notify: (msg) => showToast(document.body, msg, { kind: "error", durationMs: 6000 }),
+      });
+    },
   });
 
   void (async () => {

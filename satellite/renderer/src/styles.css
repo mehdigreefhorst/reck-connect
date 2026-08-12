@@ -3139,7 +3139,8 @@ html, body, #app {
    conversation. One selector list, never a second copy of the block — the two
    surfaces must zoom identically. */
 .file-viewer-body .reck-lightbox,
-.transcript-md .reck-lightbox {
+.transcript-md .reck-lightbox,
+.reck-image-overlay .reck-lightbox {
   position: fixed;
   inset: 38px 0 0 0; /* below the 38px header */
   z-index: 40;
@@ -3152,12 +3153,25 @@ html, body, #app {
   cursor: zoom-out;
 }
 .file-viewer-body .reck-lightbox img,
-.transcript-md .reck-lightbox img {
+.transcript-md .reck-lightbox img,
+.reck-image-overlay .reck-lightbox img {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   cursor: default;
   box-shadow: 0 8px 32px rgb(0 0 0 / 45%);
+}
+/* A `[Image #N]` placeholder opened from terminal scrollback. Same lightbox
+   markup and styling as a zoomed markdown image (the selector lists above),
+   with two differences that come from opening over a PANE rather than in the
+   file popup. The lightbox is `position: fixed`, so like every other one it
+   covers the window rather than its host element — but there is no 38px
+   popup header to keep reachable here, so it starts at the top edge and a
+   screenshot gets the full window. And it must sit above the pane's control
+   stack and the History overlay, either of which can be up when it opens. */
+.reck-image-overlay .reck-lightbox {
+  inset: 0;
+  z-index: 60;
 }
 /* Rendered images advertise that they can be opened. */
 .file-viewer-body > p > img,
