@@ -163,6 +163,14 @@ export interface StationReadErr {
 const STATION_READ_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
+ * Images get a much larger budget than station TEXT (2 MB above), but a
+ * deliberately smaller one than local images (100 MB). `ssh cat` over a
+ * home link has no compression and no progress indication, so a 100 MB
+ * fetch is a half-minute of apparently-hung popup.
+ */
+export const STATION_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
  * Build SSH argv for a single remote command string. The caller passes
  * the COMPLETE shell-safe command (with single-quoted args) as one
  * string — SSH passes it to the remote shell as-is. Splitting the
@@ -171,7 +179,7 @@ const STATION_READ_MAX_BYTES = 2 * 1024 * 1024;
  * silently broke an earlier draft (the `%s` portion got split off and
  * the remote stat tried to stat the literal `%s` filename).
  */
-function sshArgs(remoteShellCommand: string): string[] {
+export function sshArgs(remoteShellCommand: string): string[] {
   return [
     "-i", SSH_KEY,
     "-o", "IdentitiesOnly=yes",

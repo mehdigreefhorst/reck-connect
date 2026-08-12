@@ -51,6 +51,12 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { protocol } from "electron";
 import { resolveInsideAllowedRoots } from "./file-allowlist";
+import {
+  STATION_IMAGE_MAX_BYTES,
+  isStationPathSafe,
+  sshArgs,
+  statStationFile,
+} from "./station-ssh";
 
 export const RECK_IMG_SCHEME = "reck-img";
 
@@ -317,10 +323,61 @@ export interface ImageResponseDecision {
 
 const DENY_HEADERS: Record<string, string> = { "Cache-Control": "no-store" };
 
+export interface StationImageRequest {
+  status: number;
+  headers: Record<string, string>;
+  /** Set only on 200 — the absolute path ON THE STATION to fetch. */
+  stationPath?: string;
+  /** Set only on 200 — true when the fetched bytes need transcoding. */
+  needsConversion?: boolean;
+}
+
+/**
+ * Gating for a station-hosted image, as far as it can go without I/O.
+ *
+ * `resolveInsideAllowedRoots` is meaningless here — the path lives on the
+ * Pi, not the Mac — so `isStationPathSafe` is the containment gate, exactly
+ * as it is for `file:readStation`. The extension allowlist still applies,
+ * so this cannot be used to slurp arbitrary remote files. The size check
+ * needs a remote stat and therefore happens in the async caller.
+ */
+export function decideStationImageRequest(url: string): StationImageRequest {
+  const parsed = parseReckImgUrl(url);
+  if (!parsed || parsed.host !== "station") {
+    return { status: 400, headers: DENY_HEADERS };
+  }
+  const safety = isStationPathSafe(parsed.absPath);
+  if (!safety.ok) return { status: 403, headers: DENY_HEADERS };
+
+  const directMime = imageMimeFor(parsed.absPath);
+  const convertible = directMime ? null : convertibleMimeFor(parsed.absPath);
+  if (!directMime && !(convertible && canConvertImages())) {
+    return { status: 415, headers: DENY_HEADERS };
+  }
+
+  return {
+    status: 200,
+    stationPath: parsed.absPath,
+    needsConversion: !directMime,
+    headers: {
+      // Transcoded output is always PNG; otherwise the source's own type.
+      // Content-Length is omitted deliberately: `ssh cat` is streamed, and
+      // the remote stat can race the fetch.
+      "Content-Type": directMime ?? "image/png",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; script-src 'none'; sandbox",
+      "Cache-Control": "private, max-age=31536000, immutable",
+    },
+  };
+}
+
 /**
  * The whole security decision, as a pure function of (roots, url) plus
  * synchronous fs metadata. Extracted from the Electron handler so the tests
  * that matter most need no Electron at all.
+ *
+ * LOCAL host only — station URLs go through decideStationImageRequest,
+ * whose containment gate is completely different.
  */
 export function decideImageResponse(
   deps: ImageProtocolDeps,
@@ -403,8 +460,105 @@ export function versionTokenFor(stat: { mtimeMs: number; size: number }): string
  * All of the security lives in `decideImageResponse`; this only turns a
  * decision into a Response, so the tests that matter need no Electron.
  */
+/**
+ * Cache path for a station file fetched to the Mac. Keyed the same way as
+ * the transcode cache, but with a `station:` prefix so a Pi path can never
+ * collide with a local one that happens to share a name.
+ */
+export function stationCachePathFor(
+  stationPath: string,
+  stat: { mtimeMs: number; size: number },
+  ext: string,
+): string {
+  const key = createHash("sha256")
+    .update(`station:${stationPath}\0${Math.trunc(stat.mtimeMs)}\0${stat.size}`)
+    .digest("hex")
+    .slice(0, 32);
+  return path.join(os.tmpdir(), "reck-img-cache", `${key}${ext}`);
+}
+
+export type StationFetchResult =
+  | { ok: true; filePath: string; size: number }
+  | { ok: false; code: "not-found" | "too-large" | "ssh-error" };
+
+/**
+ * Fetch a station image to a local temp file.
+ *
+ * Buffering rather than piping `ssh` straight into the Response is
+ * deliberate: once a 200 has been sent it cannot be retracted, so a
+ * mid-stream ssh failure would surface as a corrupt image. Staging to
+ * disk first means a failed fetch is still a clean 404/500, and it gives
+ * the transcode path a real file to hand `sips`.
+ */
+export async function fetchStationImage(
+  stationPath: string,
+): Promise<StationFetchResult> {
+  const statRes = await statStationFile(stationPath);
+  if (!statRes.ok) {
+    return { ok: false, code: statRes.code === "not-found" ? "not-found" : "ssh-error" };
+  }
+  if (statRes.size > STATION_IMAGE_MAX_BYTES) return { ok: false, code: "too-large" };
+
+  const ext = path.extname(stationPath).toLowerCase() || ".bin";
+  const out = stationCachePathFor(stationPath, statRes, ext);
+  try {
+    const cached = fs.statSync(out);
+    if (cached.size === statRes.size) {
+      return { ok: true, filePath: out, size: cached.size };
+    }
+  } catch {
+    // Cache miss — fetch.
+  }
+
+  await fsp.mkdir(path.dirname(out), { recursive: true });
+  const scratch = `${out}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  // Single-quoted on the remote side; isStationPathSafe already rejected
+  // anything that could escape the quotes.
+  const proc = spawn("ssh", sshArgs(`cat -- '${stationPath}'`), {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const ok = await new Promise<boolean>((resolve) => {
+    const sink = fs.createWriteStream(scratch);
+    let stderr = "";
+    proc.stderr?.on("data", (b: Buffer) => {
+      stderr += b.toString("utf-8");
+    });
+    proc.stdout?.pipe(sink);
+    proc.on("error", () => resolve(false));
+    proc.on("exit", (code) => {
+      sink.end(() => {
+        if (code !== 0) {
+          console.warn("[reck-img] station fetch failed", {
+            stationPath,
+            code,
+            stderr: stderr.trim(),
+          });
+        }
+        resolve(code === 0);
+      });
+    });
+  });
+
+  if (!ok) {
+    await fsp.rm(scratch, { force: true });
+    return { ok: false, code: "ssh-error" };
+  }
+  const size = (await fsp.stat(scratch)).size;
+  try {
+    await fsp.rename(scratch, out);
+  } catch {
+    await fsp.rm(scratch, { force: true });
+  }
+  return { ok: true, filePath: out, size };
+}
+
 export function installReckImgProtocol(deps: ImageProtocolDeps): void {
   protocol.handle(RECK_IMG_SCHEME, async (request) => {
+    const parsedHost = parseReckImgUrl(request.url)?.host;
+    if (parsedHost === "station") {
+      return serveStationImage(request.url);
+    }
     const decision = decideImageResponse(deps, request.url);
     if (decision.status !== 200 || !decision.filePath) {
       console.warn("[reck-img] refused", {
@@ -452,4 +606,52 @@ export function installReckImgProtocol(deps: ImageProtocolDeps): void {
       return new Response(null, { status: 500, headers: DENY_HEADERS });
     }
   });
+}
+
+/**
+ * Serve a station-hosted image: gate, fetch to a local temp file, then
+ * transcode if Chromium can't decode the original.
+ */
+async function serveStationImage(url: string): Promise<Response> {
+  const req = decideStationImageRequest(url);
+  if (req.status !== 200 || !req.stationPath) {
+    console.warn("[reck-img] refused station request", { url, status: req.status });
+    return new Response(null, { status: req.status, headers: DENY_HEADERS });
+  }
+
+  const fetched = await fetchStationImage(req.stationPath);
+  if (!fetched.ok) {
+    const status =
+      fetched.code === "not-found" ? 404 : fetched.code === "too-large" ? 413 : 502;
+    return new Response(null, { status, headers: DENY_HEADERS });
+  }
+
+  let bodyPath = fetched.filePath;
+  const headers = { ...req.headers };
+  if (req.needsConversion) {
+    const conv = await ensureConvertedImage(
+      fetched.filePath,
+      fs.statSync(fetched.filePath),
+    );
+    if (!conv.ok) {
+      return new Response(null, {
+        status: conv.code === "too-large" ? 413 : 415,
+        headers: DENY_HEADERS,
+      });
+    }
+    bodyPath = conv.filePath;
+    headers["Content-Length"] = String(conv.size);
+  } else {
+    headers["Content-Length"] = String(fetched.size);
+  }
+
+  try {
+    const stream = Readable.toWeb(
+      fs.createReadStream(bodyPath),
+    ) as ReadableStream<Uint8Array>;
+    return new Response(stream, { status: 200, headers });
+  } catch (err) {
+    console.error("[reck-img] station read failed", bodyPath, err);
+    return new Response(null, { status: 500, headers: DENY_HEADERS });
+  }
 }

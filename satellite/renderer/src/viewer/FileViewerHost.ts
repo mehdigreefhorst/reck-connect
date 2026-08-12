@@ -1373,7 +1373,13 @@ async function renderImageSurface(
 
   const spinner = mountSpinner(shell.spinnerSlot);
   spinner.show();
-  const meta = await window.reckAPI.files.imageMeta(filePath);
+  // The host matters: a station path outside the sshfs mount (e.g.
+  // /tmp/claude-1000/…) would otherwise be looked up on the Mac, where
+  // /tmp IS an allowed root -- so it passes containment and then fails
+  // stat as "not found" rather than being fetched over SSH.
+  const meta = await window.reckAPI.files.imageMeta(filePath, {
+    host: opts.isStationRemote ? "station" : "local",
+  });
   spinner.hide();
 
   // Unconditionally, and BEFORE branching on success: the normal error
@@ -1386,11 +1392,16 @@ async function renderImageSurface(
     isStationRemote: opts.isStationRemote,
   });
 
-  const openExternally = (): void => {
-    void window.reckAPI.files.openExternally(
-      meta.ok ? meta.resolvedPath : filePath,
-    );
-  };
+  // Only offered for local files. `file:openExternally` gates on the
+  // Mac's allowed roots, so handing it a Pi path just fails -- and a
+  // button that silently does nothing is worse than no button.
+  const openExternally = opts.isStationRemote
+    ? undefined
+    : (): void => {
+        void window.reckAPI.files.openExternally(
+          meta.ok ? meta.resolvedPath : filePath,
+        );
+      };
 
   if (!meta.ok) {
     renderImageError(shell.body, {

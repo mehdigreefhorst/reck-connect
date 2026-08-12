@@ -104,7 +104,10 @@ declare global {
          * `read` for image paths — `read` refuses binary by design. The
          * bytes arrive over the `reck-img://` URL this returns.
          */
-        imageMeta(filePath: string): Promise<
+        imageMeta(
+          filePath: string,
+          opts?: { host?: "local" | "station" },
+        ): Promise<
           | {
               ok: true;
               resolvedPath: string;
