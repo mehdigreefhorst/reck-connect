@@ -42,7 +42,19 @@ export type TranscriptBlock =
   // A question Claude asked via AskUserQuestion.
   | { kind: "question"; questions: TranscriptQuestion[] }
   // The user's approval of a plan (folded from the ExitPlanMode tool_result).
-  | { kind: "plan_approved" };
+  | { kind: "plan_approved" }
+  // An image carried in the transcript as bytes: a screenshot the user
+  // pasted, or one a tool returned. `base64`/`mime` are validated at parse
+  // time because the view builds a `data:` URI out of them. `pasteId` is the
+  // N in the `[Image #N]` marker Claude Code writes into the message text.
+  | {
+      kind: "image";
+      mime: string;
+      base64: string;
+      width?: number;
+      height?: number;
+      pasteId?: number;
+    };
 
 /** Prefix Claude Code writes into the ExitPlanMode tool_result on approval. */
 const PLAN_APPROVED_PREFIX = "User has approved your plan";
@@ -102,17 +114,19 @@ export class TranscriptParser {
     const role = m.role;
     if (role !== "user" && role !== "assistant") return null;
 
-    const blocks = blocksFromContent(m.content);
+    const blocks = blocksFromContent(m.content, rec.imagePasteIds);
     if (blocks.length === 0) return null;
     const timestamp = typeof rec.timestamp === "string" ? rec.timestamp : undefined;
 
     // A role:"user" line whose content is only tool output — tool_result(s),
     // or a plan approval derived from one — is NOT the user speaking. Fold it
     // into the open assistant turn instead of starting a user turn.
-    const isToolResult =
-      role === "user" &&
-      blocks.length > 0 &&
-      blocks.every((b) => b.kind === "tool_result" || b.kind === "plan_approved");
+    //
+    // Decided from the RAW content types, not from the derived blocks: a
+    // tool_result carrying a screenshot derives an `image` block alongside its
+    // text, and a paste with no caption derives nothing but `image` blocks —
+    // so no predicate over the derived kinds can tell the two apart.
+    const isToolResult = role === "user" && isToolResultContent(m.content);
 
     if (role === "user" && !isToolResult) {
       // A user message's string content is often not the human speaking: the
@@ -150,7 +164,19 @@ export class TranscriptParser {
   }
 }
 
-function blocksFromContent(content: unknown): TranscriptBlock[] {
+/** True when every item of an array content is a `tool_result` — i.e. the
+ *  role:"user" line is a tool-output carrier, not the human speaking. */
+function isToolResultContent(content: unknown): boolean {
+  if (!Array.isArray(content) || content.length === 0) return false;
+  return content.every(
+    (item) =>
+      typeof item === "object" &&
+      item !== null &&
+      (item as Record<string, unknown>).type === "tool_result",
+  );
+}
+
+function blocksFromContent(content: unknown, pasteIds?: unknown): TranscriptBlock[] {
   if (typeof content === "string") {
     return content === "" ? [] : [{ kind: "text", text: content }];
   }
@@ -188,6 +214,11 @@ function blocksFromContent(content: unknown): TranscriptBlock[] {
         out.push({ kind: "tool_use", name, input: stringifyInput(b.input) });
         break;
       }
+      case "image": {
+        const img = imageBlock(b);
+        if (img) out.push(img);
+        break;
+      }
       case "tool_result": {
         const text = toolResultText(b.content);
         // The plan-approval result is a slim "✓ Plan approved" marker, not a
@@ -196,12 +227,160 @@ function blocksFromContent(content: unknown): TranscriptBlock[] {
           out.push({ kind: "plan_approved" });
           break;
         }
-        out.push({ kind: "tool_result", text });
+        if (text !== "") out.push({ kind: "tool_result", text });
+        // A screenshot a tool returned (Playwright, computer-use, …) rides in
+        // the result's content array. It renders inline rather than inside the
+        // collapsed <pre> tool group — a picture in a <pre> is unreadable.
+        for (const img of toolResultImages(b.content)) out.push(img);
         break;
       }
       default:
         break; // unknown block type — skip, stay tolerant
     }
+  }
+  return inlinePasteMarkers(withPasteIds(out, pasteIds));
+}
+
+/** `media_type` / `file.type` values we will build a `data:` URI from. The
+ *  value comes from a file we do not control and lands inside a URL, so the
+ *  shape is checked rather than trusted. */
+const IMAGE_MIME_RE = /^image\/[a-z0-9][a-z0-9.+-]*$/i;
+/** The base64 alphabet, and nothing else — no scheme breaks, no quotes. */
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined;
+}
+
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
+/** A positive, finite integer, or undefined. Dimensions are layout hints; a
+ *  garbage value must not become a `width` attribute. */
+function asPositiveInt(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : undefined;
+}
+
+/**
+ * An `{"type":"image"}` content block → an image block, or null when the
+ * payload is missing or malformed. Two envelopes occur in real transcripts
+ * and both are handled: `source: {media_type, data}` (what the API sees) and
+ * `file: {type, base64, dimensions}` (what the tool-result writer emits).
+ */
+function imageBlock(item: Record<string, unknown>): TranscriptBlock | null {
+  const source = asRecord(item.source);
+  const file = asRecord(item.file);
+  const mime = asString(source?.media_type) ?? asString(file?.type) ?? "";
+  if (!IMAGE_MIME_RE.test(mime)) return null;
+  // JSONL writers wrap long payloads; strip whitespace before validating so a
+  // legitimately wrapped image is not discarded as malformed.
+  const base64 = (asString(source?.data) ?? asString(file?.base64) ?? "").replace(/\s+/g, "");
+  if (base64 === "" || !BASE64_RE.test(base64)) return null;
+  const dims = asRecord(file?.dimensions);
+  const width = asPositiveInt(dims?.displayWidth ?? dims?.originalWidth);
+  const height = asPositiveInt(dims?.displayHeight ?? dims?.originalHeight);
+  return {
+    kind: "image",
+    mime: mime.toLowerCase(),
+    base64,
+    ...(width !== undefined ? { width } : {}),
+    ...(height !== undefined ? { height } : {}),
+  };
+}
+
+/** Image blocks nested inside a tool_result's content array. */
+function toolResultImages(content: unknown): TranscriptBlock[] {
+  if (!Array.isArray(content)) return [];
+  const out: TranscriptBlock[] = [];
+  for (const part of content) {
+    const p = asRecord(part);
+    if (!p || p.type !== "image") continue;
+    const img = imageBlock(p);
+    if (img) out.push(img);
+  }
+  return out;
+}
+
+/**
+ * Stamp the message's `imagePasteIds` onto its image blocks. Claude Code
+ * writes one id per pasted image, in content order — so the i-th image block
+ * is the i-th id. Ids are session-global, which is what makes an `[Image #N]`
+ * marker resolvable to exactly one image.
+ */
+function withPasteIds(blocks: TranscriptBlock[], pasteIds: unknown): TranscriptBlock[] {
+  if (!Array.isArray(pasteIds) || pasteIds.length === 0) return blocks;
+  let seen = 0;
+  return blocks.map((b) => {
+    if (b.kind !== "image") return b;
+    const id = asPositiveInt(pasteIds[seen]);
+    seen += 1;
+    return id === undefined ? b : { ...b, pasteId: id };
+  });
+}
+
+/** The `[Image #N]` marker Claude Code writes into the message text. */
+const PASTE_MARKER_RE = /\[Image #(\d+)\]/g;
+
+/**
+ * Substitute each `[Image #N]` marker with the image it names, splitting the
+ * text around it. The bytes and the marker are both in the transcript, so
+ * rendering the text verbatim next to the images shows the marker as noise —
+ * and puts the images in content order rather than the order the sentence
+ * mentions them. Images no marker claims keep their original position.
+ */
+function inlinePasteMarkers(blocks: TranscriptBlock[]): TranscriptBlock[] {
+  const byId = new Map<number, TranscriptBlock>();
+  for (const b of blocks) {
+    if (b.kind === "image" && b.pasteId !== undefined && !byId.has(b.pasteId)) {
+      byId.set(b.pasteId, b);
+    }
+  }
+  if (byId.size === 0) return blocks;
+
+  // Which ids the text actually claims — computed first, so an image block
+  // that precedes its marker in the content array is still hoisted, not
+  // emitted twice.
+  const claimed = new Set<number>();
+  for (const b of blocks) {
+    if (b.kind !== "text") continue;
+    for (const m of b.text.matchAll(PASTE_MARKER_RE)) {
+      const id = Number(m[1]);
+      if (byId.has(id)) claimed.add(id);
+    }
+  }
+  if (claimed.size === 0) return blocks;
+
+  const placed = new Set<number>();
+  const out: TranscriptBlock[] = [];
+  for (const b of blocks) {
+    if (b.kind === "image") {
+      if (b.pasteId === undefined || !claimed.has(b.pasteId)) out.push(b);
+      continue; // a claimed image is emitted at its marker instead
+    }
+    if (b.kind !== "text") {
+      out.push(b);
+      continue;
+    }
+    let cursor = 0;
+    const parts: TranscriptBlock[] = [];
+    for (const m of b.text.matchAll(PASTE_MARKER_RE)) {
+      const id = Number(m[1]);
+      const img = byId.get(id);
+      if (!img || placed.has(id)) continue; // repeated marker: leave it as text
+      placed.add(id);
+      const before = b.text.slice(cursor, m.index).trim();
+      if (before !== "") parts.push({ kind: "text", text: before });
+      parts.push(img);
+      cursor = (m.index ?? 0) + m[0].length;
+    }
+    if (parts.length === 0) {
+      out.push(b);
+      continue;
+    }
+    const rest = b.text.slice(cursor).trim();
+    if (rest !== "") parts.push({ kind: "text", text: rest });
+    out.push(...parts);
   }
   return out;
 }

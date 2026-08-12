@@ -4592,6 +4592,23 @@ textarea.file-viewer-merge-pane {
   font-family: var(--font-mono);
   font-size: 0.85em;
 }
+/* An image carried in the transcript as bytes — a pasted screenshot, or one a
+   tool returned. Its container also carries `.transcript-md`, so the markdown
+   image clamp and the lightbox rules above already apply; this block only adds
+   the height cap, which stops a full-page screenshot from burying the
+   conversation. The lightbox still opens it whole.
+
+   `width: auto` is load-bearing: the <img> carries width/height ATTRIBUTES so
+   the turn does not reflow when the image decodes, and without this the
+   attribute width would fight `max-height` and squash the picture. */
+.transcript-image {
+  margin: 6px 0;
+}
+.transcript-image img {
+  width: auto;
+  max-height: 420px;
+  border-radius: var(--radius);
+}
 /* One collapsed group per Claude turn, holding all its thinking + tool
    calls + results. Text renders inline above it; this stays folded. */
 details.transcript-tools {

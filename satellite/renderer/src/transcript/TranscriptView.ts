@@ -229,6 +229,37 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     return outer;
   }
 
+  // An image carried in the transcript as bytes — a pasted screenshot, or one
+  // a tool returned. Rendered THROUGH the markdown renderer rather than as a
+  // hand-built <img>: that routes the data: URI past DOMPurify, and registers
+  // the container with renderedDom, which is what attaches the click-to-zoom
+  // lightbox and sweeps it when the element is dropped. A hand-built <img>
+  // would need its own lightbox lifecycle, and leak a document keydown
+  // listener per image.
+  //
+  // Appended before mounting, like the other markdown blocks — see
+  // appendTextBlock.
+  function appendImageBlock(
+    parent: HTMLElement,
+    block: Extract<TranscriptBlock, { kind: "image" }>,
+  ): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "transcript-md transcript-image";
+    parent.appendChild(el);
+    const alt = block.pasteId !== undefined ? `Pasted image #${block.pasteId}` : "Image";
+    md.mount(el, md.render(`![${alt}](data:${block.mime};base64,${block.base64})`));
+    // Intrinsic size up front so the turn does not reflow when the image
+    // decodes. Attributes, not CSS: they give the browser an aspect ratio
+    // while `.transcript-image img { width: auto }` keeps the clamp in charge
+    // of the used size.
+    const img = el.querySelector("img");
+    if (img && block.width !== undefined && block.height !== undefined) {
+      img.setAttribute("width", String(block.width));
+      img.setAttribute("height", String(block.height));
+    }
+    return el;
+  }
+
   // A slash command (/clear, /model, …) the user ran — a slim chip, not a
   // prose bubble. Distinct from tool activity, so it renders inline.
   function commandPillEl(name: string): HTMLElement {
@@ -426,6 +457,8 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
         els[i] = el.appendChild(commandPillEl(block.name));
       } else if (block.kind === "plan") {
         els[i] = appendPlanCard(el, block);
+      } else if (block.kind === "image") {
+        els[i] = appendImageBlock(el, block);
       } else if (block.kind === "question") {
         els[i] = el.appendChild(questionCardEl(block));
       } else if (block.kind === "plan_approved") {

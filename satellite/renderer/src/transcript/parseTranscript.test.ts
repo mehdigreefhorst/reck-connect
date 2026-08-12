@@ -282,3 +282,96 @@ describe("TranscriptParser — plans, questions, approvals", () => {
     expect(claude.blocks.some((b) => b.kind === "tool_result")).toBe(false);
   });
 });
+
+// --- Images -----------------------------------------------------------
+// Both envelopes below are compacted from real lines. `PNG` stands in for the
+// ~50KB base64 payload Claude Code actually writes (it downscales pastes to
+// 38-58KB, so nothing here needs lazy-loading or a size gate).
+const PNG = "iVBORw0KGgoAAAANSUhEUg";
+
+/** A true paste: caption text + the bytes, with the session-global ids that
+ *  map each `[Image #N]` marker to one of them. */
+const userPaste = (text: string, ids: number[]) =>
+  `{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"text","text":${JSON.stringify(
+    text,
+  )}}${ids
+    .map(
+      (_, i) =>
+        `,{"type":"image","source":{"type":"base64","media_type":"image/png","data":"${PNG}${i}"}}`,
+    )
+    .join("")}]},"uuid":"up","timestamp":"2026-07-17T10:22:15.536Z","imagePasteIds":[${ids.join(",")}]}\n`;
+
+/** A screenshot a tool returned — nested one level deeper, inside the
+ *  tool_result's own content array. */
+const userToolResultImage = () =>
+  `{"parentUuid":"a2","isSidechain":false,"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":[{"type":"image","file":{"type":"image/png","base64":"${PNG}","originalSize":54473,"dimensions":{"originalWidth":1360,"originalHeight":1760,"displayWidth":680,"displayHeight":880}}}]}]},"uuid":"utr"}\n`;
+
+describe("TranscriptParser — images", () => {
+  it("parses a pasted image into an image block instead of dropping it", () => {
+    const p = new TranscriptParser();
+    p.push(userPaste("look at this", [1]));
+    expect(p.turns[0].blocks).toEqual([
+      { kind: "text", text: "look at this" },
+      { kind: "image", mime: "image/png", base64: `${PNG}0`, pasteId: 1 },
+    ]);
+  });
+
+  it("substitutes each [Image #N] marker with the image it names, in text order", () => {
+    const p = new TranscriptParser();
+    // Content order is [text, img(id 1), img(id 2)] but the sentence names
+    // them the other way round — the markers, not the array, set the order.
+    p.push(userPaste("see [Image #2] & [Image #1] please", [1, 2]));
+    expect(p.turns[0].blocks).toEqual([
+      { kind: "text", text: "see" },
+      { kind: "image", mime: "image/png", base64: `${PNG}1`, pasteId: 2 },
+      { kind: "text", text: "&" },
+      { kind: "image", mime: "image/png", base64: `${PNG}0`, pasteId: 1 },
+      { kind: "text", text: "please" },
+    ]);
+  });
+
+  it("leaves an unclaimed image in place and a marker with no image as text", () => {
+    const p = new TranscriptParser();
+    // Two images pasted, only one named. Marker #7 belongs to an earlier
+    // message in the session and must not eat an image from this one.
+    p.push(userPaste("just [Image #2] and [Image #7]", [1, 2]));
+    expect(p.turns[0].blocks).toEqual([
+      { kind: "text", text: "just" },
+      { kind: "image", mime: "image/png", base64: `${PNG}1`, pasteId: 2 },
+      { kind: "text", text: "and [Image #7]" },
+      { kind: "image", mime: "image/png", base64: `${PNG}0`, pasteId: 1 },
+    ]);
+  });
+
+  it("renders a tool-result screenshot inline, with its display dimensions", () => {
+    const p = new TranscriptParser();
+    p.push(userLine("q") + assistantToolUse("Screenshot") + userToolResultImage());
+    // Still ONE assistant turn — the image must not turn the tool-result
+    // carrier line into a phantom "you" turn.
+    expect(p.turns.map((t) => t.role)).toEqual(["user", "assistant"]);
+    expect(p.turns[1].blocks).toContainEqual({
+      kind: "image",
+      mime: "image/png",
+      base64: PNG,
+      width: 680,
+      height: 880,
+    });
+  });
+
+  it("drops malformed image payloads without throwing", () => {
+    const bad = [
+      `{"type":"image"}`, // no payload at all
+      `{"type":"image","source":{"type":"base64","media_type":"image/png"}}`, // no data
+      `{"type":"image","source":{"type":"base64","media_type":"text/html","data":"${PNG}"}}`, // not an image
+      // A media_type that would break out of the data: URI it is spliced into.
+      `{"type":"image","source":{"type":"base64","media_type":"image/png\\" onerror=\\"x","data":"${PNG}"}}`,
+      // A payload carrying characters the base64 alphabet does not contain.
+      `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"a)b<c"}}`,
+    ];
+    const p = new TranscriptParser();
+    p.push(
+      `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"},${bad.join(",")}]},"uuid":"ub"}\n`,
+    );
+    expect(p.turns[0].blocks).toEqual([{ kind: "text", text: "hi" }]);
+  });
+});

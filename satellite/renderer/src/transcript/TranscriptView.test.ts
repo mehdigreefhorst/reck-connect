@@ -379,4 +379,56 @@ describe("TranscriptView", () => {
     expect(onLinkActivate).not.toHaveBeenCalled();
     v.dispose();
   });
+
+  // --- Images ---------------------------------------------------------
+  const PNG = "iVBORw0KGgoAAAANSUhEUg";
+
+  it("paints an image block as an <img> carrying the bytes", () => {
+    view.render(
+      [
+        {
+          role: "user",
+          blocks: [
+            { kind: "text", text: "see" },
+            { kind: "image", mime: "image/png", base64: PNG, width: 680, height: 880, pasteId: 3 },
+          ],
+        },
+      ],
+      0,
+    );
+    const img = view.body.querySelector("img") as HTMLImageElement;
+    expect(img).not.toBeNull();
+    expect(img.getAttribute("src")).toBe(`data:image/png;base64,${PNG}`);
+    // Intrinsic size up front, so the turn does not reflow on decode.
+    expect(img.getAttribute("width")).toBe("680");
+    expect(img.getAttribute("height")).toBe("880");
+    expect(img.getAttribute("alt")).toBe("Pasted image #3");
+  });
+
+  it("mounts the image in a lightbox-capable container so a click zooms it", () => {
+    view.render(
+      [{ role: "user", blocks: [{ kind: "image", mime: "image/png", base64: PNG }] }],
+      0,
+    );
+    const img = view.body.querySelector("img") as HTMLImageElement;
+    // The container carries `.transcript-md`, which is what the lightbox CSS
+    // and renderedDom's per-container attachment both key off. Without it the
+    // overlay renders unpositioned and inline.
+    const container = img.closest(".transcript-md");
+    expect(container).not.toBeNull();
+    expect(container?.classList.contains("transcript-image")).toBe(true);
+    img.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    const overlay = container?.querySelector(".reck-lightbox img") as HTMLImageElement;
+    expect(overlay?.getAttribute("src")).toBe(`data:image/png;base64,${PNG}`);
+  });
+
+  it("keeps the image element across a re-render that only appends", () => {
+    const image = { kind: "image", mime: "image/png", base64: PNG } as const;
+    view.render([{ role: "assistant", blocks: [image] }], 0);
+    const first = view.body.querySelector("img");
+    view.render([{ role: "assistant", blocks: [image, { kind: "text", text: "after" }] }], 0);
+    // Re-decoding a 50KB data: URI on every appended JSONL line would make the
+    // live tail flicker; the prefix diff must reuse the mounted element.
+    expect(view.body.querySelector("img")).toBe(first);
+  });
 });
