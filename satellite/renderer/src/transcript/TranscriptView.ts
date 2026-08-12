@@ -113,6 +113,22 @@ function isLongText(text: string): boolean {
   return text.length > 600 || text.split("\n").length > 12;
 }
 
+/**
+ * Identity of a block for the render diff. `JSON.stringify` for everything
+ * except images: a real transcript carries base64 payloads up to ~450KB, and
+ * the tail re-keys every block of a turn on every appended JSONL line — so
+ * stringifying them would allocate megabytes per keystroke of streamed output.
+ *
+ * Length plus both ends of the payload, not just the head: every PNG starts
+ * with the same ~30 base64 characters, so a head-only key would collide across
+ * unrelated screenshots and the diff would reuse the wrong element.
+ */
+function blockKey(b: TranscriptBlock): string {
+  if (b.kind !== "image") return JSON.stringify(b);
+  const { base64: d } = b;
+  return `image:${b.pasteId ?? ""}:${b.mime}:${b.width ?? ""}x${b.height ?? ""}:${d.length}:${d.slice(0, 24)}:${d.slice(-24)}`;
+}
+
 export function createTranscriptView(opts: TranscriptViewOptions): TranscriptViewHandle {
   // `reck-native-scroll` opts the overlay out of the pane wrapper's
   // TUI wheel→PgUp/PgDn remap (OverlayScrollbar capture listener) so
@@ -422,7 +438,7 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     // previous list. Reusing those elements is what keeps the markdown
     // enhancement passes — mermaid re-importing and re-running, images
     // re-issuing their IPC — off the streaming path.
-    const keys = turn.blocks.map((b) => JSON.stringify(b));
+    const keys = turn.blocks.map(blockKey);
     const prev = paints[index];
     let keep = 0;
     if (prev) {

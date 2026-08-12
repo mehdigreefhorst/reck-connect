@@ -431,4 +431,18 @@ describe("TranscriptView", () => {
     // live tail flicker; the prefix diff must reuse the mounted element.
     expect(view.body.querySelector("img")).toBe(first);
   });
+
+  it("repaints when an image is replaced by a different one of the same length", () => {
+    // Every PNG opens with the same base64 header, so a diff key built from
+    // the payload's head alone would call these two the same block and leave
+    // the first image on screen.
+    const head = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+    const a = { kind: "image", mime: "image/png", base64: `${head}AAAAAAAA` } as const;
+    const b = { kind: "image", mime: "image/png", base64: `${head}ZZZZZZZZ` } as const;
+    view.render([{ role: "assistant", blocks: [a] }], 0);
+    view.render([{ role: "assistant", blocks: [b] }], 0);
+    const imgs = view.body.querySelectorAll("img");
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].getAttribute("src")).toBe(`data:image/png;base64,${b.base64}`);
+  });
 });
