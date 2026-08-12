@@ -19,10 +19,17 @@ import hljs from "highlight.js/lib/common";
 import DOMPurify, { type Config as DOMPurifyConfig } from "dompurify";
 import { createRenderedDom, isInternalLinkHref } from "./renderedDom";
 import {
+  classifyMarkdownImageSrc,
+  RECK_IMAGE_SRC_ATTR,
+  RECK_IMAGE_UNSUPPORTED_ATTR,
+} from "./markdownImageSrc";
+import {
   enhanceMath,
   enhanceMermaid,
   type MermaidTheme,
 } from "./markdownEnhancers";
+import { enhanceLocalImages } from "./localImages";
+import { wikiImagePlugin } from "./wikiImage";
 
 export interface MarkdownRendererOptions {
   /**
@@ -44,6 +51,27 @@ export interface MarkdownRendererOptions {
    * no-op (still no in-popup navigation).
    */
   onExternalActivate?: (href: string, ev: MouseEvent) => void;
+  /**
+   * Directory that relative image paths in the markdown resolve against.
+   *
+   * The renderer is handed only the markdown *text*, so it cannot know where
+   * that text came from — the host must say. The file viewer passes the open
+   * file's own directory; the transcript passes the session's project cwd.
+   * Omit it and local images render as an explanatory placeholder instead of
+   * silently vanishing.
+   *
+   * A function is re-read at every enhancement pass, for surfaces whose anchor
+   * is not known when the renderer is built: the popout resolves its project
+   * cwd asynchronously, and a snapshot taken before that lands would leave the
+   * overlay placeholdering images whose paths ⌘+click resolves happily.
+   */
+  imageBaseDir?: string | null | (() => string | null);
+  /**
+   * Set when the markdown came from a host this process cannot serve files
+   * for (today: station/SSH). Local images become placeholders and no
+   * `imageMeta` IPC is attempted.
+   */
+  imagesUnsupportedHost?: boolean;
 }
 
 export interface MarkdownRenderer {
@@ -56,7 +84,8 @@ export interface MarkdownRenderer {
   mount(container: HTMLElement, html: string): void;
   /**
    * Resolves once the post-mount enhancement passes (mermaid diagrams, KaTeX
-   * math) kicked off by the most recent `mount()` have settled.
+   * math, local images) still in flight have settled — every container this
+   * renderer has mounted into, not only the most recent one.
    *
    * `mount()` stays synchronous — callers that only need the prose on screen
    * are unaffected — but anything that depends on the *final* layout must
@@ -117,6 +146,10 @@ function createMarkdownIt(): MarkdownIt {
         .replace(/\s+/g, "-"),
   });
   md.use(taskLists, { enabled: false, label: true, labelAfter: true });
+  // Obsidian-style `![[a.png]]` embeds. Emits a plain `image` token, so it
+  // inherits the image renderer rule below, DOMPurify, and the local-image
+  // enhancer without a second code path.
+  md.use(wikiImagePlugin);
 
   // Override the default link renderer to add `class="reck-internal-link"`
   // for hrefs we treat as file references. We don't strip dangerous schemes
@@ -146,6 +179,9 @@ function createMarkdownIt(): MarkdownIt {
   // MarkView reaches for the observer because it wants custom fade-in
   // transitions, which we don't — and native works everywhere Electron does.
   // Same wrapper idiom as `link_open` above.
+  //
+  // Also routes local paths out of `src` and into RECK_IMAGE_SRC_ATTR — see
+  // that constant's docstring for why.
   const defaultImage =
     md.renderer.rules.image ??
     ((tokens, idx, options, _env, self) =>
@@ -154,6 +190,23 @@ function createMarkdownIt(): MarkdownIt {
     const token = tokens[idx];
     token.attrSet("loading", "lazy");
     token.attrSet("decoding", "async");
+
+    const classified = classifyMarkdownImageSrc(token.attrGet("src") ?? "");
+    if (classified.kind === "remote") {
+      // Write the classifier's src back, don't just leave the authored one:
+      // a protocol-relative `//host/a.png` is normalized to `https:` there,
+      // and skipping this would silently discard that.
+      token.attrSet("src", classified.src);
+    } else {
+      // New array rather than an in-place splice: markdown-it has no
+      // attrDelete, and tokens are shared with the anchor plugin's walk.
+      token.attrs = (token.attrs ?? []).filter(([name]) => name !== "src");
+      if (classified.kind === "local") {
+        token.attrSet(RECK_IMAGE_SRC_ATTR, classified.rawPath);
+      } else {
+        token.attrSet(RECK_IMAGE_UNSUPPORTED_ATTR, "1");
+      }
+    }
     return defaultImage(tokens, idx, options, env, self);
   };
 
@@ -191,6 +244,22 @@ const PURIFY_CONFIG: DOMPurifyConfig = {
     "disabled",
     "loading",
     "decoding",
+    // Parked local-image path + the unsupported-scheme marker, both set by
+    // the image rule above. What actually keeps them is DOMPurify's
+    // `ALLOW_DATA_ATTR` default (true), which short-circuits on the `data-*`
+    // branch before any URI test runs; these two entries are belt-and-braces.
+    //
+    // Do NOT set `ALLOW_DATA_ATTR: false` to make them "load-bearing". With
+    // it off, `data-reck-src` falls through to `IS_ALLOWED_URI`, which
+    // rejects any value carrying an early colon — so a Windows path like
+    // `data-reck-src="C:/tmp/a.png"` would be silently stripped and the
+    // parked path would vanish.
+    RECK_IMAGE_SRC_ATTR,
+    RECK_IMAGE_UNSUPPORTED_ATTR,
+    // Wikilink size hints (`![[a.png|300]]`). Attributes, never `style`:
+    // a style attribute here would be a CSS-injection surface.
+    "width",
+    "height",
   ],
   ALLOWED_TAGS: [
     "a",
@@ -256,18 +325,35 @@ export function createMarkdownRenderer(
     onExternalActivate: opts.onExternalActivate,
   });
 
-  // Every mount() (and dispose()) bumps the generation. The enhancement
-  // passes capture the value at kick-off and re-check it after their lazy
-  // import resolves, so a popup that re-rendered — or closed — while a
-  // several-hundred-KB chunk was in flight never gets written into.
-  let generation = 0;
-  let enhancing: Promise<void> = Promise.resolve();
+  // Every mount() bumps the generation OF ITS CONTAINER, and dispose() bumps
+  // a renderer-wide epoch. The enhancement passes capture both at kick-off
+  // and re-check them after their lazy import resolves, so a container that
+  // re-rendered — or a renderer that closed — while a several-hundred-KB
+  // chunk was in flight never gets written into.
+  //
+  // Per container rather than one counter for the whole renderer: the
+  // transcript overlay mounts a single renderer into many containers (one
+  // markdown block per assistant turn), and a shared counter would let each
+  // mount cancel the pass of every block mounted before it — only the last
+  // block's images would ever paint.
+  let epoch = 0;
+  const generations = new WeakMap<HTMLElement, number>();
+  // Passes still in flight. whenEnhanced() awaits all of them, not just the
+  // newest mount's, and each drops out as it settles so the set cannot grow
+  // with a long-lived renderer.
+  const pending = new Set<Promise<void>>();
 
-  async function enhance(container: HTMLElement, mine: number): Promise<void> {
+  async function enhance(
+    container: HTMLElement,
+    mine: number,
+    myEpoch: number,
+  ): Promise<void> {
     const stillCurrent = (): boolean =>
-      generation === mine && container.isConnected;
+      epoch === myEpoch &&
+      generations.get(container) === mine &&
+      container.isConnected;
     if (!stillCurrent()) return;
-    // Sequential, not concurrent: both passes mutate the same subtree, and
+    // Sequential, not concurrent: every pass mutates the same subtree, and
     // running them one after the other keeps the post-enhancement layout
     // deterministic for whoever awaits whenEnhanced().
     await enhanceMermaid(container, {
@@ -275,6 +361,17 @@ export function createMarkdownRenderer(
       stillCurrent,
     });
     await enhanceMath(container, { stillCurrent });
+    // Last: the other two passes can inject or unwrap nodes, and this one
+    // should see the final tree. It is also the only pass that does IPC,
+    // so leaving it last keeps the cheap synchronous work off its latency.
+    await enhanceLocalImages(container, {
+      baseDir:
+        typeof opts.imageBaseDir === "function"
+          ? opts.imageBaseDir()
+          : opts.imageBaseDir ?? null,
+      unsupportedHost: opts.imagesUnsupportedHost === true,
+      stillCurrent,
+    });
   }
 
   return {
@@ -287,14 +384,31 @@ export function createMarkdownRenderer(
     },
     mount(container: HTMLElement, html: string): void {
       dom.mount(container, html);
-      const mine = ++generation;
-      enhancing = enhance(container, mine);
+      const mine = (generations.get(container) ?? 0) + 1;
+      generations.set(container, mine);
+      // The tracked promise is deliberately made un-rejectable. `enhance`
+      // catches everything today, but a pass sitting in `pending` is
+      // unawaited until someone calls whenEnhanced() — and the transcript
+      // never does — so a future rejecting enhancer would surface as an
+      // unhandled rejection rather than a degraded render.
+      const pass: Promise<void> = enhance(container, mine, epoch)
+        .catch((err: unknown) => {
+          console.warn("[markdown] enhancement pass failed", err);
+        })
+        .finally(() => {
+          pending.delete(pass);
+        });
+      pending.add(pass);
     },
     whenEnhanced(): Promise<void> {
-      return enhancing;
+      // allSettled, not all: `all` is fail-fast, so one rejecting pass would
+      // reject the aggregate and break this method's documented "never
+      // rejects" contract. `enhance` catches everything today, but that is a
+      // property of three other modules — this makes it structural.
+      return Promise.allSettled([...pending]).then(() => undefined);
     },
     dispose(): void {
-      generation++;
+      epoch++;
       dom.dispose();
     },
   };

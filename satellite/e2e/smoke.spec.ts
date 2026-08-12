@@ -28,11 +28,20 @@ test("first launch shows preferences; station fields render", async ({ page }) =
       onMenuPreferences: () => {},
     };
   });
-  await page.goto("http://localhost:5173/");
+  // Relative, so `use.baseURL` (playwright.config.ts) decides the port. A
+  // hardcoded `http://localhost:5173/` made this the one spec RECK_E2E_PORT
+  // could not move: the dev server came up on the requested port and this
+  // navigation went to whatever still owned 5173 — nothing, so
+  // ERR_CONNECTION_REFUSED. Same fix e2e/usage-view.spec.ts already carries.
+  await page.goto("/");
 
   await expect(page.locator(".settings-card")).toBeVisible();
   await expect(page.locator("#s-station-enabled")).toBeVisible();
-  await expect(page.locator("#s-local-enabled")).toBeVisible();
+  // The local host has no enable toggle — "Local is always available" (see
+  // settings-view.ts), so `#s-local-enabled` has never existed in this repo.
+  // Assert on the control the local section actually renders instead; the
+  // point of the line is that BOTH host sections come up on first launch.
+  await expect(page.locator("#s-local-port")).toBeVisible();
 
   // Enabling station exposes URL + token inputs (rendered
   // unconditionally under the toggle in the preferences view).

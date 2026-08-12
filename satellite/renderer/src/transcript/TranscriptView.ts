@@ -40,6 +40,22 @@ export interface TranscriptViewOptions {
   onLinkActivate?(href: string, ev: MouseEvent): void;
   /** ⌘+click on an external link (http/mailto/…). */
   onExternalActivate?(href: string, ev: MouseEvent): void;
+  /**
+   * Directory relative image paths in assistant markdown resolve against —
+   * the session's project cwd. Supplied by the owner (boot/popout), which is
+   * the layer that knows about projects; returning `null` renders local
+   * images as placeholders rather than guessing an anchor.
+   *
+   * A function, not a value, and read at every enhancement pass: the owner's
+   * ⌘+click handlers resolve their anchor at click time, and an overlay
+   * opened before the project cwd lands (the popout fetches it
+   * asynchronously) would otherwise stay anchorless for its whole lifetime —
+   * placeholdering the very paths ⌘+click opens fine.
+   */
+  imageBaseDir?(): string | null;
+  /** True for a station-hosted pane: those files are served over SSH and
+   *  `reck-img://` only implements the `local` host today. */
+  imagesUnsupportedHost?: boolean;
 }
 
 /** Visible overlay state. The overlay must never look silently dead:
@@ -64,6 +80,21 @@ export interface TranscriptViewHandle {
    *  focused surface — same MarkdownSurfaceAdapter the file viewer speaks. */
   getSpeakSurface(): SpeakSurfaceAdapter;
   dispose(): void;
+}
+
+/**
+ * What a turn element currently shows, so the next render of that turn can
+ * diff against it instead of rebuilding. Blocks are compared by their
+ * serialized form — the parser hands back plain data, and a turn's block list
+ * only ever grows.
+ */
+interface TurnPaint {
+  /** Serialized blocks, index-aligned with `els`. */
+  keys: string[];
+  /** Element painted for each block; null for ones folded into `tools`. */
+  els: (HTMLElement | null)[];
+  /** The collapsed tool group, when the turn has tool activity. */
+  tools: HTMLElement | null;
 }
 
 /** How close to the bottom (px) still counts as "following the tail". */
@@ -119,7 +150,10 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   root.appendChild(body);
   opts.host.appendChild(root);
 
-  const md: MarkdownRenderer = createMarkdownRenderer();
+  const md: MarkdownRenderer = createMarkdownRenderer({
+    imageBaseDir: () => opts.imageBaseDir?.() ?? null,
+    imagesUnsupportedHost: opts.imagesUnsupportedHost === true,
+  });
   const scrollbar: OverlayScrollbar = createOverlayScrollbar({
     host: root,
     surface: domScrollSurface(body),
@@ -127,6 +161,9 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
 
   // One element per turn, index-aligned with the parser's turn list.
   const turnEls: HTMLElement[] = [];
+  // What is currently painted for each turn, so a re-render can leave
+  // unchanged blocks — and the enhancement passes they already ran — alone.
+  const paints: (TurnPaint | undefined)[] = [];
   let disposed = false;
   // Lazily built so a never-spoken overlay carries no highlight overlay.
   let speakSurface: MarkdownSurfaceAdapter | null = null;
@@ -140,11 +177,11 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
 
   // One delegated ⌘+click handler for EVERY path link in the body — assistant
   // markdown, user prose, whichever turn. Delegating on `body` (a) survives
-  // incremental appends with no per-turn bookkeeping, and (b) sidesteps the
-  // shared markdown renderer's per-mount handler only surviving on the
-  // last-mounted turn (mount() detaches the previous listener). We always
-  // preventDefault so a file href never navigates the app window; opening
-  // requires ⌘, matching the terminal + file-viewer linkifiers.
+  // incremental appends with no per-turn bookkeeping, and (b) covers user
+  // prose, which never goes through the markdown renderer and so has no
+  // per-container handler of its own. We always preventDefault so a file href
+  // never navigates the app window; opening requires ⌘, matching the terminal
+  // + file-viewer linkifiers.
   function onBodyClick(ev: MouseEvent): void {
     const target = ev.target as HTMLElement | null;
     // Match ANY anchor, not just `.reck-internal-link`: external links
@@ -161,10 +198,19 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   }
   body.addEventListener("click", onBodyClick);
 
-  function textBlockEl(role: TranscriptTurn["role"], text: string): HTMLElement {
+  // Appends rather than returning an element: assistant markdown must be IN
+  // the document before md.mount(), because the renderer's post-mount
+  // enhancement passes (local images, mermaid, math) abandon a container that
+  // isn't connected — mounting first and appending after silently skips them.
+  function appendTextBlock(
+    parent: HTMLElement,
+    role: TranscriptTurn["role"],
+    text: string,
+  ): HTMLElement {
     if (role === "assistant") {
       const el = document.createElement("div");
       el.className = "transcript-md";
+      parent.appendChild(el);
       md.mount(el, md.render(text));
       return el;
     }
@@ -178,7 +224,9 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     // A long user message (e.g. a pasted plan) is clamped behind "Show more"
     // so it doesn't dominate — via a height clip, NOT display:none, so the
     // search bar still finds the hidden text.
-    return isLongText(text) ? clampable(el) : el;
+    const outer = isLongText(text) ? clampable(el) : el;
+    parent.appendChild(outer);
+    return outer;
   }
 
   // A slash command (/clear, /model, …) the user ran — a slim chip, not a
@@ -193,9 +241,15 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   // A plan Claude presented via ExitPlanMode. Compact by design: a header,
   // the plan file path as a ⌘-clickable link, and the full markdown tucked in
   // a collapsed <details> so it never dominates the chat.
-  function planCardEl(block: Extract<TranscriptBlock, { kind: "plan" }>): HTMLElement {
+  // Appended by this function for the same reason as appendTextBlock: the
+  // plan body is markdown and must be connected before md.mount().
+  function appendPlanCard(
+    parent: HTMLElement,
+    block: Extract<TranscriptBlock, { kind: "plan" }>,
+  ): HTMLElement {
     const card = document.createElement("div");
     card.className = "transcript-plan";
+    parent.appendChild(card);
     const head = document.createElement("div");
     head.className = "transcript-plan-head";
     head.textContent = "📋 Plan";
@@ -216,9 +270,9 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
       details.appendChild(summary);
       const bodyEl = document.createElement("div");
       bodyEl.className = "transcript-md";
-      md.mount(bodyEl, md.render(block.text));
       details.appendChild(bodyEl);
       card.appendChild(details);
+      md.mount(bodyEl, md.render(block.text));
     }
     return card;
   }
@@ -323,37 +377,70 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     return details;
   }
 
-  function renderTurn(el: HTMLElement, turn: TranscriptTurn): void {
+  /** Blocks that fold into the collapsed group instead of rendering inline. */
+  function isToolBlock(b: TranscriptBlock): boolean {
+    return b.kind === "thinking" || b.kind === "tool_use" || b.kind === "tool_result";
+  }
+
+  function renderTurn(el: HTMLElement, turn: TranscriptTurn, index: number): void {
     el.className = `transcript-turn transcript-turn--${turn.role}`;
-    el.replaceChildren();
-    const label = document.createElement("div");
-    label.className = "transcript-role";
-    label.textContent = turn.role === "user" ? "You" : "Claude";
-    el.appendChild(label);
+
+    // How much of the previous paint survives. The tail re-renders a turn on
+    // EVERY appended JSONL line, and the parser only ever appends blocks (it
+    // never rewrites one), so the common prefix is normally the entire
+    // previous list. Reusing those elements is what keeps the markdown
+    // enhancement passes — mermaid re-importing and re-running, images
+    // re-issuing their IPC — off the streaming path.
+    const keys = turn.blocks.map((b) => JSON.stringify(b));
+    const prev = paints[index];
+    let keep = 0;
+    if (prev) {
+      while (keep < prev.keys.length && keep < keys.length && prev.keys[keep] === keys[keep]) {
+        keep += 1;
+      }
+    }
+
+    const els: (HTMLElement | null)[] = prev ? prev.els.slice(0, keep) : [];
+    if (prev && keep > 0) {
+      // Drop only what the prefix does not cover; the role label and the
+      // reused elements stay exactly where they are.
+      for (let i = keep; i < prev.els.length; i++) prev.els[i]?.remove();
+      prev.tools?.remove();
+    } else {
+      el.replaceChildren();
+      const label = document.createElement("div");
+      label.className = "transcript-role";
+      label.textContent = turn.role === "user" ? "You" : "Claude";
+      el.appendChild(label);
+    }
 
     // Text Claude/you actually said renders inline, in order. All the
     // under-the-hood blocks (thinking / tool_use / tool_result) collapse
     // into a single expandable group after the text, so a turn reads as
     // prose with its tool calls tucked away.
-    const toolBlocks: TranscriptBlock[] = [];
-    for (const block of turn.blocks) {
+    for (let i = keep; i < turn.blocks.length; i++) {
+      const block = turn.blocks[i];
       if (block.kind === "text") {
-        el.appendChild(textBlockEl(turn.role, block.text));
+        els[i] = appendTextBlock(el, turn.role, block.text);
       } else if (block.kind === "command") {
-        el.appendChild(commandPillEl(block.name));
+        els[i] = el.appendChild(commandPillEl(block.name));
       } else if (block.kind === "plan") {
-        el.appendChild(planCardEl(block));
+        els[i] = appendPlanCard(el, block);
       } else if (block.kind === "question") {
-        el.appendChild(questionCardEl(block));
+        els[i] = el.appendChild(questionCardEl(block));
       } else if (block.kind === "plan_approved") {
-        el.appendChild(planApprovedEl());
+        els[i] = el.appendChild(planApprovedEl());
       } else {
-        toolBlocks.push(block);
+        els[i] = null; // folded into the tool group below
       }
     }
-    if (toolBlocks.length > 0) {
-      el.appendChild(toolGroup(toolBlocks));
-    }
+
+    // Rebuilt from ALL tool blocks (including any inside the reused prefix)
+    // and re-appended last, so it stays after the prose. Cheap to rebuild:
+    // labelled <pre> rows, no markdown and no enhancement passes.
+    const toolBlocks = turn.blocks.filter(isToolBlock);
+    const tools = toolBlocks.length > 0 ? el.appendChild(toolGroup(toolBlocks)) : null;
+    paints[index] = { keys, els, tools };
   }
 
   function render(turns: readonly TranscriptTurn[], firstChanged: number): void {
@@ -368,10 +455,11 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
         turnEls[i] = el;
         body.appendChild(el);
       }
-      renderTurn(el, turns[i]);
+      renderTurn(el, turns[i], i);
     }
     while (turnEls.length > turns.length) {
       turnEls.pop()?.remove();
+      paints.pop();
     }
     // Reveal the "Start of session" divider once the conversation has content.
     sessionStart.classList.toggle("transcript-session-start--hidden", turns.length === 0);

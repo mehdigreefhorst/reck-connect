@@ -105,26 +105,46 @@ export function wrapFreeTextPaths(root: HTMLElement): void {
   }
 }
 
+interface Attachment {
+  handler: (ev: MouseEvent) => void;
+  lightbox: LightboxHandle;
+}
+
 export function createRenderedDom(
   opts: RenderedDomOptions = {},
 ): RenderedDomHandle {
-  let attachedContainer: HTMLElement | null = null;
-  let attachedHandler: ((ev: MouseEvent) => void) | null = null;
-  let lightbox: LightboxHandle | null = null;
+  // PER CONTAINER, not one slot for the whole handle. The transcript overlay
+  // mounts a single renderer into many containers — one `.transcript-md` per
+  // assistant block — and a single slot meant only the last-mounted block kept
+  // a working lightbox: every earlier block's images stopped zooming, and a
+  // newly streamed block closed an open lightbox mid-view. This mirrors how
+  // MarkdownRenderer tracks a generation per container.
+  const attachments = new Map<HTMLElement, Attachment>();
 
-  const detach = (): void => {
-    if (attachedContainer && attachedHandler) {
-      attachedContainer.removeEventListener("click", attachedHandler);
+  const detach = (container: HTMLElement): void => {
+    const att = attachments.get(container);
+    if (!att) return;
+    container.removeEventListener("click", att.handler);
+    att.lightbox.dispose();
+    attachments.delete(container);
+  };
+
+  // Callers mount into containers that are already in the document — the
+  // enhancement passes require it — and drop them by removing them from the
+  // DOM. Sweeping the disconnected ones on each mount is what keeps `attachments`
+  // (a strong map, because dispose() must be able to iterate it) from pinning
+  // every block a long-lived transcript has ever discarded, along with the
+  // document-level `keydown` listener each lightbox registers.
+  const sweepDetached = (): void => {
+    for (const container of [...attachments.keys()]) {
+      if (!container.isConnected) detach(container);
     }
-    lightbox?.dispose();
-    lightbox = null;
-    attachedContainer = null;
-    attachedHandler = null;
   };
 
   return {
     mount(container: HTMLElement, html: string): void {
-      detach();
+      detach(container);
+      sweepDetached();
       container.innerHTML = html;
       wrapFreeTextPaths(container);
       const handler = (ev: MouseEvent): void => {
@@ -144,15 +164,13 @@ export function createRenderedDom(
         }
       };
       container.addEventListener("click", handler);
-      attachedContainer = container;
-      attachedHandler = handler;
       // Registered here so the same detach() tears it down. The two handlers
       // cannot conflict: this one acts only on anchors, the lightbox only on
       // images that are NOT inside an anchor.
-      lightbox = attachLightbox(container);
+      attachments.set(container, { handler, lightbox: attachLightbox(container) });
     },
     dispose(): void {
-      detach();
+      for (const container of [...attachments.keys()]) detach(container);
     },
   };
 }

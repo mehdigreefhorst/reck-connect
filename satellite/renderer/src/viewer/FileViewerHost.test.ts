@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, beforeAll, vi } from "vitest";
-import { mountFileViewer } from "./FileViewerHost";
+import { mountFileViewer, imageBaseDirOf } from "./FileViewerHost";
 
 interface FilesApiStub {
   read: ReturnType<typeof vi.fn>;
@@ -1396,6 +1396,24 @@ describe("Round 6 Phase CC4 — streaming suffix-search picker", () => {
  * stylesheet pseudo-styles). Pattern follows
  * pane-layout.test.ts:980-991 — read styles.css from disk, regex-match.
  */
+describe("imageBaseDirOf", () => {
+  it("returns the containing directory of a nested file", () => {
+    expect(imageBaseDirOf("/Users/me/docs/guide.md")).toBe("/Users/me/docs");
+  });
+
+  it("returns root for a file at the filesystem root", () => {
+    expect(imageBaseDirOf("/guide.md")).toBe("/");
+  });
+
+  it("returns empty for a bare filename with no directory", () => {
+    expect(imageBaseDirOf("guide.md")).toBe("");
+  });
+
+  it("does not strip a trailing directory name", () => {
+    expect(imageBaseDirOf("/a/b")).toBe("/a");
+  });
+});
+
 describe("Round 6 Phase AA — sticky banner CSS", () => {
   let css: string;
   beforeAll(async () => {

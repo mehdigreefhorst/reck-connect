@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createMarkdownRenderer } from "./MarkdownRenderer";
 
 describe("createMarkdownRenderer", () => {
@@ -542,10 +542,18 @@ describe("createMarkdownRenderer — images", () => {
 
   it("keeps the image's own attributes alongside the lazy ones", () => {
     const html = createMarkdownRenderer().render('![alt text](pic.png "a title")');
-    expect(html).toContain('src="pic.png"');
-    expect(html).toContain('alt="alt text"');
-    expect(html).toContain('title="a title"');
-    expect(html).toContain('loading="lazy"');
+    // `pic.png` is a local path, so the authored src is parked on
+    // data-reck-src rather than emitted as `src` — see RECK_IMAGE_SRC_ATTR.
+    // Assert structurally: a `toContain('src="pic.png"')` string check would
+    // pass either way, because `data-reck-src="pic.png"` contains it.
+    const el = document.createElement("div");
+    el.innerHTML = html;
+    const img = el.querySelector("img")!;
+    expect(img.getAttribute("data-reck-src")).toBe("pic.png");
+    expect(img.hasAttribute("src")).toBe(false);
+    expect(img.getAttribute("alt")).toBe("alt text");
+    expect(img.getAttribute("title")).toBe("a title");
+    expect(img.getAttribute("loading")).toBe("lazy");
   });
 
   it("does not put loading/decoding on non-image tags", () => {
@@ -565,6 +573,314 @@ describe("createMarkdownRenderer — images", () => {
     const el = document.createElement("div");
     el.innerHTML = html;
     expect(el.querySelectorAll("img")).toHaveLength(0);
+  });
+
+  describe("image sources", () => {
+    /** Parse rendered HTML into a detached container so assertions are
+     *  attribute-order-independent. */
+    function imgFrom(html: string): HTMLImageElement | null {
+      const host = document.createElement("div");
+      host.innerHTML = html;
+      return host.querySelector("img");
+    }
+
+    it("moves a relative image path to data-reck-src and drops src", () => {
+      const r = createMarkdownRenderer();
+      const img = imgFrom(r.render("![rack](./assets/rack.png)"));
+      expect(img).not.toBeNull();
+      expect(img!.getAttribute("data-reck-src")).toBe("./assets/rack.png");
+      expect(img!.hasAttribute("src")).toBe(false);
+      expect(img!.getAttribute("alt")).toBe("rack");
+    });
+
+    it("moves an absolute image path to data-reck-src", () => {
+      const r = createMarkdownRenderer();
+      const img = imgFrom(r.render("![s](/Users/me/shot.png)"));
+      expect(img!.getAttribute("data-reck-src")).toBe("/Users/me/shot.png");
+      expect(img!.hasAttribute("src")).toBe(false);
+    });
+
+    it("leaves a remote https image src untouched", () => {
+      const r = createMarkdownRenderer();
+      const img = imgFrom(r.render("![a](https://example.com/a.png)"));
+      expect(img!.getAttribute("src")).toBe("https://example.com/a.png");
+      expect(img!.hasAttribute("data-reck-src")).toBe(false);
+    });
+
+    it("normalizes a protocol-relative image src to https", () => {
+      // The classifier rewrites `//host/…` to `https://host/…` because the
+      // popup's origin differs between dev (http://localhost:5173) and prod
+      // (file: via loadFile). The rule must write the classifier's `src`
+      // back onto the token — leaving the authored attribute in place would
+      // compile fine and silently discard the normalization.
+      const r = createMarkdownRenderer();
+      const img = imgFrom(r.render("![a](//example.com/a.png)"));
+      expect(img!.getAttribute("src")).toBe("https://example.com/a.png");
+      expect(img!.hasAttribute("data-reck-src")).toBe(false);
+    });
+
+    it("leaves a data:image src untouched", () => {
+      const r = createMarkdownRenderer();
+      const img = imgFrom(r.render("![a](data:image/gif;base64,R0lGOD)"));
+      expect(img!.getAttribute("src")).toBe("data:image/gif;base64,R0lGOD");
+      expect(img!.hasAttribute("data-reck-src")).toBe(false);
+    });
+
+    it("marks an unsupported scheme instead of emitting a src", () => {
+      const r = createMarkdownRenderer();
+      const img = imgFrom(r.render("![a](file:///etc/passwd)"));
+      expect(img!.hasAttribute("src")).toBe(false);
+      expect(img!.hasAttribute("data-reck-src")).toBe(false);
+      expect(img!.getAttribute("data-reck-image-unsupported")).toBe("1");
+    });
+
+    it("keeps the lazy-loading hints on a local image", () => {
+      const r = createMarkdownRenderer();
+      const img = imgFrom(r.render("![a](./a.png)"));
+      expect(img!.getAttribute("loading")).toBe("lazy");
+      expect(img!.getAttribute("decoding")).toBe("async");
+    });
+
+    it("survives DOMPurify — data-reck-src is not sanitized away", () => {
+      const r = createMarkdownRenderer();
+      // render() already runs DOMPurify; this test exists to pin that the
+      // attribute is on the ALLOWED_ATTR list rather than surviving by
+      // accident of DOMPurify's data-* default.
+      expect(r.render("![a](./a.png)")).toContain("data-reck-src");
+    });
+
+    it("does not touch image syntax inside a fenced code block", () => {
+      const r = createMarkdownRenderer();
+      const html = r.render("```\n![a](./a.png)\n```");
+      expect(html).not.toContain("data-reck-src");
+      expect(html).toContain("![a](./a.png)");
+    });
+  });
+
+  describe("local image enhancement", () => {
+    // The pass reaches for window.reckAPI.files.imageMeta when no injectable
+    // is supplied, which is exactly what production does — so these install a
+    // stub API and tear it back down rather than injecting past the wiring
+    // under test.
+    afterEach(() => {
+      delete (window as unknown as { reckAPI?: unknown }).reckAPI;
+      document.body.innerHTML = "";
+    });
+
+    it("swaps a local image's src for the minted url after mount", async () => {
+      const imageMeta = vi.fn(async () => ({
+        ok: true as const,
+        resolvedPath: "/base/a.png",
+        url: "reck-img://local/?p=/base/a.png&v=1-1",
+        mime: "image/png",
+        byteSize: 1,
+        mtimeMs: 1,
+      }));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({ imageBaseDir: "/base" });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+
+      expect(imageMeta).toHaveBeenCalledWith("/base/a.png");
+      expect(host.querySelector("img")!.getAttribute("src")).toBe(
+        "reck-img://local/?p=/base/a.png&v=1-1",
+      );
+    });
+
+    it("placeholders local images when no imageBaseDir was supplied", async () => {
+      const imageMeta = vi.fn();
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer();
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+
+      expect(imageMeta).not.toHaveBeenCalled();
+      expect(host.querySelector(".reck-image-missing")).not.toBeNull();
+    });
+
+    it("placeholders every local image when the host cannot be served", async () => {
+      // Station/SSH markdown: reck-img:// parses a `station` host but only
+      // implements `local`, so no IPC should be attempted at all.
+      const imageMeta = vi.fn();
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({
+        imageBaseDir: "/base",
+        imagesUnsupportedHost: true,
+      });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+
+      expect(imageMeta).not.toHaveBeenCalled();
+      expect(host.querySelector(".reck-image-missing")).not.toBeNull();
+      expect(host.querySelector("img")).toBeNull();
+    });
+
+    it("enhances every container a renderer mounts into, not just the newest", async () => {
+      // The transcript overlay mounts ONE renderer into many containers (a
+      // markdown block per assistant turn). A staleness counter shared across
+      // containers would let each mount cancel the pass of every block
+      // mounted before it, so only the last block's images would ever paint.
+      const imageMeta = vi.fn(async (p: string) => ({
+        ok: true as const,
+        resolvedPath: p,
+        url: `reck-img://local/?p=${p}&v=1-1`,
+        mime: "image/png",
+        byteSize: 1,
+        mtimeMs: 1,
+      }));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({ imageBaseDir: "/base" });
+      const first = document.createElement("div");
+      const second = document.createElement("div");
+      document.body.append(first, second);
+      r.mount(first, r.render("![a](./a.png)"));
+      r.mount(second, r.render("![b](./b.png)"));
+      await r.whenEnhanced();
+
+      expect(first.querySelector("img")!.getAttribute("src")).toBe(
+        "reck-img://local/?p=/base/a.png&v=1-1",
+      );
+      expect(second.querySelector("img")!.getAttribute("src")).toBe(
+        "reck-img://local/?p=/base/b.png&v=1-1",
+      );
+    });
+
+    it("re-reads a function imageBaseDir at every pass, so a late anchor applies", async () => {
+      // The transcript passes a function because its anchor (the project cwd)
+      // can arrive after the overlay opened — the popout fetches it
+      // asynchronously. A value snapshotted at construction would leave that
+      // surface placeholdering paths its own ⌘+click handler resolves fine.
+      const imageMeta = vi.fn(async (p: string) => ({
+        ok: true as const,
+        resolvedPath: p,
+        url: `reck-img://local/?p=${p}&v=1-1`,
+        mime: "image/png",
+        byteSize: 1,
+        mtimeMs: 1,
+      }));
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      let base: string | null = null;
+      const r = createMarkdownRenderer({ imageBaseDir: () => base });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+      expect(imageMeta).not.toHaveBeenCalled(); // no anchor yet
+      expect(host.querySelector(".reck-image-missing")).not.toBeNull();
+
+      base = "/late"; // the cwd lands
+      r.mount(host, r.render("![a](./a.png)"));
+      await r.whenEnhanced();
+      expect(imageMeta).toHaveBeenCalledWith("/late/a.png");
+      expect(host.querySelector("img")!.getAttribute("src")).toBe(
+        "reck-img://local/?p=/late/a.png&v=1-1",
+      );
+    });
+
+    it("does not write into a container that was re-mounted mid-flight", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((res) => {
+        release = res;
+      });
+      const imageMeta = vi.fn(async () => {
+        await gate;
+        return {
+          ok: true as const,
+          resolvedPath: "/base/a.png",
+          url: "reck-img://local/?p=/base/a.png&v=1-1",
+          mime: "image/png",
+          byteSize: 1,
+          mtimeMs: 1,
+        };
+      });
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({ imageBaseDir: "/base" });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      // Grab the element BEFORE the re-mount. The second mount() replaces
+      // container.innerHTML, so this node is detached afterwards — and a
+      // stale write would land on it where `host.querySelector` can no
+      // longer see it. Asserting via the container would pass whether the
+      // staleness contract is honored or violated; only holding the
+      // reference makes the guard falsifiable.
+      const stale = host.querySelector("img")!;
+      r.mount(host, r.render("# replaced"));
+      release();
+      await r.whenEnhanced();
+
+      expect(stale.getAttribute("src")).toBeNull();
+      expect(host.querySelector("img")).toBeNull();
+      expect(host.textContent).toContain("replaced");
+      // The re-mount beat the pass to the container, so the IPC is never
+      // even attempted. That is the entry guard in enhanceLocalImages, NOT
+      // the post-await re-checks — those are covered by the mid-flight test
+      // below, which is the only one that can reach them.
+      expect(imageMeta).not.toHaveBeenCalled();
+    });
+
+    it("does not write a minted url onto an image re-mounted while its IPC was in flight", async () => {
+      // The test above re-mounts before the pass ever starts, so it can only
+      // reach enhanceLocalImages' entry guard. This one parks the pass inside
+      // imageMeta first, so the re-mount genuinely lands mid-flight and the
+      // post-await `stillCurrent` / `isConnected` re-checks are the only
+      // thing standing between a stale IPC reply and a write.
+      let entered!: () => void;
+      const enteredIpc = new Promise<void>((res) => {
+        entered = res;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((res) => {
+        release = res;
+      });
+      const imageMeta = vi.fn(async () => {
+        entered();
+        await gate;
+        return {
+          ok: true as const,
+          resolvedPath: "/base/a.png",
+          url: "reck-img://local/?p=/base/a.png&v=1-1",
+          mime: "image/png",
+          byteSize: 1,
+          mtimeMs: 1,
+        };
+      });
+      (window as unknown as { reckAPI: unknown }).reckAPI = { files: { imageMeta } };
+
+      const r = createMarkdownRenderer({ imageBaseDir: "/base" });
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      r.mount(host, r.render("![a](./a.png)"));
+      // Captured before the re-mount detaches it, and captured as the promise
+      // of THIS mount — whenEnhanced() would otherwise hand back the second
+      // mount's pass and let the stale one settle after the assertions.
+      const stale = host.querySelector("img")!;
+      const firstPass = r.whenEnhanced();
+
+      await enteredIpc; // the pass is now parked inside the IPC
+      r.mount(host, r.render("# replaced"));
+      release();
+      await firstPass;
+      await r.whenEnhanced();
+
+      expect(imageMeta).toHaveBeenCalledWith("/base/a.png");
+      expect(stale.getAttribute("src")).toBeNull();
+      expect(stale.getAttribute("data-reck-src")).toBe("./a.png");
+      expect(host.textContent).toContain("replaced");
+    });
   });
 });
 

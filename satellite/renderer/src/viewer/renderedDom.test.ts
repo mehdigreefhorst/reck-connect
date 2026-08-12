@@ -149,3 +149,122 @@ describe("createRenderedDom — lightbox lifecycle", () => {
     expect(el.querySelector(".reck-lightbox")).toBeNull();
   });
 });
+
+// The transcript overlay mounts ONE renderer into one container per assistant
+// block. A single attachment slot meant only the newest block could zoom.
+describe("createRenderedDom — many containers, one handle", () => {
+  function connected(): HTMLElement {
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    return el;
+  }
+
+  const click = (el: HTMLElement): void => {
+    el.querySelector("img")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+  };
+
+  it("keeps every mounted container lightbox-capable", () => {
+    const dom = createRenderedDom();
+    const first = connected();
+    const second = connected();
+    dom.mount(first, '<img src="a.png" alt="a">');
+    dom.mount(second, '<img src="b.png" alt="b">');
+
+    // The earlier block must still zoom — this is the regression.
+    click(first);
+    expect(first.querySelector(".reck-lightbox")).not.toBeNull();
+    click(second);
+    expect(second.querySelector(".reck-lightbox")).not.toBeNull();
+
+    dom.dispose();
+    first.remove();
+    second.remove();
+  });
+
+  it("mounting a new container does not close another's open lightbox", () => {
+    const dom = createRenderedDom();
+    const first = connected();
+    dom.mount(first, '<img src="a.png" alt="a">');
+    click(first);
+    expect(first.querySelector(".reck-lightbox")).not.toBeNull();
+
+    // A newly streamed assistant block used to yank the overlay out mid-view.
+    const second = connected();
+    dom.mount(second, '<img src="b.png" alt="b">');
+    expect(first.querySelector(".reck-lightbox")).not.toBeNull();
+
+    dom.dispose();
+    first.remove();
+    second.remove();
+  });
+
+  it("routes Cmd+click from any container, not just the newest", () => {
+    const onLinkActivate = vi.fn();
+    const dom = createRenderedDom({ onLinkActivate });
+    const first = connected();
+    const second = connected();
+    dom.mount(first, '<a href="./a.md">a</a>');
+    dom.mount(second, '<a href="./b.md">b</a>');
+
+    first.querySelector("a")!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }),
+    );
+    expect(onLinkActivate).toHaveBeenCalledWith("./a.md", expect.anything());
+
+    dom.dispose();
+    first.remove();
+    second.remove();
+  });
+
+  it("dispose tears down every container", () => {
+    const onLinkActivate = vi.fn();
+    const dom = createRenderedDom({ onLinkActivate });
+    const first = connected();
+    const second = connected();
+    dom.mount(first, '<a href="./a.md">a</a><img src="a.png" alt="a">');
+    dom.mount(second, '<a href="./b.md">b</a><img src="b.png" alt="b">');
+    click(first);
+    click(second);
+
+    dom.dispose();
+
+    expect(first.querySelector(".reck-lightbox")).toBeNull();
+    expect(second.querySelector(".reck-lightbox")).toBeNull();
+    for (const el of [first, second]) {
+      el.querySelector("a")!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }),
+      );
+      click(el);
+      expect(el.querySelector(".reck-lightbox")).toBeNull();
+    }
+    expect(onLinkActivate).not.toHaveBeenCalled();
+
+    first.remove();
+    second.remove();
+  });
+
+  it("forgets containers that left the DOM, so attachments cannot pile up", () => {
+    // The map is strong (dispose() has to iterate it), so a long-lived
+    // transcript would otherwise pin every block it has ever discarded —
+    // and each one's document-level Escape listener with it.
+    const dom = createRenderedDom();
+    const gone = connected();
+    dom.mount(gone, '<img src="a.png" alt="a">');
+    click(gone);
+    expect(gone.querySelector(".reck-lightbox")).not.toBeNull();
+
+    gone.remove();
+    const next = connected();
+    dom.mount(next, '<img src="b.png" alt="b">');
+
+    // Swept: its lightbox was disposed, which closes any open overlay.
+    expect(gone.querySelector(".reck-lightbox")).toBeNull();
+    click(gone);
+    expect(gone.querySelector(".reck-lightbox")).toBeNull();
+
+    dom.dispose();
+    next.remove();
+  });
+});

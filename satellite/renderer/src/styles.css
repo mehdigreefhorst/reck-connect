@@ -3127,13 +3127,19 @@ html, body, #app {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
 }
 
-/* Image lightbox. Positioned against `.file-viewer-body` (which is
-   `position: relative`) rather than the viewport, so it covers the reading
-   column and leaves the popup header — with its close button and mode toggle —
-   reachable. `position: sticky` on a `position: absolute` overlay would fight
-   the body's scroll, so it is pinned with `fixed`-like insets on the scroller
-   and the body's own scrolling is what it covers. */
-.file-viewer-body .reck-lightbox {
+/* Image lightbox. `position: sticky` on a `position: absolute` overlay would
+   fight the scroller's own scroll, so it is pinned with `fixed` insets and the
+   scrolling body is what it covers. The 38px top inset keeps the popup header
+   — with its close button and mode toggle — reachable.
+
+   Scoped to BOTH rendered-markdown roots, not just the popup's: `renderedDom`
+   attaches `attachLightbox` to every container it mounts, so the transcript
+   overlay's `.transcript-md` blocks are lightbox-capable too and would
+   otherwise append an unpositioned, natural-size overlay inline into the
+   conversation. One selector list, never a second copy of the block — the two
+   surfaces must zoom identically. */
+.file-viewer-body .reck-lightbox,
+.transcript-md .reck-lightbox {
   position: fixed;
   inset: 38px 0 0 0; /* below the 38px header */
   z-index: 40;
@@ -3145,7 +3151,8 @@ html, body, #app {
   backdrop-filter: blur(2px);
   cursor: zoom-out;
 }
-.file-viewer-body .reck-lightbox img {
+.file-viewer-body .reck-lightbox img,
+.transcript-md .reck-lightbox img {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -3154,8 +3161,26 @@ html, body, #app {
 }
 /* Rendered images advertise that they can be opened. */
 .file-viewer-body > p > img,
-.file-viewer-body > img {
+.file-viewer-body > img,
+.transcript-md > p > img,
+.transcript-md > img {
   cursor: zoom-in;
+}
+
+/* Stand-in for a markdown image we could not display. Inline-block so it
+   sits in the flow where the image would have been, and visually distinct
+   from prose without shouting — a missing figure is information, not an
+   error state the user caused. */
+.reck-image-missing {
+  display: inline-block;
+  padding: 0.35em 0.6em;
+  border: 1px dashed var(--border, #999);
+  border-radius: 4px;
+  color: var(--text-muted, #777);
+  font-size: 0.9em;
+  font-style: italic;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 /* Mermaid diagrams. The ```mermaid fence is unwrapped out of its <pre><code>
@@ -3178,11 +3203,21 @@ html, body, #app {
 
 /* Static HTML preview: baseline layout for structural/media tags the
    markdown renderer never emits. Keeps pages readable and prevents wide
-   media/tables from breaking the popup's horizontal scroll. */
+   media/tables from breaking the popup's horizontal scroll.
+
+   `.transcript-md` shares the clamp rather than getting its own copy: the
+   likeliest image in a Claude Code transcript is a pasted screenshot, and
+   unclamped it renders at natural width inside `.transcript-body` — which
+   scrolls horizontally with `scrollbar-width: none`, i.e. off-screen content
+   with no visible way to reach it. */
 .file-viewer-body img,
 .file-viewer-body picture,
 .file-viewer-body video,
-.file-viewer-body svg {
+.file-viewer-body svg,
+.transcript-md img,
+.transcript-md picture,
+.transcript-md video,
+.transcript-md svg {
   max-width: 100%;
   height: auto;
 }

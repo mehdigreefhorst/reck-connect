@@ -105,6 +105,18 @@ const sessions = new WeakMap<HTMLElement, ActiveSession>();
 // markdown-rendered branch, whereas a session exists for every viewer mode.
 const tocControllers = new WeakMap<HTMLElement, TocController>();
 
+/**
+ * Directory portion of a POSIX file path — the anchor for relative image
+ * paths inside that file's markdown. `"/a/b/c.md"` → `"/a/b"`, `"/c.md"` →
+ * `"/"`. Exported for test; deliberately not `paths.resolveAgainst`, which
+ * needs a `rel` to resolve.
+ */
+export function imageBaseDirOf(filePath: string): string {
+  const cut = filePath.lastIndexOf("/");
+  if (cut < 0) return "";
+  return cut === 0 ? "/" : filePath.slice(0, cut);
+}
+
 function disposeToc(root: HTMLElement): void {
   tocControllers.get(root)?.dispose();
   tocControllers.delete(root);
@@ -1121,6 +1133,10 @@ async function renderStationRemote(
       onExternalActivate: (href) => {
         window.open(href, "_blank", "noopener");
       },
+      // Station files are served over SSH; reck-img:// reserves a `station`
+      // host but only implements `local`, so images placeholder for now.
+      imageBaseDir: imageBaseDirOf(filePath),
+      imagesUnsupportedHost: true,
       onLinkActivate: (href) => {
         // Resolve relative hrefs against the station path. The
         // resulting target may itself be a station file — pass through
@@ -1621,6 +1637,9 @@ async function renderForPath(
       onExternalActivate: (href) => {
         window.open(href, "_blank", "noopener");
       },
+      // Relative image paths anchor to the open file's own directory —
+      // the same anchor onLinkActivate uses for relative hrefs below.
+      imageBaseDir: imageBaseDirOf(result.resolvedPath),
       onLinkActivate: (href) => {
         // Resolve relative hrefs against the file we're currently viewing.
         const target = href.startsWith("/")

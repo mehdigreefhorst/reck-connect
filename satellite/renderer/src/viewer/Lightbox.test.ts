@@ -75,6 +75,25 @@ describe("attachLightbox", () => {
     expect(container.querySelector(`.${LIGHTBOX_CLASS}`)).toBeNull();
   });
 
+  it("does not open for an image that has no src yet", () => {
+    // A local markdown image is deliberately src-less between render and
+    // enhanceLocalImages minting its reck-img:// URL. Opening a lightbox on
+    // it would put `src=""` in the overlay, and an empty src makes the
+    // browser re-request the current document — the exact failure the parked
+    // `data-reck-src` attribute exists to avoid.
+    const container = mount('<img data-reck-src="./a.png" alt="a">');
+    attachLightbox(container);
+    clickImg(container);
+    expect(container.querySelector(`.${LIGHTBOX_CLASS}`)).toBeNull();
+  });
+
+  it("does not open for an image whose src is empty or blank", () => {
+    const container = mount('<img src="   " alt="a">');
+    attachLightbox(container);
+    clickImg(container);
+    expect(container.querySelector(`.${LIGHTBOX_CLASS}`)).toBeNull();
+  });
+
   it("closes on Escape", () => {
     const container = mount(DOC);
     attachLightbox(container);

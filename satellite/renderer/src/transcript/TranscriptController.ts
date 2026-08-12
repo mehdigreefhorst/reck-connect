@@ -50,6 +50,16 @@ export interface TranscriptControllerDeps {
   api(host: HostRef): TranscriptApi;
   /** ⌘+click path-link handlers for a pane's host (optional). */
   linkHandlers?(host: HostRef): TranscriptLinkHandlers;
+  /**
+   * Directory that relative image paths in this host's transcripts resolve
+   * against (the active project's cwd). Same ownership split as
+   * `linkHandlers`: the controller stays free of project/cwd knowledge.
+   *
+   * Called at every enhancement pass rather than once per overlay, so an
+   * anchor that lands after the overlay opened still applies — and so it
+   * cannot drift from the anchor `linkHandlers` resolves at click time.
+   */
+  imageBaseDir?(host: HostRef): string | null;
   /** Tail poll interval; default 1500ms. */
   intervalMs?: number;
   /** Log sink; defaults to console.info with a `[transcript]` prefix. */
@@ -132,6 +142,8 @@ export function createTranscriptController(
       host: pane.wrapper,
       sessionId: pane.sessionId,
       onClose: () => close(paneId, "user"),
+      imageBaseDir: () => (deps.imageBaseDir ? deps.imageBaseDir(pane.host) : null),
+      imagesUnsupportedHost: pane.host === "station",
       ...(deps.linkHandlers ? deps.linkHandlers(pane.host) : {}),
     });
     view.setStatus({ kind: "loading", message: "Loading transcript…" });

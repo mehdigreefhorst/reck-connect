@@ -1207,6 +1207,15 @@ export async function boot(splash?: StartupSplashController) {
   // failing silently, and traces every decision with `[transcript]`
   // console logs — set localStorage["reck-transcript-debug"]="1" for
   // per-poll/per-render verbosity.
+  //
+  // The anchor every surface resolves relative paths against — the transcript
+  // overlay's inline images, its ⌘+clicked paths, and the pane linkifier's
+  // ⌘+clicked paths further down. ONE definition on purpose: those three must
+  // resolve identically, and separate copies of the expression are the weakest
+  // possible way to guarantee that. Read at use time — the active project
+  // changes under a long-lived overlay.
+  const activeProjectCwd = (): string | null =>
+    currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null;
   const transcripts = createTranscriptController({
     resolvePane: (paneId) => {
       const rec = layout.getTerminalRecordByPane(paneId);
@@ -1221,6 +1230,11 @@ export async function boot(splash?: StartupSplashController) {
     },
     projectId: () => currentProjectId,
     api: (host) => apiForHost(host),
+    // Relative image paths in a transcript anchor to the active project's
+    // cwd — the same anchor `resolveActivatePath` uses for ⌘+clicked paths
+    // in `linkHandlers` below. Station panes get null: their files are
+    // served over SSH and reck-img:// only implements the local host.
+    imageBaseDir: (host) => (host === "station" ? null : activeProjectCwd()),
     // ⌘+click a path in the transcript → open it in the file viewer, reusing
     // the exact resolve/open pipeline the pane linkifier uses (below). `host`
     // is the pane's host, so `~/` and station-cwd translation route correctly.
@@ -1228,8 +1242,7 @@ export async function boot(splash?: StartupSplashController) {
     // active project's cwd is the right anchor for relative paths.
     linkHandlers: (host) => ({
       onLinkActivate: (href) => {
-        const projectCwd =
-          currentProjects.find((p) => p.id === currentProjectId)?.cwd ?? null;
+        const projectCwd = activeProjectCwd();
         const target = resolveActivatePath(href, projectCwd);
         console.log("[click:transcript] activate -> openInViewer", {
           host,
@@ -1347,11 +1360,7 @@ export async function boot(splash?: StartupSplashController) {
           // anchor from the resolved path; it doesn't, and believing it was
           // what left detached pane windows unable to open relative paths
           // at all.)
-          const projectCwd =
-            directHost !== null
-              ? currentProjects.find((p) => p.id === currentProjectId)?.cwd ??
-                null
-              : null;
+          const projectCwd = directHost !== null ? activeProjectCwd() : null;
           const target = resolveActivatePath(filePath, projectCwd);
           console.log("[click:pane] activate -> openInViewer", {
             paneId,
