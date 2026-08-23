@@ -113,6 +113,22 @@ function isLongText(text: string): boolean {
   return text.length > 600 || text.split("\n").length > 12;
 }
 
+/**
+ * Identity of a block for the render diff. `JSON.stringify` for everything
+ * except images: a real transcript carries base64 payloads up to ~450KB, and
+ * the tail re-keys every block of a turn on every appended JSONL line — so
+ * stringifying them would allocate megabytes per keystroke of streamed output.
+ *
+ * Length plus both ends of the payload, not just the head: every PNG starts
+ * with the same ~30 base64 characters, so a head-only key would collide across
+ * unrelated screenshots and the diff would reuse the wrong element.
+ */
+function blockKey(b: TranscriptBlock): string {
+  if (b.kind !== "image") return JSON.stringify(b);
+  const { base64: d } = b;
+  return `image:${b.pasteId ?? ""}:${b.mime}:${b.width ?? ""}x${b.height ?? ""}:${d.length}:${d.slice(0, 24)}:${d.slice(-24)}`;
+}
+
 export function createTranscriptView(opts: TranscriptViewOptions): TranscriptViewHandle {
   // `reck-native-scroll` opts the overlay out of the pane wrapper's
   // TUI wheel→PgUp/PgDn remap (OverlayScrollbar capture listener) so
@@ -227,6 +243,37 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     const outer = isLongText(text) ? clampable(el) : el;
     parent.appendChild(outer);
     return outer;
+  }
+
+  // An image carried in the transcript as bytes — a pasted screenshot, or one
+  // a tool returned. Rendered THROUGH the markdown renderer rather than as a
+  // hand-built <img>: that routes the data: URI past DOMPurify, and registers
+  // the container with renderedDom, which is what attaches the click-to-zoom
+  // lightbox and sweeps it when the element is dropped. A hand-built <img>
+  // would need its own lightbox lifecycle, and leak a document keydown
+  // listener per image.
+  //
+  // Appended before mounting, like the other markdown blocks — see
+  // appendTextBlock.
+  function appendImageBlock(
+    parent: HTMLElement,
+    block: Extract<TranscriptBlock, { kind: "image" }>,
+  ): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "transcript-md transcript-image";
+    parent.appendChild(el);
+    const alt = block.pasteId !== undefined ? `Pasted image #${block.pasteId}` : "Image";
+    md.mount(el, md.render(`![${alt}](data:${block.mime};base64,${block.base64})`));
+    // Intrinsic size up front so the turn does not reflow when the image
+    // decodes. Attributes, not CSS: they give the browser an aspect ratio
+    // while `.transcript-image img { width: auto }` keeps the clamp in charge
+    // of the used size.
+    const img = el.querySelector("img");
+    if (img && block.width !== undefined && block.height !== undefined) {
+      img.setAttribute("width", String(block.width));
+      img.setAttribute("height", String(block.height));
+    }
+    return el;
   }
 
   // A slash command (/clear, /model, …) the user ran — a slim chip, not a
@@ -391,7 +438,7 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     // previous list. Reusing those elements is what keeps the markdown
     // enhancement passes — mermaid re-importing and re-running, images
     // re-issuing their IPC — off the streaming path.
-    const keys = turn.blocks.map((b) => JSON.stringify(b));
+    const keys = turn.blocks.map(blockKey);
     const prev = paints[index];
     let keep = 0;
     if (prev) {
@@ -426,6 +473,8 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
         els[i] = el.appendChild(commandPillEl(block.name));
       } else if (block.kind === "plan") {
         els[i] = appendPlanCard(el, block);
+      } else if (block.kind === "image") {
+        els[i] = appendImageBlock(el, block);
       } else if (block.kind === "question") {
         els[i] = el.appendChild(questionCardEl(block));
       } else if (block.kind === "plan_approved") {
