@@ -139,7 +139,9 @@ func (*codexProtocol) headers(cred Credential) http.Header {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+cred.Token)
 	h.Set("User-Agent", userAgent)
-	h.Set("OpenAI-Beta", "realtime=v1")
+	// No OpenAI-Beta header: that header selects the retired beta realtime
+	// API, which the server now refuses (close 4000, beta_api_shape_disabled).
+	// The GA API is the bare /v1/realtime endpoint.
 	// Subscription tokens are scoped to a ChatGPT account; API keys are not.
 	if cred.AccountID != "" {
 		h.Set("chatgpt-account-id", cred.AccountID)
