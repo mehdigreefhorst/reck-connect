@@ -102,6 +102,11 @@ describe("transcriptionSettings.coerce", () => {
     expect(coerce({ provider: "azure" }).provider).toBe("local");
   });
 
+  it("accepts the daemon-backed providers", () => {
+    expect(coerce({ provider: "claude" }).provider).toBe("claude");
+    expect(coerce({ provider: "codex" }).provider).toBe("codex");
+  });
+
   it("falls back on an unknown model id", () => {
     expect(coerce({ localModel: "whisper-huge" }).localModel).toBe(
       DEFAULT_TRANSCRIPTION_SETTINGS.localModel,

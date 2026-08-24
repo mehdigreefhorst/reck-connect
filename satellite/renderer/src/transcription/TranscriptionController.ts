@@ -10,12 +10,17 @@ import { TranscriptionEngine, type DictationState } from "./TranscriptionEngine"
 import { DEFAULT_ONSET_CONFIG } from "./onsetDetector";
 import { addOnset, makeChunk, stepChunk, type ChunkState, type Segment } from "./chunkModel";
 import { DictationBar } from "./DictationBar";
+import {
+  DaemonDictationProvider,
+  type DaemonDictationApi,
+} from "./providers/DaemonDictationProvider";
 import { DeepgramProvider } from "./providers/DeepgramProvider";
 import { LocalWhisperProvider } from "./providers/LocalWhisperProvider";
 import type { Transcriber, TranscriberStatus } from "./providers/types";
 import {
   EMBEDDED_MODELS,
   embeddedModelRepo,
+  isDaemonSpeechProvider,
   loadTranscriptionSettings,
   type DictationAppearance,
   type TranscriptionSettings,
@@ -140,6 +145,12 @@ export interface TranscriptionControllerDeps {
   resolveSession: () => DictationSession | null;
   /** Surface an error to the user (e.g. a toast) when no UI bar exists. */
   onError?: (message: string) => void;
+  /**
+   * The primary host's daemon API, for the daemon-backed engines
+   * ("claude" / "codex"). Absent in harnesses that only exercise the
+   * in-satellite engines; picking a daemon engine then fails loudly.
+   */
+  daemonSpeechApi?: () => DaemonDictationApi;
 }
 
 export class TranscriptionController {
@@ -231,6 +242,19 @@ export class TranscriptionController {
   }
 
   private makeProvider(): Transcriber {
+    if (isDaemonSpeechProvider(this.settings.provider)) {
+      const api = this.deps.daemonSpeechApi?.();
+      if (!api) {
+        throw new Error(
+          "Daemon dictation engines need the daemon API wired up (daemonSpeechApi dep).",
+        );
+      }
+      return new DaemonDictationProvider({
+        provider: this.settings.provider,
+        language: this.settings.language,
+        api,
+      });
+    }
     if (this.settings.provider === "deepgram") {
       return new DeepgramProvider({ language: this.settings.language });
     }

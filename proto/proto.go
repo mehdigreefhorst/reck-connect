@@ -464,3 +464,43 @@ type PaneUploadsListResponse struct {
 type ArchiveProjectResponse struct {
 	Archived bool `json:"archived"`
 }
+
+// --- Daemon dictation (speech-to-text over the agent CLIs' credentials) ---
+
+// DictationProviderStatus is one daemon-side speech provider's
+// availability, from GET /dictation/providers. Availability only — the
+// daemon NEVER returns a token. Reason is user-facing text present only
+// when unavailable (e.g. which CLI to run to refresh a credential).
+// UsesSubscription distinguishes riding a CLI subscription from metered
+// API-key billing so the UI can say which one is in play.
+type DictationProviderStatus struct {
+	Provider         string `json:"provider"`
+	Available        bool   `json:"available"`
+	Reason           string `json:"reason,omitempty"`
+	UsesSubscription bool   `json:"uses_subscription"`
+}
+
+// DictationProvidersResponse is the body of GET /dictation/providers.
+type DictationProvidersResponse struct {
+	Providers []DictationProviderStatus `json:"providers"`
+}
+
+// DictationStreamEvent is one event on the GET /dictation/stream
+// WebSocket (daemon → satellite). Partial text is the unstable running
+// transcript; final is a completed utterance segment. Ready fires once
+// the provider session is up (debug events may precede it).
+type DictationStreamEvent struct {
+	Kind string `json:"kind"` // one of the DictationEvent* constants
+	Text string `json:"text,omitempty"`
+}
+
+// The DictationStreamEvent kinds. The TS side switches on these exact
+// strings (proto.ts's DictationStreamEvent union) — a typo at an emit site
+// silently drops transcript events in the UI, so emit through these.
+const (
+	DictationEventReady   = "ready"
+	DictationEventPartial = "partial"
+	DictationEventFinal   = "final"
+	DictationEventError   = "error"
+	DictationEventDebug   = "debug"
+)

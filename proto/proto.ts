@@ -424,3 +424,36 @@ export interface PaneUploadsListResponse {
 export interface ArchiveProjectResponse {
   archived: boolean;
 }
+
+// --- Daemon dictation (speech-to-text over the agent CLIs' credentials) ---
+
+/**
+ * One daemon-side speech provider's availability, from
+ * `GET /dictation/providers`. Availability only — the daemon NEVER
+ * returns a token. `reason` is user-facing text present only when
+ * unavailable (e.g. which CLI to run to refresh a credential).
+ * `uses_subscription` distinguishes riding a CLI subscription from
+ * metered API-key billing so the UI can say which one is in play.
+ */
+export interface DictationProviderStatus {
+  provider: string;
+  available: boolean;
+  reason?: string;
+  uses_subscription: boolean;
+}
+
+/** Response body for `GET /dictation/providers`. */
+export interface DictationProvidersResponse {
+  providers: DictationProviderStatus[];
+}
+
+/**
+ * One event on the `GET /dictation/stream` WebSocket (daemon → satellite).
+ * `partial` text is the unstable running transcript; `final` is a
+ * completed utterance segment. `ready` fires once the provider session
+ * is up (debug events may precede it).
+ */
+export interface DictationStreamEvent {
+  kind: "ready" | "partial" | "final" | "error" | "debug";
+  text?: string;
+}

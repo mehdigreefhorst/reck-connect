@@ -58,6 +58,7 @@ import {
 import { codexUnavailableMessage } from "./ui/codex-availability";
 import { showToast } from "./viewer/Toast";
 import { installShortcuts } from "./ui/shortcuts";
+import { daemonSpeechApiFor } from "./transcription/daemonSpeech";
 import { renderSettings } from "./ui/settings-view";
 import { addProjectFlow } from "./ui/add-project-dialog";
 import { confirmDeleteProject } from "./ui/delete-project-dialog";
@@ -2400,6 +2401,10 @@ export async function boot(splash?: StartupSplashController) {
           };
         },
         onError: (msg) => showToast(document.body, msg, { kind: "error", durationMs: 6000 }),
+        // Daemon-backed engines ride the primary host's daemon — the machine
+        // that runs the agent CLIs and holds their credentials. One rule,
+        // owned by daemonSpeech.ts, shared with the settings probe.
+        daemonSpeechApi: () => daemonSpeechApiFor(settings),
       });
     } catch (e) {
       console.warn("[dictation] disabled:", e);

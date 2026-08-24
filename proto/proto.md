@@ -62,6 +62,8 @@ Optional auth: `Authorization: Bearer <DAEMON_TOKEN>` — enforced if `DAEMON_TO
 | POST | `/panes/:pane_id/uploads` | `multipart/form-data` with `file` field | `PaneUploadResponse` |
 | GET | `/panes/:pane_id/uploads` | — | `PaneUploadsListResponse` |
 | POST | `/panes/:pane_id/clipboard-image` | raw image bytes; `Content-Type: image/png\|jpeg\|webp\|gif` | `{ok}` (200), 415 (unsupported MIME), 413 (too large), or 500 (NSPasteboard write failed). A later release retired the sidecar; the previous 503 fallback is gone — non-200 means renderer should fall back to the `/uploads` path. |
+| GET | `/dictation/providers` | — | `DictationProvidersResponse` — which daemon-side speech providers have usable credentials; availability only, never a token |
+| GET | `/dictation/stream?provider=&sample_rate=&language=` | WebSocket upgrade | Up: binary frames are PCM16 audio, text `{"type":"stop"}` finalizes. Down: `DictationStreamEvent` JSON frames. Missing/expired credential is a 412 with user-facing text BEFORE upgrade. Bearer via `reck-bearer.<token>` subprotocol (same as `/ws/…`); `sample_rate` defaults 16000, bounds 8000–48000; `language=auto` ⇒ provider default. |
 
 ### Response shapes
 

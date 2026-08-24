@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/rudie-verweij/reck-connect/daemon/internal/config"
+	"github.com/rudie-verweij/reck-connect/daemon/internal/dictation"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/events"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/httpx"
 	"github.com/rudie-verweij/reck-connect/daemon/internal/pty"
@@ -113,6 +114,16 @@ type Server struct {
 	// takes effect without a daemon restart. Nil when telemetry is
 	// disabled; the settings routes 404 in that case.
 	UsageQuotaPoller *usage.QuotaPoller
+
+	// DictationCreds, when non-nil, replaces the real credential readers
+	// used by the /dictation routes. Tests inject this so they never touch
+	// a keychain or a user's ~/.codex; production leaves it nil.
+	DictationCreds func(dictation.Provider) (dictation.Credential, error)
+
+	// DictationBase, when non-empty, overrides the speech providers' real
+	// endpoints (scheme ws/wss). Tests point it at a fake provider server;
+	// production leaves it empty.
+	DictationBase string
 }
 
 // hookNonceStore returns the server's nonce store, lazily creating one
@@ -190,6 +201,12 @@ func (s *Server) Router() *chi.Mux {
 	// chip. NSPasteboard rejection → 500 with the error text; renderer
 	// falls back to the /uploads path above on any 5xx.
 	r.Post("/panes/{pane_id}/clipboard-image", s.handleClipboardImage)
+	// Dictation runs here rather than in the satellite because the tokens
+	// are here: this daemon shares a machine with Claude Code and Codex, and
+	// therefore with their subscription credentials. The satellite supplies
+	// the microphone. See internal/dictation.
+	r.Get("/dictation/providers", s.handleDictationProviders)
+	r.Get(dictationStreamPath, s.handleDictationStream) // WS upgrades are GET-only
 	r.HandleFunc("/ws/{id}/{pane_id}", s.handleWS)
 	return r
 }
@@ -237,6 +254,19 @@ const (
 // '.' separator rather than ':' or '=' because the HTTP subprotocol
 // grammar (RFC 6455 §11.5) restricts token characters.
 const WSBearerSubprotocol = "reck-bearer"
+
+// dictationStreamPath is the dictation WebSocket route. One constant shared
+// by the route registration and the subprotocol-auth allowlist, so the two
+// can never drift apart silently.
+const dictationStreamPath = "/dictation/stream"
+
+// wsAuthPath reports whether a route is upgraded to a WebSocket by a browser
+// client, which cannot set an Authorization header — only these routes may
+// authenticate via the reck-bearer subprotocol. Keeping the set explicit
+// stops the subprotocol fallback from leaking onto plain HTTP endpoints.
+func wsAuthPath(path string) bool {
+	return strings.HasPrefix(path, "/ws/") || path == dictationStreamPath
+}
 
 // extractWSBearer returns the bearer token encoded in the
 // Sec-WebSocket-Protocol header, if any. The header is a comma-separated
@@ -316,8 +346,12 @@ func (s *Server) authMiddleware(next nethttp.Handler) nethttp.Handler {
 		// response MUST name one of the offered subprotocols or the
 		// browser fails the upgrade).
 		var offeredSubprotocol string
-		if strings.HasPrefix(r.URL.Path, "/ws/") {
-			if bearer, offered := extractWSBearer(r.Header); bearer != "" {
+		if wsAuthPath(r.URL.Path) {
+			if bearer, offered := extractWSBearer(r.Header); bearer != "" &&
+				subtle.ConstantTimeCompare([]byte("Bearer "+bearer), expected) == 1 {
+				// Only a VALIDATING subprotocol bearer is echoed back in the
+				// 101 — never an arbitrary credential-shaped client string
+				// that happened to ride beside a valid Authorization header.
 				if h == "" {
 					h = "Bearer " + bearer
 				}

@@ -8,6 +8,7 @@ import {
   TranscriptionController,
   type DictationSession,
 } from "./TranscriptionController";
+import type { DaemonDictationApi } from "./providers/DaemonDictationProvider";
 import { showDictationContextMenu } from "./languageMenu";
 import { showDictationAdvancedPanel } from "./dictationAdvancedPanel";
 import { setDictationFabsVisible } from "./micOverlay";
@@ -27,6 +28,8 @@ export interface InitTranscriptionDeps {
   resolveSession: () => DictationSession | null;
   /** Surface an error with no active dictation bar (e.g. a toast). */
   onError: (message: string) => void;
+  /** The primary host's daemon API for the "claude"/"codex" engines. */
+  daemonSpeechApi?: () => DaemonDictationApi;
 }
 
 export interface TranscriptionHandle {
@@ -43,6 +46,7 @@ export async function initTranscription(
     settings,
     resolveSession: deps.resolveSession,
     onError: deps.onError,
+    daemonSpeechApi: deps.daemonSpeechApi,
   });
 
   const toggle = (): void => {
