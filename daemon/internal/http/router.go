@@ -119,6 +119,11 @@ type Server struct {
 	// used by the /dictation routes. Tests inject this so they never touch
 	// a keychain or a user's ~/.codex; production leaves it nil.
 	DictationCreds func(dictation.Provider) (dictation.Credential, error)
+
+	// DictationBase, when non-empty, overrides the speech providers' real
+	// endpoints (scheme ws/wss). Tests point it at a fake provider server;
+	// production leaves it empty.
+	DictationBase string
 }
 
 // hookNonceStore returns the server's nonce store, lazily creating one
@@ -255,6 +260,14 @@ const WSBearerSubprotocol = "reck-bearer"
 // list of offered subprotocols; we scan for the first entry whose prefix
 // matches `reck-bearer.` and return the suffix.
 //
+// wsAuthPath reports whether a route is upgraded to a WebSocket by a browser
+// client, which cannot set an Authorization header — only these routes may
+// authenticate via the reck-bearer subprotocol. Keeping the set explicit
+// stops the subprotocol fallback from leaking onto plain HTTP endpoints.
+func wsAuthPath(path string) bool {
+	return strings.HasPrefix(path, "/ws/") || path == "/dictation/stream"
+}
+
 // Returns ("", "") if the caller didn't offer a recognised bearer entry —
 // the handler then falls through to the Authorization header path or 401.
 // The second return value is the raw subprotocol string that the server
@@ -328,7 +341,7 @@ func (s *Server) authMiddleware(next nethttp.Handler) nethttp.Handler {
 		// response MUST name one of the offered subprotocols or the
 		// browser fails the upgrade).
 		var offeredSubprotocol string
-		if strings.HasPrefix(r.URL.Path, "/ws/") {
+		if wsAuthPath(r.URL.Path) {
 			if bearer, offered := extractWSBearer(r.Header); bearer != "" {
 				if h == "" {
 					h = "Bearer " + bearer

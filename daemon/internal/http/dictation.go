@@ -145,9 +145,16 @@ func (s *Server) handleDictationStream(w nethttp.ResponseWriter, r *nethttp.Requ
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+	// A browser authenticates the upgrade by offering the reck-bearer
+	// subprotocol; the 101 MUST echo it back or the browser fails the
+	// entire handshake. Empty when the caller used an Authorization header.
+	accept := &websocket.AcceptOptions{
 		InsecureSkipVerify: true, // origin already checked above
-	})
+	}
+	if sp := WSSubprotocolFromRequest(r); sp != "" {
+		accept.Subprotocols = []string{sp}
+	}
+	conn, err := websocket.Accept(w, r, accept)
 	if err != nil {
 		return
 	}
@@ -169,7 +176,7 @@ func (s *Server) handleDictationStream(w nethttp.ResponseWriter, r *nethttp.Requ
 		_ = conn.Write(ctx, websocket.MessageText, payload)
 	}
 
-	session, err := dictation.Dial(ctx, provider, cred, cfg, "", dictation.Handlers{
+	session, err := dictation.Dial(ctx, provider, cred, cfg, s.DictationBase, dictation.Handlers{
 		OnPartial: func(t string) { emit("partial", t) },
 		OnFinal:   func(t string) { emit("final", t) },
 		OnError:   func(m string) { emit("error", m) },
