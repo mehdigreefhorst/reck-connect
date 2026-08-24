@@ -10,7 +10,19 @@ import { isDictationLanguage } from "./languages";
 export const TRANSCRIPTION_CONFIG_KEY = "transcription";
 export const DEEPGRAM_KEY_CONFIG_KEY = "transcription.deepgramKey";
 
-export type TranscriptionProvider = "local" | "deepgram";
+/**
+ * Which engine transcribes. "local" and "deepgram" run in the satellite;
+ * "claude" and "codex" stream through the daemon, which holds the agent
+ * CLIs' subscription credentials (see daemon docs/concepts/dictation.md).
+ */
+export type TranscriptionProvider = "local" | "deepgram" | "claude" | "codex";
+
+/** The daemon-backed subset of TranscriptionProvider. */
+export type DaemonSpeechProvider = "claude" | "codex";
+
+export function isDaemonSpeechProvider(p: TranscriptionProvider): p is DaemonSpeechProvider {
+  return p === "claude" || p === "codex";
+}
 
 /**
  * Curated embedded (transformers.js) Whisper models the user can pick in
@@ -157,7 +169,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 function coerceProvider(v: unknown): TranscriptionProvider {
-  return v === "deepgram" ? "deepgram" : "local";
+  return v === "deepgram" || v === "claude" || v === "codex" ? v : "local";
 }
 
 function coerceModel(v: unknown): EmbeddedModelId {

@@ -35,6 +35,8 @@ import {
   type TranscriptionProvider,
 } from "../transcription/transcriptionSettings";
 import { DICTATION_LANGUAGES } from "../transcription/languages";
+import { probeDaemonSpeechProviders } from "../transcription/daemonSpeech";
+import type { DictationProviderStatus } from "@proto/proto";
 import { setDictationFabsVisible } from "../transcription/micOverlay";
 import { confirmDialog } from "./new-pane-dialog";
 
@@ -227,7 +229,10 @@ export async function renderSettings(
         <select id="s-stt-provider" class="form-input">
           <option value="local" ${sttSettings.provider === "local" ? "selected" : ""}>On-device Whisper — private, no key needed</option>
           <option value="deepgram" ${sttSettings.provider === "deepgram" ? "selected" : ""}>Deepgram cloud — fastest, needs an API key</option>
+          <option value="claude" ${sttSettings.provider === "claude" ? "selected" : ""}>Claude — your Claude Code subscription, via the daemon</option>
+          <option value="codex" ${sttSettings.provider === "codex" ? "selected" : ""}>Codex / OpenAI — ChatGPT subscription or API key, via the daemon</option>
         </select>
+        <p id="s-stt-daemon-hint" hidden style="margin-top:0.25rem;color:var(--text-secondary);font-size:0.8rem;"></p>
         <div id="s-stt-local-fields" ${sttSettings.provider === "local" ? "" : "hidden"}>
           <label for="s-stt-model">On-device model</label>
           <select id="s-stt-model" class="form-input">${sttModelOptions}</select>
@@ -349,16 +354,55 @@ export async function renderSettings(
     reckPromptEl.value = DEFAULT_RECK_CONNECT_PROMPT;
   };
   // Voice dictation: show only the fields relevant to the chosen engine —
-  // the on-device model picker for local, the API key for Deepgram.
+  // the on-device model picker for local, the API key for Deepgram, and the
+  // availability hint for the daemon-backed engines (Claude / Codex).
   const sttProviderEl = root.querySelector("#s-stt-provider") as HTMLSelectElement;
   const sttLocalFields = root.querySelector("#s-stt-local-fields") as HTMLDivElement;
   const sttDeepgramFields = root.querySelector("#s-stt-deepgram-fields") as HTMLDivElement;
+  const sttDaemonHint = root.querySelector("#s-stt-daemon-hint") as HTMLParagraphElement;
+  const daemonStatuses = new Map<string, DictationProviderStatus>();
+  let daemonProbeDone = false;
   const syncSttFields = (): void => {
-    const isLocal = sttProviderEl.value === "local";
-    sttLocalFields.hidden = !isLocal;
-    sttDeepgramFields.hidden = isLocal;
+    const chosen = sttProviderEl.value;
+    sttLocalFields.hidden = chosen !== "local";
+    sttDeepgramFields.hidden = chosen !== "deepgram";
+    if (chosen !== "claude" && chosen !== "codex") {
+      sttDaemonHint.hidden = true;
+      return;
+    }
+    sttDaemonHint.hidden = false;
+    const st = daemonStatuses.get(chosen);
+    if (st && !st.available) {
+      sttDaemonHint.textContent = st.reason ?? "This engine is unavailable on the daemon.";
+    } else if (st) {
+      sttDaemonHint.textContent = st.uses_subscription
+        ? "Available — rides the subscription already signed in on the daemon's machine; no extra account needed."
+        : "Available via API key (metered billing) on the daemon's machine.";
+    } else {
+      sttDaemonHint.textContent = daemonProbeDone
+        ? "Daemon not reachable — availability unknown. Dictation will report the exact problem when you try."
+        : "Checking availability…";
+    }
   };
   sttProviderEl.addEventListener("change", syncSttFields);
+  syncSttFields();
+  // Probe availability in the background: mark unavailable engines in the
+  // dropdown (still selectable when already chosen, so the saved value
+  // always renders) and explain the remedy in the hint line.
+  void probeDaemonSpeechProviders().then((statuses) => {
+    daemonProbeDone = true;
+    for (const st of statuses ?? []) {
+      daemonStatuses.set(st.provider, st);
+      const opt = sttProviderEl.querySelector(
+        `option[value="${st.provider}"]`,
+      ) as HTMLOptionElement | null;
+      if (opt && !st.available && sttSettings.provider !== st.provider) {
+        opt.disabled = true;
+        opt.textContent = `${opt.textContent} (unavailable)`;
+      }
+    }
+    syncSttFields();
+  });
 
   const btn = root.querySelector("#s-save") as HTMLButtonElement;
   const err = root.querySelector("#s-err") as HTMLDivElement;

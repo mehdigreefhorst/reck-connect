@@ -2400,6 +2400,9 @@ export async function boot(splash?: StartupSplashController) {
           };
         },
         onError: (msg) => showToast(document.body, msg, { kind: "error", durationMs: 6000 }),
+        // Daemon-backed engines ride the primary host's daemon — the machine
+        // that runs the agent CLIs and holds their credentials.
+        daemonSpeechApi: () => apiForHost(primaryHost),
       });
     } catch (e) {
       console.warn("[dictation] disabled:", e);

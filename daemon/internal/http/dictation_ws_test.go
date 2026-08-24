@@ -18,6 +18,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/rudie-verweij/reck-connect/daemon/internal/dictation"
+	"github.com/rudie-verweij/reck-connect/proto"
 )
 
 func TestAuth_WSSubprotocolBearerOnDictationStream(t *testing.T) {
@@ -111,7 +112,7 @@ func TestDictationStreamEchoesSubprotocol(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading events before ready: %v", err)
 		}
-		var ev transcriptEvent
+		var ev proto.DictationStreamEvent
 		if err := json.Unmarshal(raw, &ev); err != nil {
 			t.Fatalf("decoding event %q: %v", raw, err)
 		}

@@ -18,6 +18,7 @@ import type {
   ArchiveProjectResponse,
   PaneUploadResponse,
   RenameRequest,
+  DictationProvidersResponse,
 } from "@proto/proto";
 
 export interface ClientConfig {
@@ -616,6 +617,29 @@ export class ApiClient {
   wsUrl(projectId: string, paneId: string): string {
     const base = this.config.baseUrl.replace(/^http/, "ws");
     return `${base}/ws/${encodeURIComponent(projectId)}/${encodeURIComponent(paneId)}`;
+  }
+
+  /**
+   * Which daemon-side speech providers have usable credentials right now.
+   * Availability only — the daemon never returns a token.
+   */
+  dictationProviders() {
+    return this.fetch<DictationProvidersResponse>("/dictation/providers");
+  }
+
+  /**
+   * URL for the daemon dictation stream WebSocket. Like wsUrl, the token is
+   * NEVER in the query string — pass `wsSubprotocols()` as the second arg of
+   * `new WebSocket(url, protocols)` instead.
+   */
+  dictationStreamUrl(provider: string, sampleRate: number, language: string): string {
+    const base = this.config.baseUrl.replace(/^http/, "ws");
+    const q = new URLSearchParams({
+      provider,
+      sample_rate: String(Math.round(sampleRate)),
+      language,
+    });
+    return `${base}/dictation/stream?${q.toString()}`;
   }
 
   renameProject(projectId: string, displayName: string) {

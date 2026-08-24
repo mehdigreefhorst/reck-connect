@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rudie-verweij/reck-connect/daemon/internal/dictation"
+	"github.com/rudie-verweij/reck-connect/proto"
 )
 
 // stubCreds builds a credential loader that never touches a real keychain
@@ -44,7 +45,7 @@ func TestDictationProviders(t *testing.T) {
 	if rec.Code != nethttp.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
-	var out dictationProvidersResponse
+	var out proto.DictationProvidersResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestDictationProviders(t *testing.T) {
 		t.Fatalf("got %d providers, want 2", len(out.Providers))
 	}
 
-	byName := map[string]dictationProviderStatus{}
+	byName := map[string]proto.DictationProviderStatus{}
 	for _, p := range out.Providers {
 		byName[p.Provider] = p
 	}
@@ -103,7 +104,7 @@ func TestDictationProvidersMarksApiKeyAsNotSubscription(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(nethttp.MethodGet, "/dictation/providers", nil))
 
-	var out dictationProvidersResponse
+	var out proto.DictationProvidersResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

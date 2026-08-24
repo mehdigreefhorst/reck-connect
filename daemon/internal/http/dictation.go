@@ -11,6 +11,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/rudie-verweij/reck-connect/daemon/internal/dictation"
+	"github.com/rudie-verweij/reck-connect/proto"
 )
 
 // Dictation lives on the daemon rather than the satellite because of where
@@ -24,21 +25,9 @@ import (
 // Both are bearer-authed by the existing middleware. Neither ever returns a
 // token, only whether one exists.
 
-// dictationProviderStatus reports whether a provider can be used right now,
-// and if not, what the user should do about it.
-type dictationProviderStatus struct {
-	Provider  string `json:"provider"`
-	Available bool   `json:"available"`
-	// Reason is empty when Available. Otherwise it is user-facing text.
-	Reason string `json:"reason,omitempty"`
-	// UsesSubscription distinguishes riding an existing subscription from
-	// metered API-key billing, so the UI can say which one is in play.
-	UsesSubscription bool `json:"uses_subscription"`
-}
-
-type dictationProvidersResponse struct {
-	Providers []dictationProviderStatus `json:"providers"`
-}
+// The response and event shapes are part of the wire contract with the
+// satellite — see proto.DictationProviderStatus, proto.DictationProvidersResponse
+// and proto.DictationStreamEvent (proto/proto.md documents both routes).
 
 // credLoader is the seam tests use to avoid touching a real keychain.
 type credLoader func(dictation.Provider) (dictation.Credential, error)
@@ -57,11 +46,11 @@ func (s *Server) dictationCreds() credLoader {
 
 func (s *Server) handleDictationProviders(w nethttp.ResponseWriter, r *nethttp.Request) {
 	load := s.dictationCreds()
-	out := dictationProvidersResponse{Providers: make([]dictationProviderStatus, 0, 2)}
+	out := proto.DictationProvidersResponse{Providers: make([]proto.DictationProviderStatus, 0, 2)}
 
 	for _, p := range []dictation.Provider{dictation.ProviderClaude, dictation.ProviderCodex} {
 		cred, err := load(p)
-		st := dictationProviderStatus{Provider: string(p)}
+		st := proto.DictationProviderStatus{Provider: string(p)}
 		switch {
 		case err == nil:
 			st.Available = true
@@ -90,19 +79,13 @@ func missingReason(p dictation.Provider) string {
 	return "No Codex credentials on this machine. Run `codex` and sign in, or set OPENAI_API_KEY in ~/.codex/auth.json."
 }
 
-// transcriptEvent is what the satellite receives on the stream socket.
-type transcriptEvent struct {
-	Kind string `json:"kind"` // "partial" | "final" | "error" | "debug" | "ready"
-	Text string `json:"text,omitempty"`
-}
-
 // handleDictationStream bridges a satellite WebSocket to a provider session.
 //
 // Satellite → daemon: binary frames are PCM16 audio; a text frame
 // {"type":"stop"} requests a graceful finalize. Closing the socket also
 // finalizes, so a dropped satellite never leaves a provider stream open.
 //
-// Daemon → satellite: newline-free JSON transcriptEvent frames.
+// Daemon → satellite: newline-free JSON proto.DictationStreamEvent frames.
 func (s *Server) handleDictationStream(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !originAllowed(r) {
 		nethttp.Error(w, "forbidden origin", nethttp.StatusForbidden)
@@ -169,7 +152,7 @@ func (s *Server) handleDictationStream(w nethttp.ResponseWriter, r *nethttp.Requ
 	emit := func(kind, text string) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		payload, err := json.Marshal(transcriptEvent{Kind: kind, Text: text})
+		payload, err := json.Marshal(proto.DictationStreamEvent{Kind: kind, Text: text})
 		if err != nil {
 			return
 		}

@@ -57,6 +57,37 @@ describe("ApiClient", () => {
     expect(c.wsSubprotocols()).toEqual([]);
   });
 
+  it("GETs /dictation/providers for dictationProviders", async () => {
+    const c = new ApiClient({ baseUrl: "http://x:7315", token: "sek" });
+    let capturedUrl = "";
+    global.fetch = vi.fn(async (u) => {
+      capturedUrl = String(u);
+      return new Response(
+        JSON.stringify({
+          providers: [
+            { provider: "claude", available: true, uses_subscription: true },
+            { provider: "codex", available: false, reason: "Run codex once.", uses_subscription: false },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const out = await c.dictationProviders();
+    expect(capturedUrl).toBe("http://x:7315/dictation/providers");
+    expect(out.providers).toHaveLength(2);
+    expect(out.providers[0].provider).toBe("claude");
+    expect(out.providers[1].reason).toBe("Run codex once.");
+  });
+
+  it("builds the dictation stream ws url without the token", () => {
+    const c = new ApiClient({ baseUrl: "http://host:7315", token: "abc" });
+    const url = c.dictationStreamUrl("claude", 16000, "auto");
+    expect(url).toBe(
+      "ws://host:7315/dictation/stream?provider=claude&sample_rate=16000&language=auto",
+    );
+    expect(url).not.toContain("abc");
+  });
+
   it("POSTs to /projects for createProject", async () => {
     const c = new ApiClient({ baseUrl: "http://x:7315" });
     let captured = { url: "", method: "", body: "" };
