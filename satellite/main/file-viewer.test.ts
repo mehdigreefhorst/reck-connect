@@ -1353,3 +1353,39 @@ describe("translateSearchRootsToStation", () => {
     ).toEqual([]);
   });
 });
+
+describe("composeSuffixSearchRoots() — symlinked duplicates", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "reck-roots-"));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // searchBase arrives realpath'd, projectCwd does not. On macOS that
+  // makes /var/... and /private/var/... two spellings of one directory:
+  // rg walks both, every hit is listed twice, and a single real match
+  // counts as two -- which silently disables the auto-open path.
+  it("collapses two spellings of the same directory to one root", async () => {
+    const real = path.join(dir, "proj");
+    fs.mkdirSync(real);
+    const link = path.join(dir, "link");
+    fs.symlinkSync(real, link);
+
+    const roots = await composeSuffixSearchRoots(fs.realpathSync(real), link);
+    expect(roots).toHaveLength(1);
+  });
+
+  it("still keeps genuinely distinct roots", async () => {
+    const a = path.join(dir, "a");
+    const b = path.join(dir, "b");
+    fs.mkdirSync(a);
+    fs.mkdirSync(b);
+    expect(await composeSuffixSearchRoots(a, b)).toHaveLength(2);
+  });
+
+  it("drops roots that don't exist", async () => {
+    expect(
+      await composeSuffixSearchRoots(path.join(dir, "ghost"), undefined),
+    ).toEqual([]);
+  });
+});

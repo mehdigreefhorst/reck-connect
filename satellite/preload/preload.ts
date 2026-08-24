@@ -417,6 +417,24 @@ contextBridge.exposeInMainWorld("reckAPI", {
         ipcRenderer.invoke("file:suffix:cancel", searchId) as Promise<{
           ok: boolean;
         }>,
+      /**
+       * Everything main emitted for `searchId` before this window
+       * subscribed. Null when nothing is buffered (unknown or already
+       * released) — which must NOT be treated as "found nothing".
+       */
+      replay: (searchId: string) =>
+        ipcRenderer.invoke("file:suffix:replay", searchId) as Promise<
+          | {
+              matches: string[];
+              scannedDirs: number;
+              foundCount: number;
+              truncated: boolean;
+              terminal:
+                | { kind: "done" | "cancelled"; totalFound: number; searchedRoots?: string[] }
+                | null;
+            }
+          | null
+        >,
     },
     /**
      * Read the file path this popup window was opened for, from the URL

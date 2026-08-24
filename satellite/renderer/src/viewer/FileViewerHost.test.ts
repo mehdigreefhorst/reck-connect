@@ -27,6 +27,7 @@ interface FilesApiStub {
     onDone: ReturnType<typeof vi.fn>;
     onCancelled: ReturnType<typeof vi.fn>;
     cancel: ReturnType<typeof vi.fn>;
+    replay?: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -97,6 +98,7 @@ describe("mountFileViewer", () => {
         onDone: vi.fn().mockReturnValue(() => {}),
         onCancelled: vi.fn().mockReturnValue(() => {}),
         cancel: vi.fn().mockResolvedValue({ ok: true }),
+        replay: vi.fn().mockResolvedValue(null),
       },
     };
     installReckApi(files);
@@ -877,6 +879,7 @@ describe("Round 6 Phase DD — station-aware create banner", () => {
         onDone: vi.fn().mockReturnValue(() => {}),
         onCancelled: vi.fn().mockReturnValue(() => {}),
         cancel: vi.fn().mockResolvedValue({ ok: true }),
+        replay: vi.fn().mockResolvedValue(null),
       },
     };
     installReckApi(files);
@@ -1062,6 +1065,7 @@ describe("Round 6 Phase CC4 — streaming suffix-search picker", () => {
           return () => {};
         }),
         cancel: vi.fn().mockResolvedValue({ ok: true }),
+        replay: vi.fn().mockResolvedValue(null),
       },
     };
     installReckApi(files);
@@ -1075,6 +1079,58 @@ describe("Round 6 Phase CC4 — streaming suffix-search picker", () => {
       ),
     });
   };
+
+  describe("replaying events emitted before this popup subscribed", () => {
+    // main creates this window and starts the search in the same tick.
+    // With the ripgrep backend the whole search regularly finishes before
+    // this bundle has parsed, so every match and the `done` event were
+    // emitted into the void and the picker sat on "Searching project
+    // tree…" forever for a search that had already succeeded.
+    const flush = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    it("renders matches that arrived before subscription", async () => {
+      files.suffixSearch!.replay = vi.fn().mockResolvedValue({
+        matches: ["/safe/a/ovh.py", "/safe/b/ovh.py"],
+        scannedDirs: 9,
+        foundCount: 2,
+        truncated: false,
+        terminal: { kind: "done", totalFound: 2, searchedRoots: ["/safe"] },
+      });
+      installReckApi(files);
+      await mountWithPendingSearch("sx-replay");
+      await flush();
+
+      expect(files.suffixSearch!.replay).toHaveBeenCalledWith("sx-replay");
+      expect(root.textContent).toContain("/safe/a/ovh.py");
+      expect(root.textContent).toContain("/safe/b/ovh.py");
+      expect(root.textContent).toContain("found 2 matches");
+      expect(root.textContent).not.toContain("Searching project tree");
+    });
+
+    it("leaves a live search alone when nothing is buffered", async () => {
+      // null must not be read as "the search finished with no matches" —
+      // that would freeze a picker that is streaming correctly.
+      files.suffixSearch!.replay = vi.fn().mockResolvedValue(null);
+      installReckApi(files);
+      await mountWithPendingSearch("sx-null");
+      await flush();
+      expect(root.textContent).toContain("Searching project tree");
+    });
+
+    it("survives an older preload that has no replay method", async () => {
+      // A popup can outlive the main process that spawned it across an
+      // upgrade. Calling a missing method throws synchronously.
+      delete files.suffixSearch!.replay;
+      installReckApi(files);
+      await expect(mountWithPendingSearch("sx-old")).resolves.not.toThrow();
+      await flush();
+      expect(root.querySelector(".file-viewer-suffix-streaming")).not.toBeNull();
+    });
+  });
 
   it("sets document.title to the file basename so macOS Mission Control can tell popups apart", async () => {
     // file-viewer.html ships a static <title>Reck — File Viewer</title>

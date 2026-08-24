@@ -32,6 +32,7 @@ import {
   imageMimeFor,
   versionTokenFor,
 } from "./image-protocol";
+import { SuffixSearchBuffers } from "./suffix-search-buffer";
 import { checkExternalUrl } from "./ipc-validation";
 import { deriveProjectAnchor } from "./project-anchor";
 import { normalizeProjectCwd } from "./project-cwd";
@@ -1258,6 +1259,13 @@ const fileViewerWindows = new Map<string, BrowserWindow>();
 const activeSuffixSearches = new Map<string, SuffixSearchHandle>();
 
 /**
+ * Backlog of everything emitted for each in-flight search, so a popup that
+ * finishes loading AFTER the search completed can still be told what
+ * happened. See main/suffix-search-buffer.ts for why this is necessary.
+ */
+const suffixSearchBuffers = new SuffixSearchBuffers();
+
+/**
  * Round 8.1 Phase SS — reverse-lookup from a streaming popup window to
  * its searchId. Used on re-click: if the user clicks the same path
  * again while the previous popup's worker is still walking (commonly
@@ -2052,6 +2060,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
                 stationRoot,
               )
             : [];
+          suffixSearchBuffers.start(searchId);
           const handle = suffixSearchOrchestrator.startSearch({
             roots: stationSearchRoots,
             suffix: stationSuffix,
@@ -2063,18 +2072,28 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
                     roots: stationRemoteFallbackRoots,
                   }
                 : undefined,
-            onMatch: (matchedPath) =>
+            onMatch: (matchedPath) => {
+              suffixSearchBuffers.recordMatch(searchId, matchedPath);
               safeSend("file:suffix:match", {
                 searchId,
                 path: matchedPath,
-              }),
-            onProgress: (info) =>
+              });
+            },
+            onProgress: (info) => {
+              suffixSearchBuffers.recordProgress(searchId, info.scannedDirs);
               safeSend("file:suffix:progress", {
                 searchId,
                 scannedDirs: info.scannedDirs,
                 foundCount: info.foundCount,
-              }),
+              });
+            },
             onDone: (totalFound) => {
+              suffixSearchBuffers.recordTerminal(
+                searchId,
+                "done",
+                totalFound,
+                stationSearchRoots,
+              );
               activeSuffixSearches.delete(searchId);
               // say WHERE we searched so the renderer's
               // no-match banner can render it (the 2026-06-06 failure
@@ -2086,6 +2105,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
               });
             },
             onCancelled: (totalFound) => {
+              suffixSearchBuffers.recordTerminal(searchId, "cancelled", totalFound);
               activeSuffixSearches.delete(searchId);
               safeSend("file:suffix:cancelled", {
                 searchId,
@@ -2099,6 +2119,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
             const h = activeSuffixSearches.get(searchId);
             if (h && !h.isDone()) h.cancel();
             activeSuffixSearches.delete(searchId);
+            suffixSearchBuffers.release(searchId);
             streamingPopupSearchIds.delete(win);
           });
           return { ok: true };
@@ -2436,6 +2457,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
       const stationFallbackRoots = backend.fallback
         ? translateSearchRootsToStation(searchRoots, mountPoint, stationRoot)
         : [];
+      suffixSearchBuffers.start(searchId);
       const handle = suffixSearchOrchestrator.startSearch({
         roots: searchRoots,
         suffix,
@@ -2448,15 +2470,25 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
           anchoredCandidate && !path.isAbsolute(originalText)
             ? { absolutePath: anchoredCandidate }
             : undefined,
-        onMatch: (matchedPath) =>
-          safeSend("file:suffix:match", { searchId, path: matchedPath }),
-        onProgress: (info) =>
+        onMatch: (matchedPath) => {
+          suffixSearchBuffers.recordMatch(searchId, matchedPath);
+          safeSend("file:suffix:match", { searchId, path: matchedPath });
+        },
+        onProgress: (info) => {
+          suffixSearchBuffers.recordProgress(searchId, info.scannedDirs);
           safeSend("file:suffix:progress", {
             searchId,
             scannedDirs: info.scannedDirs,
             foundCount: info.foundCount,
-          }),
+          });
+        },
         onDone: (totalFound) => {
+          suffixSearchBuffers.recordTerminal(
+            searchId,
+            "done",
+            totalFound,
+            searchRoots,
+          );
           activeSuffixSearches.delete(searchId);
           // thread the searched roots to the popup so
           // the no-match banner can show them.
@@ -2467,6 +2499,7 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
           });
         },
         onCancelled: (totalFound) => {
+          suffixSearchBuffers.recordTerminal(searchId, "cancelled", totalFound);
           activeSuffixSearches.delete(searchId);
           safeSend("file:suffix:cancelled", { searchId, totalFound });
         },
@@ -2480,12 +2513,22 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
         const h = activeSuffixSearches.get(searchId);
         if (h && !h.isDone()) h.cancel();
         activeSuffixSearches.delete(searchId);
+        suffixSearchBuffers.release(searchId);
         streamingPopupSearchIds.delete(win);
       });
 
       return { ok: true };
     },
   );
+
+  // The popup asks for whatever it missed between window creation and its
+  // own subscription. Without this the ripgrep backend routinely finishes
+  // first and the picker never learns the search succeeded.
+  ipcMain.removeHandler("file:suffix:replay");
+  ipcMain.handle("file:suffix:replay", (_e, rawId: unknown) => {
+    if (typeof rawId !== "string" || rawId === "") return null;
+    return suffixSearchBuffers.snapshot(rawId);
+  });
 
   // Round 6 Phase CC — cancel an in-flight streaming suffix search.
   ipcMain.removeHandler("file:suffix:cancel");
@@ -2555,11 +2598,25 @@ export async function composeSuffixSearchRoots(
   const out: string[] = [];
   const seen = new Set<string>();
   for (const c of candidates) {
-    if (seen.has(c)) continue;
-    seen.add(c);
     try {
       const s = await fsp.stat(c);
-      if (s.isDirectory()) out.push(c);
+      if (!s.isDirectory()) continue;
+      // Dedupe by REALPATH, not by the literal string. searchBase arrives
+      // realpath'd while projectCwd does not, so on macOS the same
+      // directory shows up as both `/var/...` and `/private/var/...`.
+      // Both would be walked, listing every hit twice — and a lone match
+      // counted as two never triggers the single-match auto-open.
+      let key = c;
+      try {
+        key = await fsp.realpath(c);
+      } catch {
+        // Unreadable link: fall back to the literal path.
+      }
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // Push the ORIGINAL spelling: it is what the user's paths and the
+      // display translation are expressed in.
+      out.push(c);
     } catch {
       // skip missing / unreadable roots
     }
