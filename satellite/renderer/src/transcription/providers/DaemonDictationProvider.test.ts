@@ -13,12 +13,13 @@ class FakeSocket {
   protocols: string[];
   binaryType = "blob";
   readyState = 0; // CONNECTING
+  bufferedAmount = 0;
   sent: (string | Uint8Array)[] = [];
   closed = false;
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((ev: { code: number }) => void) | null = null;
 
   constructor(url: string, protocols: string[]) {
     this.url = url;
@@ -39,12 +40,12 @@ class FakeSocket {
     this.readyState = 1; // OPEN
     this.onopen?.();
   }
-  emitEvent(ev: { kind: string; text?: string }): void {
+  emitEvent(ev: { kind: string; text?: unknown }): void {
     this.onmessage?.({ data: JSON.stringify(ev) });
   }
-  emitClose(): void {
+  emitClose(code = 1000): void {
     this.readyState = 3; // CLOSED
-    this.onclose?.();
+    this.onclose?.({ code });
   }
 }
 
@@ -163,5 +164,70 @@ describe("DaemonDictationProvider", () => {
     expect(h.events.error).toEqual(["speech stream fell over"]);
     h.provider.feed(new Float32Array([0.1]), 16000);
     expect(s.sent).toHaveLength(0);
+  });
+
+  it("end() commits the transcript even when the daemon never closes (flush timeout)", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness();
+      const begun = h.provider.begin(h.handlers, 16000);
+      const s = h.sockets[0];
+      s.emitOpen();
+      s.emitEvent({ kind: "ready" });
+      await begun;
+      s.emitEvent({ kind: "final", text: "Hello world." });
+
+      const ended = h.provider.end(new Float32Array(0), 16000);
+      await vi.advanceTimersByTimeAsync(9000); // daemon silent past the flush bound
+      await ended;
+      expect(h.events.final).toEqual(["Hello world."]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an unexpected mid-utterance close reports an error and commits what arrived", async () => {
+    const h = makeHarness();
+    const s = await beginReady(h);
+    s.emitEvent({ kind: "final", text: "Hello." });
+    s.emitClose(1006); // daemon died — nobody called end()
+    expect(h.events.final).toEqual(["Hello."]);
+    expect(h.events.error).toHaveLength(1);
+    expect(h.events.error[0]).toMatch(/unexpectedly/);
+  });
+
+  it("a requested close (end) does not report an error", async () => {
+    const h = makeHarness();
+    const s = await beginReady(h);
+    const ended = h.provider.end(new Float32Array(0), 16000);
+    s.emitClose(1000);
+    await ended;
+    expect(h.events.error).toEqual([]);
+  });
+
+  it("cancel() during begin() rejects begin promptly", async () => {
+    const h = makeHarness();
+    const begun = h.provider.begin(h.handlers, 16000);
+    h.provider.cancel(); // user aborted before the daemon answered
+    await expect(begun).rejects.toThrow(/cancel/i);
+  });
+
+  it("an error frame before ready rejects begin without double-reporting", async () => {
+    const h = makeHarness();
+    const begun = h.provider.begin(h.handlers, 16000);
+    const s = h.sockets[0];
+    s.emitOpen();
+    s.emitEvent({ kind: "error", text: "credential rejected upstream" });
+    await expect(begun).rejects.toThrow(/credential rejected/);
+    // begin()'s rejection is the report; a second onError would double-toast.
+    expect(h.events.error).toEqual([]);
+  });
+
+  it("ignores frames whose text is not a string", async () => {
+    const h = makeHarness();
+    const s = await beginReady(h);
+    s.emitEvent({ kind: "final", text: 123 });
+    expect(h.events.partial).toEqual([]);
+    expect(h.events.error).toEqual([]);
   });
 });

@@ -160,18 +160,18 @@ func (s *Server) handleDictationStream(w nethttp.ResponseWriter, r *nethttp.Requ
 	}
 
 	session, err := dictation.Dial(ctx, provider, cred, cfg, s.DictationBase, dictation.Handlers{
-		OnPartial: func(t string) { emit("partial", t) },
-		OnFinal:   func(t string) { emit("final", t) },
-		OnError:   func(m string) { emit("error", m) },
-		OnDebug:   func(m string) { emit("debug", m) },
+		OnPartial: func(t string) { emit(proto.DictationEventPartial, t) },
+		OnFinal:   func(t string) { emit(proto.DictationEventFinal, t) },
+		OnError:   func(m string) { emit(proto.DictationEventError, m) },
+		OnDebug:   func(m string) { emit(proto.DictationEventDebug, m) },
 	})
 	if err != nil {
-		emit("error", err.Error())
+		emit(proto.DictationEventError, err.Error())
 		return
 	}
 	defer session.Close()
 
-	emit("ready", "")
+	emit(proto.DictationEventReady, "")
 
 	for {
 		mt, data, err := conn.Read(ctx)

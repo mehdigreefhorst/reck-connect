@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +151,8 @@ func Dial(ctx context.Context, p Provider, cred Credential, cfg Config, base str
 	}
 	if base == "" {
 		base = defaultBase(p)
+	} else if err := validateBase(base); err != nil {
+		return nil, err
 	}
 
 	dialCtx, cancelDial := context.WithTimeout(ctx, 15*time.Second)
@@ -190,6 +194,31 @@ func defaultBase(p Provider) string {
 		return "wss://api.anthropic.com"
 	}
 	return "wss://api.openai.com"
+}
+
+// validateBase refuses a base override that would send the user's real
+// subscription bearer anywhere except an encrypted endpoint or a loopback
+// test server. The override is a test seam today; this keeps a future
+// config/env wiring from becoming a one-line credential-exfil primitive
+// (or a cleartext ws:// token leak).
+func validateBase(base string) error {
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("dictation: invalid provider base %q: %w", base, err)
+	}
+	if u.Scheme == "wss" {
+		return nil
+	}
+	if u.Scheme == "ws" {
+		host := u.Hostname()
+		if host == "localhost" {
+			return nil
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+	}
+	return fmt.Errorf("dictation: refusing to send credentials to %q (want wss://, or ws:// to loopback)", base)
 }
 
 // dialError turns a failed upgrade into something a user can act on. The

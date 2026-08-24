@@ -14,7 +14,10 @@ import { loadSettings } from "../config";
 import { AudioCapture } from "./AudioCapture";
 import { daemonSpeechApiFor } from "./daemonSpeech";
 import { rms, WHISPER_SAMPLE_RATE } from "./pcm";
-import { DaemonDictationProvider } from "./providers/DaemonDictationProvider";
+import {
+  DaemonDictationProvider,
+  type DaemonDictationApi,
+} from "./providers/DaemonDictationProvider";
 import { DeepgramProvider } from "./providers/DeepgramProvider";
 import { LocalWhisperProvider } from "./providers/LocalWhisperProvider";
 import type { Transcriber } from "./providers/types";
@@ -258,7 +261,7 @@ async function daemon(opts: {
     finalText: null,
     errors: [],
   };
-  let api;
+  let api: DaemonDictationApi;
   try {
     api = opts.baseUrl
       ? new ApiClient({ baseUrl: opts.baseUrl, token: opts.token })

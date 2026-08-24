@@ -24,9 +24,14 @@ import (
 	"time"
 )
 
-// liveChunk is 100 ms of 16 kHz mono PCM16 — the granularity a satellite's
-// mic capture would send.
-const liveChunk = 16000 * 2 / 10
+// liveSampleRate is the fixture's rate — the same 16 kHz the satellite
+// captures at. The chunk size and the fixture check derive from it so a
+// re-generated fixture can't silently mismatch the declared rate.
+const liveSampleRate = 16000
+
+// liveChunk is 100 ms of mono PCM16 — the granularity a satellite's mic
+// capture would send.
+const liveChunk = liveSampleRate * 2 / 10
 
 func TestLiveProviders(t *testing.T) {
 	if os.Getenv("RECK_DICTATION_LIVE") != "1" {
@@ -78,10 +83,14 @@ func TestLiveProviders(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			s, err := Dial(ctx, tc.p, cred, Config{SampleRate: 16000}, "", h)
+			s, err := Dial(ctx, tc.p, cred, Config{SampleRate: liveSampleRate}, "", h)
 			if err != nil {
 				t.Fatalf("Dial: %v", err)
 			}
+			// Close is idempotent; this defer covers every t.Fatalf below —
+			// without it, the read goroutine outlives the subtest and its
+			// t.Logf panics ("Log in goroutine after test has completed").
+			defer s.Close()
 
 			// Speech at realtime pace, then over a second of silence so
 			// endpointing/VAD sees the utterance end before we hang up.
@@ -131,8 +140,11 @@ func readFixturePCM16(t *testing.T, path string) []byte {
 	sawFmt := false
 	for off := 12; off+8 <= len(raw); {
 		id := string(raw[off : off+4])
-		size := int(binary.LittleEndian.Uint32(raw[off+4 : off+8]))
-		body := raw[off+8 : min(off+8+size, len(raw))]
+		size := int64(binary.LittleEndian.Uint32(raw[off+4 : off+8]))
+		if int64(off)+8+size > int64(len(raw)) {
+			t.Fatalf("fixture chunk %q at offset %d overruns the file", id, off)
+		}
+		body := raw[off+8 : off+8+int(size)]
 		switch id {
 		case "fmt ":
 			if len(body) < 16 {
@@ -142,15 +154,15 @@ func readFixturePCM16(t *testing.T, path string) []byte {
 			channels := binary.LittleEndian.Uint16(body[2:4])
 			rate := binary.LittleEndian.Uint32(body[4:8])
 			bits := binary.LittleEndian.Uint16(body[14:16])
-			if format != 1 || channels != 1 || rate != 16000 || bits != 16 {
-				t.Fatalf("fixture must be PCM16 mono 16 kHz, got format=%d channels=%d rate=%d bits=%d",
-					format, channels, rate, bits)
+			if format != 1 || channels != 1 || rate != liveSampleRate || bits != 16 {
+				t.Fatalf("fixture must be PCM16 mono %d Hz, got format=%d channels=%d rate=%d bits=%d",
+					liveSampleRate, format, channels, rate, bits)
 			}
 			sawFmt = true
 		case "data":
 			data = body
 		}
-		off += 8 + size + size%2 // chunks are word-aligned
+		off += 8 + int(size) + int(size&1) // chunks are word-aligned
 	}
 	if !sawFmt || len(data) == 0 {
 		t.Fatalf("fixture %s has no fmt/data chunks", path)

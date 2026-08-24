@@ -1,11 +1,13 @@
 package dictation
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func parseQuery(t *testing.T, raw string) url.Values {
@@ -144,6 +146,34 @@ func TestCodexHeaders(t *testing.T) {
 			t.Error("api-key credential must not send chatgpt-account-id")
 		}
 	})
+	t.Run("no beta header: the GA realtime API rejects it", func(t *testing.T) {
+		// OpenAI-Beta: realtime=v1 selects the RETIRED beta API, which now
+		// refuses with close 4000 (beta_api_shape_disabled) — verified live
+		// 2026-08-24. Only this offline pin keeps it from creeping back.
+		h := (&codexProtocol{}).headers(Credential{Token: "jwt"})
+		if v := h.Get("OpenAI-Beta"); v != "" {
+			t.Errorf("OpenAI-Beta = %q, want unset (the GA API is the bare /v1/realtime)", v)
+		}
+	})
+}
+
+// The base override is a test seam, but it redirects a request carrying the
+// user's REAL subscription bearer — so it must never point anywhere except
+// an encrypted endpoint or a loopback test server.
+func TestDialRefusesCredentialLeakingBases(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, base := range []string{
+		"ws://198.51.100.7:9", // cleartext off-host: token would cross the wire
+		"http://127.0.0.1:9",  // not a websocket scheme at all
+		"wss://%zz",           // unparseable
+	} {
+		if _, err := Dial(ctx, ProviderClaude, Credential{Token: "tok"}, Config{}, base, Handlers{}); err == nil {
+			t.Errorf("Dial(base=%q) should refuse before dialing", base)
+		} else if !strings.Contains(err.Error(), "refus") && !strings.Contains(err.Error(), "invalid") {
+			t.Errorf("Dial(base=%q) error should say it refused, got: %v", base, err)
+		}
+	}
 }
 
 func TestCodexHelloIsATranscriptionSession(t *testing.T) {

@@ -389,20 +389,27 @@ export async function renderSettings(
   // Probe availability in the background: mark unavailable engines in the
   // dropdown (still selectable when already chosen, so the saved value
   // always renders) and explain the remedy in the hint line.
-  void probeDaemonSpeechProviders().then((statuses) => {
-    daemonProbeDone = true;
-    for (const st of statuses ?? []) {
-      daemonStatuses.set(st.provider, st);
-      const opt = sttProviderEl.querySelector(
-        `option[value="${st.provider}"]`,
-      ) as HTMLOptionElement | null;
-      if (opt && !st.available && sttSettings.provider !== st.provider) {
-        opt.disabled = true;
-        opt.textContent = `${opt.textContent} (unavailable)`;
+  void probeDaemonSpeechProviders()
+    .then((statuses) => {
+      for (const st of statuses ?? []) {
+        // Only the engines this dropdown knows about — the daemon's ids are
+        // remote data, not something to build lookups or selectors from.
+        const opt = Array.from(sttProviderEl.options).find((o) => o.value === st.provider);
+        if (!opt) continue;
+        daemonStatuses.set(st.provider, st);
+        if (!st.available && sttSettings.provider !== st.provider) {
+          opt.disabled = true;
+          opt.textContent = `${opt.textContent} (unavailable)`;
+        }
       }
-    }
-    syncSttFields();
-  });
+    })
+    .catch((e) => {
+      console.warn("[dictation] availability probe failed:", e);
+    })
+    .finally(() => {
+      daemonProbeDone = true;
+      syncSttFields();
+    });
 
   const btn = root.querySelector("#s-save") as HTMLButtonElement;
   const err = root.querySelector("#s-err") as HTMLDivElement;

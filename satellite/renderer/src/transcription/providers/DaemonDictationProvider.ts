@@ -33,9 +33,24 @@ export interface DaemonDictationOptions {
 const READY_TIMEOUT_MS = 10_000;
 
 // After {"type":"stop"} the daemon flushes trailing finals (1.5 s idle,
-// 5 s hard bound) and then closes. Wait slightly longer, so the daemon
-// always wins or loses before we stop listening.
-const CLOSE_FLUSH_TIMEOUT_MS = 6_000;
+// 5 s hard bound) and then closes. Wait comfortably longer (the daemon may
+// be a station host away), so the daemon always wins or loses before we
+// stop listening — and if it still hasn't closed, commit what we have
+// rather than dropping the tail of the utterance.
+const CLOSE_FLUSH_TIMEOUT_MS = 8_000;
+
+// Stalled link guard: when the socket's unsent backlog exceeds this, drop
+// frames instead of buffering unbounded PCM in the renderer (~32 KB/s at
+// 16 kHz, so this is a minute of backlog — the stream is dead by then).
+const MAX_BUFFERED_BYTES = 2 * 1024 * 1024;
+
+const EVENT_KINDS: ReadonlySet<string> = new Set([
+  "ready",
+  "partial",
+  "final",
+  "error",
+  "debug",
+]);
 
 export class DaemonDictationProvider implements Transcriber {
   private readonly provider: DaemonSpeechProvider;
@@ -46,6 +61,10 @@ export class DaemonDictationProvider implements Transcriber {
   private socket: WebSocket | null = null;
   private handlers: TranscriptionHandlers | null = null;
   private onClosed: (() => void) | null = null;
+  // Settles a begin() still waiting for "ready" when the session is torn
+  // down under it — without this, cancel() during begin() leaves the caller
+  // hanging until the ready timeout and then toasts a stale error.
+  private abortBegin: ((err: Error) => void) | null = null;
   // Set once the socket errors or closes — stop feeding a dead session.
   private dead = false;
   // The daemon streams finalized SEGMENTS plus a rolling partial; the
@@ -86,54 +105,81 @@ export class DaemonDictationProvider implements Transcriber {
     socket.binaryType = "arraybuffer";
     this.socket = socket;
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const settle = (err?: Error): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (err) reject(err);
-        else resolve();
-      };
-      const timer = setTimeout(() => {
-        settle(new Error(`The daemon dictation stream did not become ready within ${READY_TIMEOUT_MS / 1000}s.`));
-      }, READY_TIMEOUT_MS);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const settle = (err?: Error): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          this.abortBegin = null;
+          if (err) reject(err);
+          else resolve();
+        };
+        this.abortBegin = (err) => settle(err);
+        const timer = setTimeout(() => {
+          settle(new Error(`The daemon dictation stream did not become ready within ${READY_TIMEOUT_MS / 1000}s.`));
+        }, READY_TIMEOUT_MS);
 
-      socket.onmessage = (ev) => {
-        const parsed = this.decode(ev.data);
-        if (!parsed) return;
-        if (parsed.kind === "ready") {
-          settle();
-          return;
-        }
-        this.dispatch(parsed);
-        if (parsed.kind === "error") {
-          settle(new Error(parsed.text ?? "The daemon dictation stream failed."));
-        }
-      };
-      socket.onerror = () => {
-        // The close handler carries the actionable diagnosis; nothing here.
-      };
-      socket.onclose = () => {
-        this.dead = true;
-        if (!settled) {
-          // Likely the daemon's pre-upgrade refusal (412) — invisible to a
-          // browser WebSocket. Ask the availability route for the reason so
-          // the user sees "run codex once", not "socket closed".
-          void this.explainRefusal().then((msg) => settle(new Error(msg)));
-          return;
-        }
-        this.handlers?.onFinal?.(this.finalized);
-        this.onClosed?.();
-      };
-    });
+        socket.onmessage = (ev) => {
+          const parsed = this.decode(ev.data);
+          if (!parsed) return;
+          if (parsed.kind === "ready") {
+            settle();
+            return;
+          }
+          // Before ready, begin()'s rejection IS the report — dispatching
+          // the error too would surface the same message twice.
+          if (parsed.kind === "error" && !settled) {
+            this.dead = true;
+            settle(new Error(parsed.text ?? "The daemon dictation stream failed."));
+            return;
+          }
+          this.dispatch(parsed);
+        };
+        socket.onerror = () => {
+          // The close handler carries the actionable diagnosis; nothing here.
+        };
+        socket.onclose = (ev) => {
+          this.dead = true;
+          if (!settled) {
+            // Likely the daemon's pre-upgrade refusal (412) — invisible to a
+            // browser WebSocket. Ask the availability route for the reason so
+            // the user sees "run codex once", not "socket closed".
+            void this.explainRefusal().then((msg) => settle(new Error(msg)));
+            return;
+          }
+          // onClosed is non-null only while end() is waiting — any other
+          // close is the daemon dying under us. Commit what arrived, then
+          // report it so the controller can put the mic back to idle
+          // instead of listening into a dead socket.
+          const expected = this.onClosed !== null;
+          this.handlers?.onFinal?.(this.finalized);
+          if (!expected) {
+            this.handlers?.onError?.(
+              `The ${this.provider} dictation stream closed unexpectedly (code ${ev.code}).`,
+            );
+          }
+          this.onClosed?.();
+        };
+      });
+    } catch (err) {
+      // begin() cleans up after itself — the Transcriber contract does not
+      // promise the caller will cancel() a provider whose begin() rejected.
+      this.teardown();
+      throw err;
+    }
   }
 
   private decode(raw: unknown): DictationStreamEvent | null {
     if (typeof raw !== "string") return null;
     try {
-      const ev = JSON.parse(raw) as DictationStreamEvent;
-      return typeof ev === "object" && ev !== null && typeof ev.kind === "string" ? ev : null;
+      const ev: unknown = JSON.parse(raw);
+      if (typeof ev !== "object" || ev === null) return null;
+      const { kind, text } = ev as { kind?: unknown; text?: unknown };
+      if (typeof kind !== "string" || !EVENT_KINDS.has(kind)) return null;
+      if (text !== undefined && typeof text !== "string") return null;
+      return { kind, text } as DictationStreamEvent;
     } catch {
       return null;
     }
@@ -176,6 +222,8 @@ export class DaemonDictationProvider implements Transcriber {
   feed(chunk: Float32Array, _sampleRate: number): void {
     const s = this.socket;
     if (this.dead || !s || s.readyState !== WebSocket.OPEN || chunk.length === 0) return;
+    // Stalled link: drop frames rather than buffering unbounded audio.
+    if (s.bufferedAmount > MAX_BUFFERED_BYTES) return;
     const pcm = floatToInt16(chunk);
     s.send(new Uint8Array(pcm.buffer));
   }
@@ -190,38 +238,50 @@ export class DaemonDictationProvider implements Transcriber {
     // Keep listening until the daemon closes (trailing finals) or we time out.
     await new Promise<void>((resolve) => {
       let done = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const finish = (): void => {
         if (done) return;
         done = true;
+        if (timer !== null) clearTimeout(timer);
         resolve();
       };
+      // Exit without a close event (timeout, or the socket died between the
+      // dead-check and the send): the close handler never ran, so commit the
+      // accumulated transcript here — otherwise the utterance's tail is lost.
+      const bail = (): void => {
+        if (done) return;
+        this.handlers?.onFinal?.(this.finalized);
+        finish();
+      };
       this.onClosed = finish;
+      let sendFailed = false;
       try {
         s.send(JSON.stringify({ type: "stop" }));
       } catch {
-        finish();
+        sendFailed = true;
       }
-      setTimeout(finish, CLOSE_FLUSH_TIMEOUT_MS);
+      if (sendFailed) bail();
+      else timer = setTimeout(bail, CLOSE_FLUSH_TIMEOUT_MS);
     });
     this.teardown();
   }
 
   cancel(): void {
-    try {
-      this.socket?.close();
-    } catch {
-      // A socket that's already closing throws in some states; the teardown
-      // below is what matters.
-    }
     this.teardown();
   }
 
   dispose(): void {
-    this.cancel();
+    this.teardown();
   }
 
   private teardown(): void {
+    // Release a begin() still waiting for ready BEFORE detaching handlers,
+    // so the caller gets a prompt "cancelled" instead of a 10s-late timeout.
+    this.abortBegin?.(new Error("Dictation cancelled."));
+    this.abortBegin = null;
     if (this.socket) {
+      // Detach handlers first: the close event this close() triggers must
+      // not fire a spurious onFinal/onError for a teardown we asked for.
       this.socket.onmessage = null;
       this.socket.onclose = null;
       this.socket.onerror = null;

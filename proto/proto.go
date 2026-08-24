@@ -490,6 +490,17 @@ type DictationProvidersResponse struct {
 // transcript; final is a completed utterance segment. Ready fires once
 // the provider session is up (debug events may precede it).
 type DictationStreamEvent struct {
-	Kind string `json:"kind"` // "ready" | "partial" | "final" | "error" | "debug"
+	Kind string `json:"kind"` // one of the DictationEvent* constants
 	Text string `json:"text,omitempty"`
 }
+
+// The DictationStreamEvent kinds. The TS side switches on these exact
+// strings (proto.ts's DictationStreamEvent union) — a typo at an emit site
+// silently drops transcript events in the UI, so emit through these.
+const (
+	DictationEventReady   = "ready"
+	DictationEventPartial = "partial"
+	DictationEventFinal   = "final"
+	DictationEventError   = "error"
+	DictationEventDebug   = "debug"
+)

@@ -147,16 +147,24 @@ func TestAuth_WSSubprotocolBearerOnNonWSPath(t *testing.T) {
 	srv := httptest.NewServer(newServer(t).Router())
 	defer srv.Close()
 
-	req, _ := nethttp.NewRequest("GET", srv.URL+"/projects", nil)
-	req.Header.Set("Sec-WebSocket-Protocol", "reck-bearer.main-secret")
-	// No Authorization header — the WS-auth fallback should NOT apply
-	// to plain HTTP endpoints. Auth must fail.
-	resp, err := nethttp.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != nethttp.StatusUnauthorized {
-		t.Errorf("subprotocol on non-WS path: status=%d want 401", resp.StatusCode)
+	// /dictation/providers is the case a future prefix-match regression
+	// would break first: it sits beside the ONE dictation path that is
+	// allowed to take subprotocol auth (/dictation/stream, exact match).
+	for _, path := range []string{"/projects", "/dictation/providers"} {
+		req, err := nethttp.NewRequest("GET", srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Sec-WebSocket-Protocol", "reck-bearer.main-secret")
+		// No Authorization header — the WS-auth fallback should NOT apply
+		// to plain HTTP endpoints. Auth must fail.
+		resp, err := nethttp.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != nethttp.StatusUnauthorized {
+			t.Errorf("subprotocol on %s: status=%d want 401", path, resp.StatusCode)
+		}
 	}
 }

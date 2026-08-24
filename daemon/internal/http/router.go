@@ -206,7 +206,7 @@ func (s *Server) Router() *chi.Mux {
 	// therefore with their subscription credentials. The satellite supplies
 	// the microphone. See internal/dictation.
 	r.Get("/dictation/providers", s.handleDictationProviders)
-	r.HandleFunc("/dictation/stream", s.handleDictationStream)
+	r.Get(dictationStreamPath, s.handleDictationStream) // WS upgrades are GET-only
 	r.HandleFunc("/ws/{id}/{pane_id}", s.handleWS)
 	return r
 }
@@ -255,19 +255,24 @@ const (
 // grammar (RFC 6455 §11.5) restricts token characters.
 const WSBearerSubprotocol = "reck-bearer"
 
-// extractWSBearer returns the bearer token encoded in the
-// Sec-WebSocket-Protocol header, if any. The header is a comma-separated
-// list of offered subprotocols; we scan for the first entry whose prefix
-// matches `reck-bearer.` and return the suffix.
-//
+// dictationStreamPath is the dictation WebSocket route. One constant shared
+// by the route registration and the subprotocol-auth allowlist, so the two
+// can never drift apart silently.
+const dictationStreamPath = "/dictation/stream"
+
 // wsAuthPath reports whether a route is upgraded to a WebSocket by a browser
 // client, which cannot set an Authorization header — only these routes may
 // authenticate via the reck-bearer subprotocol. Keeping the set explicit
 // stops the subprotocol fallback from leaking onto plain HTTP endpoints.
 func wsAuthPath(path string) bool {
-	return strings.HasPrefix(path, "/ws/") || path == "/dictation/stream"
+	return strings.HasPrefix(path, "/ws/") || path == dictationStreamPath
 }
 
+// extractWSBearer returns the bearer token encoded in the
+// Sec-WebSocket-Protocol header, if any. The header is a comma-separated
+// list of offered subprotocols; we scan for the first entry whose prefix
+// matches `reck-bearer.` and return the suffix.
+//
 // Returns ("", "") if the caller didn't offer a recognised bearer entry —
 // the handler then falls through to the Authorization header path or 401.
 // The second return value is the raw subprotocol string that the server
@@ -342,7 +347,11 @@ func (s *Server) authMiddleware(next nethttp.Handler) nethttp.Handler {
 		// browser fails the upgrade).
 		var offeredSubprotocol string
 		if wsAuthPath(r.URL.Path) {
-			if bearer, offered := extractWSBearer(r.Header); bearer != "" {
+			if bearer, offered := extractWSBearer(r.Header); bearer != "" &&
+				subtle.ConstantTimeCompare([]byte("Bearer "+bearer), expected) == 1 {
+				// Only a VALIDATING subprotocol bearer is echoed back in the
+				// 101 — never an arbitrary credential-shaped client string
+				// that happened to ride beside a valid Authorization header.
 				if h == "" {
 					h = "Bearer " + bearer
 				}
