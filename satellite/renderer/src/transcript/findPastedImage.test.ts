@@ -59,8 +59,8 @@ describe("fetchPastedImage", () => {
       { chunk: `${pasteLine([8])}\n`, nextOffset: 300, hasMore: false },
     ];
     const fetchSlice = vi.fn(async (offset: number) => slices[offset / 100]);
-    const img = await fetchPastedImage(7, { fetchSlice });
-    expect(img).toMatchObject({ base64: `${PNG}7` });
+    const res = await fetchPastedImage(7, { fetchSlice });
+    expect(res.image).toMatchObject({ base64: `${PNG}7` });
     // Stopped as soon as it matched — the third slice was never requested.
     expect(fetchSlice.mock.calls.map((c) => c[0])).toEqual([0, 100]);
   });
@@ -72,13 +72,73 @@ describe("fetchPastedImage", () => {
       nextOffset: offset + 100,
       hasMore: true,
     }));
-    expect(await fetchPastedImage(1, { fetchSlice, maxBytes: 500 })).toBeNull();
+    expect((await fetchPastedImage(1, { fetchSlice, maxBytes: 500 })).image).toBeNull();
     expect(fetchSlice).toHaveBeenCalledTimes(5);
   });
 
   it("stops when the server stops advancing the offset", async () => {
     const fetchSlice = vi.fn(async () => ({ chunk: "", nextOffset: 0, hasMore: true }));
-    expect(await fetchPastedImage(1, { fetchSlice })).toBeNull();
+    expect((await fetchPastedImage(1, { fetchSlice })).image).toBeNull();
     expect(fetchSlice).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("highestPasteId", () => {
+  const line = (id: number) =>
+    `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]},"imagePasteIds":[${id}]}`;
+
+  // Distinguishes "you haven't sent this yet" from "this is from an
+  // earlier session": a freshly pasted image always carries an id above
+  // anything already written to the transcript, because the id is
+  // assigned at paste time and the JSONL only gains it on send.
+  it("reports the largest id present in the scanned transcript", async () => {
+    const res = await fetchPastedImage(99, {
+      fetchSlice: async () => ({
+        chunk: [line(2), line(7), line(5)].join("\n") + "\n",
+        nextOffset: 1,
+        hasMore: false,
+      }),
+    });
+    expect(res.image).toBeNull();
+    expect(res.highestPasteId).toBe(7);
+  });
+
+  it("is 0 when the transcript carries no images at all", async () => {
+    const res = await fetchPastedImage(3, {
+      fetchSlice: async () => ({
+        chunk: '{"type":"user","message":{"role":"user","content":[]}}\n',
+        nextOffset: 1,
+        hasMore: false,
+      }),
+    });
+    expect(res.image).toBeNull();
+    expect(res.highestPasteId).toBe(0);
+  });
+
+  it("still returns the image when found, alongside the highest id", async () => {
+    const res = await fetchPastedImage(2, {
+      fetchSlice: async () => ({
+        chunk: [line(2), line(9)].join("\n") + "\n",
+        nextOffset: 1,
+        hasMore: false,
+      }),
+    });
+    expect(res.image?.pasteId).toBe(2);
+    // The walk stops at the hit, so ids after it are not counted -- the
+    // value is only ever used on the not-found path.
+    expect(res.highestPasteId).toBe(2);
+  });
+
+  it("accumulates the highest id across multiple slices", async () => {
+    const chunks = [line(1) + "\n", line(4) + "\n", line(3) + "\n"];
+    let i = 0;
+    const res = await fetchPastedImage(99, {
+      fetchSlice: async () => ({
+        chunk: chunks[i] ?? "",
+        nextOffset: ++i,
+        hasMore: i < chunks.length,
+      }),
+    });
+    expect(res.highestPasteId).toBe(4);
   });
 });

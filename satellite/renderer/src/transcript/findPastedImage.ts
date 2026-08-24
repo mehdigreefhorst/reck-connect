@@ -23,17 +23,31 @@ export interface PastedImageScanner {
   push(chunk: string): TranscriptImageBlock | null;
   /** Match the trailing partial line once the file ends. */
   end(): TranscriptImageBlock | null;
+  /**
+   * Largest paste id seen so far, or 0 when the transcript holds no
+   * images. Only meaningful on the not-found path, where it separates
+   * "you have not sent this yet" from "this is from an earlier session".
+   */
+  highestPasteId(): number;
 }
 
 export function createPastedImageScanner(pasteId: number): PastedImageScanner {
   let remainder = "";
   let found: TranscriptImageBlock | null = null;
+  let highest = 0;
 
   const scan = (line: string): TranscriptImageBlock | null => {
+    let hit: TranscriptImageBlock | null = null;
     for (const img of imagesFromLine(line)) {
-      if (img.pasteId === pasteId) return img;
+      // A block can carry no id (an image the CLI wrote without an
+      // imagePasteIds entry); it can never be the target and must not
+      // move the high-water mark.
+      const id = img.pasteId;
+      if (typeof id !== "number") continue;
+      if (id > highest) highest = id;
+      if (id === pasteId && !hit) hit = img;
     }
-    return null;
+    return hit;
   };
 
   return {
@@ -59,6 +73,9 @@ export function createPastedImageScanner(pasteId: number): PastedImageScanner {
       remainder = "";
       found = scan(tail);
       return found;
+    },
+    highestPasteId(): number {
+      return highest;
     },
   };
 }
@@ -90,30 +107,47 @@ export interface FetchPastedImageDeps {
  *  session observed locally, and bounded so a click always terminates. */
 export const DEFAULT_MAX_SCAN_BYTES = 256 * 1024 * 1024;
 
+export interface PastedImageLookup {
+  /** The bytes, or null when this transcript does not hold that id. */
+  image: TranscriptImageBlock | null;
+  /**
+   * Largest id the walk saw. On a miss this is what separates an image
+   * that has not been sent yet (id above the high-water mark) from one
+   * belonging to a transcript this pane no longer tails (id at or below
+   * it, i.e. skipped).
+   */
+  highestPasteId: number;
+}
+
 /**
  * Walk a transcript from byte 0 until the image is found or the file ends.
  *
- * Returns null when the id is not in this session — a placeholder from a
- * session whose JSONL the daemon cannot serve, or scrollback that outlived
- * its transcript. The caller must degrade visibly on null; opening a
- * different image would be worse than opening none.
+ * `image` is null when the id is not in this session — a placeholder for
+ * an image that has not been sent yet, a session whose JSONL the daemon
+ * cannot serve, or scrollback that outlived its transcript. The caller
+ * must degrade visibly; opening a different image would be worse than
+ * opening none.
  */
 export async function fetchPastedImage(
   pasteId: number,
   deps: FetchPastedImageDeps,
-): Promise<TranscriptImageBlock | null> {
+): Promise<PastedImageLookup> {
   const limit = deps.maxBytes ?? DEFAULT_MAX_SCAN_BYTES;
   const scanner = createPastedImageScanner(pasteId);
+  const result = (image: TranscriptImageBlock | null): PastedImageLookup => ({
+    image,
+    highestPasteId: scanner.highestPasteId(),
+  });
   let offset = 0;
   for (;;) {
     const slice = await deps.fetchSlice(offset);
     const hit = scanner.push(slice.chunk);
-    if (hit) return hit;
+    if (hit) return result(hit);
     // Advance by the server's byte offset, never by chunk.length: the chunk
     // is decoded text and multi-byte characters would drift the cursor.
     if (!slice.hasMore || slice.nextOffset <= offset) break;
     offset = slice.nextOffset;
-    if (offset >= limit) return null;
+    if (offset >= limit) return result(null);
   }
-  return scanner.end();
+  return result(scanner.end());
 }

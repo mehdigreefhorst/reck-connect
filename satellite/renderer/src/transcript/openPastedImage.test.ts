@@ -73,3 +73,62 @@ describe("openPastedImage", () => {
     expect(notify).not.toHaveBeenCalled(); // nothing left to report to
   });
 });
+
+describe("openPastedImage — why the image isn't there", () => {
+  const line = (id: number) =>
+    `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]},"imagePasteIds":[${id}]}\n`;
+
+  const withTranscript = (chunk: string) => {
+    const wrapper = document.createElement("div");
+    const show = vi.fn();
+    const notify = vi.fn();
+    const base: OpenPastedImageDeps = {
+      resolvePane: () => ({ wrapper, sessionId: "s-1" }),
+      projectId: () => "p-1",
+      listSessions: async () => ({ sessions: [] }) as never,
+      getTranscript: async () => ({ chunk, nextOffset: 1, hasMore: false }),
+      show,
+      notify,
+    };
+    return { base, show, notify };
+  };
+
+  // The case that actually bites: paste a screenshot, click the
+  // placeholder before sending. Claude Code assigns the id at paste time
+  // but only writes the bytes into the session JSONL on submit, so no
+  // transcript can contain it. "isn't in this session's transcript" reads
+  // like the image was lost; it hasn't been saved yet.
+  it("tells the user to send the message when the id is newer than anything stored", async () => {
+    const { base, show, notify } = withTranscript(line(2) + line(3));
+    await openPastedImage("pane-1", 4, base);
+    expect(show).not.toHaveBeenCalled();
+    const msg = notify.mock.calls[0][0] as string;
+    expect(msg).toContain("#4");
+    expect(msg).toMatch(/sen[dt]/i);
+    expect(msg).not.toMatch(/earlier session/i);
+  });
+
+  // An id at or below the high-water mark was skipped, which means it
+  // belongs to a transcript this pane is no longer tailing.
+  it("blames an earlier session when the id is older than what is stored", async () => {
+    const { base, show, notify } = withTranscript(line(5) + line(9));
+    await openPastedImage("pane-1", 7, base);
+    expect(show).not.toHaveBeenCalled();
+    const msg = notify.mock.calls[0][0] as string;
+    expect(msg).toContain("#7");
+    expect(msg).toMatch(/earlier session|cleared|resumed/i);
+  });
+
+  it("treats an empty transcript as nothing-sent-yet", async () => {
+    const { base, notify } = withTranscript("");
+    await openPastedImage("pane-1", 1, base);
+    expect(notify.mock.calls[0][0]).toMatch(/sen[dt]/i);
+  });
+
+  it("still shows the image when it is there", async () => {
+    const { base, show, notify } = withTranscript(line(4));
+    await openPastedImage("pane-1", 4, base);
+    expect(notify).not.toHaveBeenCalled();
+    expect(show).toHaveBeenCalled();
+  });
+});
