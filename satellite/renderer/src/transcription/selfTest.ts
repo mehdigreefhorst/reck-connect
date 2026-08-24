@@ -9,8 +9,12 @@
 // Every check returns facts instead of throwing, so one dead layer doesn't
 // hide the state of the others.
 
+import { ApiClient } from "@client-core/api/client";
+import { loadSettings } from "../config";
 import { AudioCapture } from "./AudioCapture";
+import { daemonSpeechApiFor } from "./daemonSpeech";
 import { rms, WHISPER_SAMPLE_RATE } from "./pcm";
+import { DaemonDictationProvider } from "./providers/DaemonDictationProvider";
 import { DeepgramProvider } from "./providers/DeepgramProvider";
 import { LocalWhisperProvider } from "./providers/LocalWhisperProvider";
 import type { Transcriber } from "./providers/types";
@@ -45,6 +49,18 @@ export interface DeepgramReport {
   errors: string[];
   /** Raw main-process lifecycle lines (kind:"debug" events). */
   debug: string[];
+  error?: string;
+}
+
+export interface DaemonReport {
+  ok: boolean;
+  provider: string;
+  /** Stable text-so-far passes (accumulated finals). */
+  partials: string[];
+  /** Ghost-tail (unstable) passes. */
+  tails: string[];
+  finalText: string | null;
+  errors: string[];
   error?: string;
 }
 
@@ -218,6 +234,81 @@ async function deepgram(key?: string, seconds = 2): Promise<DeepgramReport> {
   return report;
 }
 
+/**
+ * Stream audio through a daemon speech engine (Claude / Codex) and report
+ * every event. `samples` is Float32 PCM at 16 kHz, passed as a plain array
+ * so it survives the e2e evaluate bridge — e.g. a decoded spoken WAV, so
+ * the transcript can be asserted on. Omitted, a synthetic tone exercises
+ * the plumbing but yields no words. `baseUrl`/`token` target an explicit
+ * daemon (the e2e rig); omitted, the primary host's daemon is used, same
+ * as live dictation.
+ */
+async function daemon(opts: {
+  provider: "claude" | "codex";
+  baseUrl?: string;
+  token?: string;
+  samples?: number[];
+  seconds?: number;
+}): Promise<DaemonReport> {
+  const report: DaemonReport = {
+    ok: false,
+    provider: opts.provider,
+    partials: [],
+    tails: [],
+    finalText: null,
+    errors: [],
+  };
+  let api;
+  try {
+    api = opts.baseUrl
+      ? new ApiClient({ baseUrl: opts.baseUrl, token: opts.token })
+      : daemonSpeechApiFor(await loadSettings());
+  } catch (err) {
+    report.error = msg(err);
+    return report;
+  }
+  const provider = new DaemonDictationProvider({ provider: opts.provider, api });
+  const handlers = {
+    onPartial: (t: string) => {
+      report.partials.push(t);
+    },
+    onTail: (t: string) => {
+      if (t) report.tails.push(t);
+    },
+    onFinal: (t: string) => {
+      report.finalText = t;
+    },
+    onError: (m: string) => {
+      report.errors.push(m);
+    },
+  };
+  try {
+    await provider.prepare(handlers);
+    await withTimeout(provider.begin(handlers, WHISPER_SAMPLE_RATE), 15_000, "daemon begin");
+    const source = opts.samples ? Float32Array.from(opts.samples) : sine(opts.seconds ?? 2);
+    // 250ms frames at realtime pace, like live capture, plus a short
+    // silent tail so provider endpointing sees the utterance end.
+    const frame = Math.round(0.25 * WHISPER_SAMPLE_RATE);
+    const padded = new Float32Array(source.length + frame * 3);
+    padded.set(source, 0);
+    for (let off = 0; off < padded.length; off += frame) {
+      provider.feed(padded.subarray(off, Math.min(off + frame, padded.length)), WHISPER_SAMPLE_RATE);
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    await withTimeout(
+      provider.end(new Float32Array(0), WHISPER_SAMPLE_RATE),
+      10_000,
+      "daemon end",
+    );
+    report.ok = report.errors.length === 0 && report.finalText !== null;
+  } catch (err) {
+    report.errors.push(msg(err));
+  } finally {
+    provider.dispose();
+  }
+  return report;
+}
+
 async function run(opts: { deepgramKey?: string; whisperRepo?: string } = {}): Promise<{
   capture: CaptureReport;
   whisper: WhisperReport;
@@ -232,7 +323,7 @@ async function run(opts: { deepgramKey?: string; whisperRepo?: string } = {}): P
   return { capture: cap, whisper: wh, deepgram: dg };
 }
 
-export const dictationSelfTest = { capture, whisper, deepgram, run };
+export const dictationSelfTest = { capture, whisper, deepgram, daemon, run };
 
 declare global {
   interface Window {

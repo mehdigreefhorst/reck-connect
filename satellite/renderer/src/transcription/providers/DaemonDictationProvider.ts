@@ -61,7 +61,7 @@ export class DaemonDictationProvider implements Transcriber {
       opts.socketFactory ?? ((url, protocols) => new WebSocket(url, protocols));
   }
 
-  async prepare(): Promise<void> {
+  async prepare(_handlers: TranscriptionHandlers): Promise<void> {
     // Streaming provider: the socket opens per-utterance in begin() (it
     // needs the capture sample rate), so there's nothing to warm up.
   }
