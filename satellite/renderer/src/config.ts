@@ -277,6 +277,29 @@ declare global {
             cb: (ev: { searchId: string; totalFound: number }) => void,
           ): () => void;
           cancel(searchId: string): Promise<{ ok: boolean }>;
+          replay(searchId: string): Promise<
+
+            | {
+
+                matches: string[];
+
+                scannedDirs: number;
+
+                foundCount: number;
+
+                truncated: boolean;
+
+                terminal:
+
+                  | { kind: "done" | "cancelled"; totalFound: number; searchedRoots?: string[] }
+
+                  | null;
+
+              }
+
+            | null
+
+          >;
         };
         /**
          * Read the file path this popup was opened for, from the URL

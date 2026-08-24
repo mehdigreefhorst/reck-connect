@@ -936,6 +936,38 @@ function renderSuffixStreamingPicker(opts: SuffixStreamingPickerOptions): void {
     }),
   );
 
+  // Drain whatever main emitted before those listeners existed.
+  //
+  // The window is created and the search started in the same tick, so with
+  // the ripgrep backend the whole search regularly completes before this
+  // bundle has even parsed. Those events are fire-and-forget, so without
+  // this replay the picker sits on "Searching project tree…" forever for a
+  // search that already succeeded. Applied through the same appendMatch /
+  // freeze paths as live events, so dedupe and auto-open behave identically.
+  void (async () => {
+    // Defensive: a popup can outlive the main process that spawned it
+    // across an upgrade, and the older preload has no `replay`. Calling a
+    // missing method throws synchronously, which `.catch` would not see.
+    const replay = window.reckAPI.files.suffixSearch.replay;
+    if (typeof replay !== "function") return;
+    const backlog = await Promise.resolve()
+      .then(() => replay(opts.searchId))
+      .catch(() => null);
+    // null = nothing buffered; leave the live UI alone rather than
+    // rendering it as "found nothing".
+    if (!backlog || frozen) return;
+    for (const p of backlog.matches) appendMatch(p);
+    if (backlog.scannedDirs > scannedDirs) {
+      scannedDirs = backlog.scannedDirs;
+      updateLive();
+    }
+    if (backlog.terminal) {
+      searchedRoots = backlog.terminal.searchedRoots ?? searchedRoots;
+      freeze(backlog.terminal.kind);
+      for (const u of unsubs) u();
+    }
+  })();
+
   stopBtn.addEventListener("click", () => {
     if (frozen) return;
     void window.reckAPI.files.suffixSearch.cancel(opts.searchId);
