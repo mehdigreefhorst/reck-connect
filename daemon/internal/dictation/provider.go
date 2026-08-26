@@ -32,6 +32,40 @@ func ValidProvider(p Provider) bool {
 	return p == ProviderClaude || p == ProviderCodex
 }
 
+// Endpointing is the provider-agnostic "when is an utterance over" contract
+// the satellite hands us. Each protocol maps it onto its own parameter; see
+// docs/plans/dictation-endpointing.md for the table.
+type Endpointing struct {
+	// Manual turns off silence-based endpointing: the utterance stays open
+	// until the satellite stops the stream. Providers with no true off switch
+	// get ManualSilenceMs instead, which amounts to the same thing for a
+	// dictation-length utterance.
+	Manual bool
+	// SilenceMs is how much silence closes an utterance. 0 means "the
+	// provider's own default", so an older satellite that sends nothing keeps
+	// exactly the behaviour it had before this knob existed.
+	SilenceMs int
+}
+
+// ManualSilenceMs is the "effectively never" window handed to providers that
+// cannot be told to skip endpointing outright.
+const ManualSilenceMs = 60000
+
+// UtteranceEndHeadroomMs separates "phrase ended" from "turn ended" on the
+// Claude proxy, preserving the shape of its own 300/1000 defaults.
+const UtteranceEndHeadroomMs = 700
+
+// silence resolves the effective window, falling back to a provider default.
+func (e Endpointing) silence(def int) int {
+	if e.Manual {
+		return ManualSilenceMs
+	}
+	if e.SilenceMs <= 0 {
+		return def
+	}
+	return e.SilenceMs
+}
+
 // Config is the per-session audio contract agreed with the satellite.
 type Config struct {
 	// SampleRate of the PCM16 frames the satellite will send. The satellite
@@ -39,6 +73,9 @@ type Config struct {
 	SampleRate int
 	// Language is an ISO code, or empty for the provider's default.
 	Language string
+	// Endpointing is when the provider should close an utterance. The zero
+	// value means "provider defaults".
+	Endpointing Endpointing
 }
 
 // Handlers receive transcript activity. Every callback may be nil, and all

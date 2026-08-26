@@ -13,10 +13,12 @@ export interface TranscriptionShortcutHandlers {
   onPressEnd(heldMs: number): void;
   /**
    * A bare Enter (no modifiers) was pressed — i.e. the user is SENDING the
-   * message. Not preventDefault'd: the Enter still reaches the terminal to
-   * submit; this is just the signal that they're done talking.
+   * message. Return true to CLAIM the keystroke: the Enter is swallowed and
+   * the handler becomes responsible for submitting, which is what dictation
+   * does so the words still in flight land in this message instead of being
+   * dropped. Return false and the Enter reaches the terminal untouched.
    */
-  onSubmit(): void;
+  onSubmit(): boolean;
 }
 
 export function installTranscriptionShortcuts(
@@ -26,7 +28,8 @@ export function installTranscriptionShortcuts(
 
   function onKeyDown(e: KeyboardEvent): void {
     // Bare Enter = "send this message". Report it (the handler decides whether
-    // dictation is active); never preventDefault so the terminal still submits.
+    // dictation is active). If the handler claims it, swallow the key — it
+    // will submit itself once the transcript tail has landed.
     if (
       e.key === "Enter" &&
       !e.metaKey &&
@@ -35,7 +38,10 @@ export function installTranscriptionShortcuts(
       !e.altKey &&
       !e.repeat
     ) {
-      handlers.onSubmit();
+      if (handlers.onSubmit()) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
       return;
     }
     const mod = e.metaKey || e.ctrlKey;
@@ -59,8 +65,9 @@ export function installTranscriptionShortcuts(
 
   // CAPTURE phase: the focused xterm terminal handles Enter (it's terminal
   // input) and the event may not bubble up to window — capturing lets us see
-  // the keydown BEFORE the terminal, so "Enter sends → stop dictation" fires
-  // reliably. We still don't preventDefault Enter, so the terminal submits.
+  // the keydown BEFORE the terminal. That is also what makes claiming the
+  // Enter possible: stopping it here keeps the terminal from submitting a
+  // half-finished prompt while the last words are still being transcribed.
   window.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("keyup", onKeyUp, true);
   return () => {

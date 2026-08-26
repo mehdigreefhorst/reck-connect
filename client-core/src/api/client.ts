@@ -632,13 +632,24 @@ export class ApiClient {
    * NEVER in the query string — pass `wsSubprotocols()` as the second arg of
    * `new WebSocket(url, protocols)` instead.
    */
-  dictationStreamUrl(provider: string, sampleRate: number, language: string): string {
+  dictationStreamUrl(
+    provider: string,
+    sampleRate: number,
+    language: string,
+    endpointing?: { mode: "auto" | "manual"; silenceMs: number },
+  ): string {
     const base = this.config.baseUrl.replace(/^http/, "ws");
     const q = new URLSearchParams({
       provider,
       sample_rate: String(Math.round(sampleRate)),
       language,
     });
+    // Optional: omitted means "the daemon's provider defaults", which is what
+    // an older satellite (or a caller that doesn't care) gets.
+    if (endpointing) {
+      q.set("endpoint_mode", endpointing.mode);
+      q.set("silence_ms", String(Math.round(endpointing.silenceMs)));
+    }
     return `${base}/dictation/stream?${q.toString()}`;
   }
 

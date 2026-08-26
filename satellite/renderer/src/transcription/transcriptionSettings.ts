@@ -25,6 +25,31 @@ export function isDaemonSpeechProvider(p: TranscriptionProvider): p is DaemonSpe
 }
 
 /**
+ * When a streaming engine decides an utterance is over. "auto" finalizes
+ * after `silenceMs` of silence; "manual" never finalizes on silence — the
+ * transcript arrives only when the user stops recording or sends. Manual is
+ * what makes short phrases survive a jumpy VAD (notably Codex, whoseper-turn
+ * model has no cross-turn context), at the cost of live partials on the
+ * providers that need server VAD to produce them.
+ */
+export type EndpointMode = "auto" | "manual";
+
+/** Provider-agnostic endpointing preference; mapped per engine at the edge. */
+export interface DictationEndpointing {
+  mode: EndpointMode;
+  /** Silence before an utterance is closed (ms). Ignored when mode is manual. */
+  silenceMs: number;
+}
+
+export const ENDPOINT_SILENCE_MIN_MS = 100;
+export const ENDPOINT_SILENCE_MAX_MS = 5000;
+
+export const DEFAULT_ENDPOINTING: DictationEndpointing = {
+  mode: "auto",
+  silenceMs: 500,
+};
+
+/**
  * Curated embedded (transformers.js) Whisper models the user can pick in
  * settings. Each maps to its Hugging Face ONNX repo. `whisper-base` is the
  * default because it loads reliably on CPU/WASM; `whisper-large-v3-turbo`
@@ -81,6 +106,8 @@ export interface TranscriptionSettings {
   fluidMotion: boolean;
   /** Live-tunable dictation-overlay appearance (the "Advanced" panel). */
   appearance: DictationAppearance;
+  /** When streaming engines close an utterance (the "Advanced" panel). */
+  endpointing: DictationEndpointing;
 }
 
 /**
@@ -162,6 +189,7 @@ export const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettings = {
   micOffset: { dx: 14, dy: 14 },
   fluidMotion: true,
   appearance: { ...DEFAULT_APPEARANCE },
+  endpointing: { ...DEFAULT_ENDPOINTING },
 };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -218,6 +246,17 @@ export function coerceAppearance(raw: unknown): DictationAppearance {
   };
 }
 
+export function coerceEndpointing(raw: unknown): DictationEndpointing {
+  const d = DEFAULT_ENDPOINTING;
+  if (!isPlainObject(raw)) return { ...d };
+  return {
+    mode: raw.mode === "manual" ? "manual" : "auto",
+    silenceMs: Math.round(
+      coerceNum(raw.silenceMs, d.silenceMs, ENDPOINT_SILENCE_MIN_MS, ENDPOINT_SILENCE_MAX_MS),
+    ),
+  };
+}
+
 export function coerce(raw: unknown): TranscriptionSettings {
   if (!isPlainObject(raw)) return { ...DEFAULT_TRANSCRIPTION_SETTINGS };
   return {
@@ -237,6 +276,7 @@ export function coerce(raw: unknown): TranscriptionSettings {
     micOffset: coerceOffset(raw.micOffset),
     fluidMotion: coerceBool(raw.fluidMotion, DEFAULT_TRANSCRIPTION_SETTINGS.fluidMotion),
     appearance: coerceAppearance(raw.appearance),
+    endpointing: coerceEndpointing(raw.endpointing),
   };
 }
 

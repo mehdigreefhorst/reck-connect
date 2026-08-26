@@ -49,11 +49,26 @@ class FakeSocket {
   }
 }
 
-function makeHarness(opts: { available?: boolean; reason?: string } = {}) {
+function makeHarness(
+  opts: {
+    available?: boolean;
+    reason?: string;
+    endpointing?: { mode: "auto" | "manual"; silenceMs: number };
+  } = {},
+) {
   const sockets: FakeSocket[] = [];
   const api = {
-    dictationStreamUrl: (provider: string, rate: number, language: string) =>
-      `ws://x:7315/dictation/stream?provider=${provider}&sample_rate=${rate}&language=${language}`,
+    dictationStreamUrl: (
+      provider: string,
+      rate: number,
+      language: string,
+      endpointing?: { mode: "auto" | "manual"; silenceMs: number },
+    ) => {
+      const base = `ws://x:7315/dictation/stream?provider=${provider}&sample_rate=${rate}&language=${language}`;
+      return endpointing
+        ? `${base}&endpoint_mode=${endpointing.mode}&silence_ms=${endpointing.silenceMs}`
+        : base;
+    },
     wsSubprotocols: () => ["reck-bearer.tok"],
     dictationProviders: vi.fn(async () => ({
       providers: [
@@ -69,6 +84,7 @@ function makeHarness(opts: { available?: boolean; reason?: string } = {}) {
   const provider = new DaemonDictationProvider({
     provider: "claude",
     language: "auto",
+    endpointing: opts.endpointing,
     api,
     socketFactory: (url, protocols) => {
       const s = new FakeSocket(url, protocols);
@@ -229,5 +245,23 @@ describe("DaemonDictationProvider", () => {
     s.emitEvent({ kind: "final", text: 123 });
     expect(h.events.partial).toEqual([]);
     expect(h.events.error).toEqual([]);
+  });
+});
+
+describe("DaemonDictationProvider — endpointing", () => {
+  it("carries the endpointing preference into the stream URL", async () => {
+    const h = makeHarness({ endpointing: { mode: "manual", silenceMs: 900 } });
+    const s = await beginReady(h);
+    expect(s.url).toContain("endpoint_mode=manual");
+    expect(s.url).toContain("silence_ms=900");
+  });
+
+  // No preference must stay absent rather than becoming a guess: the daemon's
+  // own provider defaults are the right answer for a caller that didn't say.
+  it("omits the params when no preference is configured", async () => {
+    const h = makeHarness();
+    const s = await beginReady(h);
+    expect(s.url).not.toContain("endpoint_mode");
+    expect(s.url).not.toContain("silence_ms");
   });
 });

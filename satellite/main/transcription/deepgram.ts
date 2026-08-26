@@ -35,11 +35,13 @@ const MAX_QUEUED_FRAMES = 250;
 // periodic KeepAlive covers gaps (permission prompts, long pauses).
 const KEEPALIVE_INTERVAL_MS = 4000;
 
-// How long Deepgram waits for silence before closing an utterance and emitting
-// a final. Its default is 10ms, which is aggressive enough to cut finals at any
-// natural mid-sentence pause. 300ms matches what Claude Code's dictation asks
-// of the same engine. NB: the parameter is `endpointing` — `endpointing_ms` is
-// that proxy's own name for it and Deepgram would ignore it.
+// Fallback for how long Deepgram waits for silence before closing an utterance
+// and emitting a final. Its default is 10ms, which is aggressive enough to cut
+// finals at any natural mid-sentence pause. 300ms matches what Claude Code's
+// dictation asks of the same engine. The renderer normally passes the user's
+// own setting (docs/plans/dictation-endpointing.md) and this is what a caller
+// with no preference gets. NB: the parameter is `endpointing` —
+// `endpointing_ms` is that proxy's own name for it and Deepgram would ignore it.
 const ENDPOINTING_MS = 300;
 
 // After CloseStream, wait this long for Deepgram to flush trailing finals
@@ -66,6 +68,8 @@ export class DeepgramSession {
     apiKey: string,
     sampleRate: number,
     language: string | undefined,
+    /** How much silence closes an utterance; undefined = ENDPOINTING_MS. */
+    endpointingMs: number | undefined,
     handlers: DeepgramSessionHandlers,
   ): Promise<void> {
     const { DeepgramClient } = await import("@deepgram/sdk");
@@ -78,7 +82,7 @@ export class DeepgramSession {
       interim_results: "true",
       punctuate: "true",
       smart_format: "true",
-      endpointing: ENDPOINTING_MS,
+      endpointing: endpointingMs ?? ENDPOINTING_MS,
       // The language menu's "Detect" entry reaches us as undefined (the router
       // drops "auto"). Leaving it unset makes Deepgram assume English, so
       // "Detect" silently wouldn't detect — nova-3's multilingual mode is what

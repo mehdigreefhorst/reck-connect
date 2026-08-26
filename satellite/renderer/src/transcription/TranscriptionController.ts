@@ -73,6 +73,13 @@ const ACTIVE_FLOOR_BLOBS = 2;
 // blobs drain at the end of an utterance instead of squatting (kept short so
 // the ghosts don't linger after you stop talking).
 const SILENCE_RECONCILE_MS = 800;
+// Enter finalizes and WAITS for the tail before submitting (the alternative
+// drops whatever the engine hadn't returned yet, which is fatal once
+// endpointing can be set to manual — nothing would have been transcribed).
+// Bounded so Enter can never appear to do nothing: past this, we submit what
+// we have. Comfortably under the providers' own flush windows (4 s Deepgram,
+// 8 s daemon) so a slow-but-alive engine still usually wins.
+const SEND_FLUSH_TIMEOUT_MS = 3000;
 
 function wordCount(text: string): number {
   return text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
@@ -182,6 +189,12 @@ export class TranscriptionController {
   private pendingTail = "";
   private tailDirty = false;
   private settleTimer: number | null = null;
+  // Set while an Enter-triggered finalize is in flight: the prompt must be
+  // submitted once the tail lands, whatever the autoSubmit preference says —
+  // the user pressed Enter, and that IS the instruction.
+  private submitAfterFinal = false;
+  // Resolves the in-flight send early (a second Enter, or the timeout).
+  private forceSend: (() => void) | null = null;
 
   constructor(private readonly deps: TranscriptionControllerDeps) {
     this.settings = deps.settings;
@@ -252,11 +265,15 @@ export class TranscriptionController {
       return new DaemonDictationProvider({
         provider: this.settings.provider,
         language: this.settings.language,
+        endpointing: this.settings.endpointing,
         api,
       });
     }
     if (this.settings.provider === "deepgram") {
-      return new DeepgramProvider({ language: this.settings.language });
+      return new DeepgramProvider({
+        language: this.settings.language,
+        endpointing: this.settings.endpointing,
+      });
     }
     // Live partials run on tiny (fast enough to keep up with speech); the
     // final pass uses the selected model for quality.
@@ -444,7 +461,9 @@ export class TranscriptionController {
       // user pressed Enter — a late injection would land in the next prompt).
       this.stopSettleTimer();
       this.resetSettleBuffers();
-      if (this.injectedText.length > 0 && this.settings.autoSubmit) this.target?.submit();
+      const wanted = this.submitAfterFinal || this.settings.autoSubmit;
+      this.submitAfterFinal = false;
+      if (this.injectedText.length > 0 && wanted) this.target?.submit();
       this.bar?.dispose();
       this.bar = null;
       this.target = null;
@@ -497,13 +516,40 @@ export class TranscriptionController {
   }
 
   /**
-   * The user pressed Enter to SEND the message — they're done talking. Abort
-   * (don't finalize): the committed text is already in the prompt and about
-   * to be sent, so a late final pass would land in the NEXT prompt. The
-   * already-typed text is untouched by cancel(), so the Enter sends it.
+   * The user pressed Enter to SEND the message — they're done talking.
+   *
+   * The Enter itself is swallowed by the shortcut layer while dictation is
+   * active, because we finalize FIRST and submit afterwards: the words still
+   * in flight belong to this message, not the next one, and under manual
+   * endpointing they are the *only* words. Bounded by SEND_FLUSH_TIMEOUT_MS
+   * so a wedged provider still sends what's already in the prompt; a second
+   * Enter while we're waiting sends immediately.
    */
   async stopForSend(): Promise<void> {
+    if (!this.engine.isActive()) return;
+    // Already finalizing: this is the impatient second Enter — cut the wait.
+    if (this.forceSend) {
+      this.forceSend();
+      return;
+    }
+    this.submitAfterFinal = true;
+
+    let timer: number | null = null;
+    const raced = new Promise<"forced">((resolve) => {
+      this.forceSend = () => resolve("forced");
+      timer = window.setTimeout(() => resolve("forced"), SEND_FLUSH_TIMEOUT_MS);
+    });
+    const finalized = this.engine.stop().then(() => "final" as const);
+
+    const winner = await Promise.race([finalized, raced]);
+    if (timer !== null) window.clearTimeout(timer);
+    this.forceSend = null;
+    // The engine flushed on its own: onStateChange("idle") already submitted.
+    if (winner === "final") return;
+    // We gave up waiting (or the user did). Abandon the tail and send what is
+    // already in the prompt — cancel() goes through "idle", which submits.
     if (this.engine.isActive()) await this.cancel();
+    else this.submitAfterFinal = false;
   }
 
   async cancel(): Promise<void> {
@@ -529,7 +575,11 @@ export class TranscriptionController {
     const providerChanged =
       next.provider !== this.settings.provider ||
       next.localModel !== this.settings.localModel ||
-      next.language !== this.settings.language;
+      next.language !== this.settings.language ||
+      // Endpointing is baked into the provider at construction (query params
+      // / session.update), so a change to it needs a fresh provider.
+      next.endpointing.mode !== this.settings.endpointing.mode ||
+      next.endpointing.silenceMs !== this.settings.endpointing.silenceMs;
     this.settings = next;
     if (providerChanged && this.engine.getState() === "idle") {
       this.engine.setProvider(this.makeProvider());

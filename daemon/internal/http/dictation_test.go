@@ -142,6 +142,10 @@ func TestDictationStreamValidation(t *testing.T) {
 		{"sample rate too low", "?provider=claude&sample_rate=100", nethttp.StatusBadRequest},
 		{"sample rate too high", "?provider=claude&sample_rate=96000", nethttp.StatusBadRequest},
 		{"sample rate not a number", "?provider=claude&sample_rate=abc", nethttp.StatusBadRequest},
+		{"unknown endpoint mode", "?provider=claude&endpoint_mode=sometimes", nethttp.StatusBadRequest},
+		{"silence too low", "?provider=claude&silence_ms=10", nethttp.StatusBadRequest},
+		{"silence too high", "?provider=claude&silence_ms=60000", nethttp.StatusBadRequest},
+		{"silence not a number", "?provider=claude&silence_ms=soon", nethttp.StatusBadRequest},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,72 +1,31 @@
-// The ONE appearance-controls component, shared by the right-click "Advanced"
-// panel (dictationAdvancedPanel.ts) AND the tuning lab (dictation-lab.ts). Both
-// render the exact same rows from the same descriptor list, so whatever you dial
-// in the lab is literally the control the app ships — no divergence.
+// The dictation APPEARANCE knobs, shared by the right-click "Advanced" panel
+// (dictationAdvancedPanel.ts) AND the tuning lab (dictation-lab.ts). Both
+// render the exact same rows from the same descriptor list, so whatever you
+// dial in the lab is literally the control the app ships — no divergence.
 //
-// Every knob carries a `help` string; each row exposes an ℹ️ info affordance
-// whose hover/focus reveals it (plus a native `title` fallback), so no parameter
-// is a mystery. All styling lives in styles.css under `.dict-ctrl-*`, themed by
-// the host's `--app-*` CSS variables (the lab aliases them to its palette).
+// This file is the catalogue; controlRows.ts is the renderer that draws it
+// (and the endpointing group in endpointingControls.ts).
 
+import {
+  type ControlDesc,
+  type ControlsHandle,
+  renderControlRows,
+} from "./controlRows";
 import {
   coerceAppearance,
   DEFAULT_APPEARANCE,
   type DictationAppearance,
 } from "./transcriptionSettings";
 
-/** Numeric knobs (rendered as sliders). */
-type NumericKey =
-  | "crystallizeMs"
-  | "charStaggerMs"
-  | "blurStartPx"
-  | "blurRestPx"
-  | "placeholderBlurPx"
-  | "onsetOpen"
-  | "onsetClose"
-  | "commitWordCount"
-  | "commitPauseMs"
-  | "settleMs"
-  | "ghostResetMs"
-  | "tailFontPx";
+export type AppearanceControlsHandle = ControlsHandle<DictationAppearance>;
 
-/** Boolean knobs (rendered as checkboxes). */
-type BoolKey = "showBlobs" | "textOutline";
+export interface RenderAppearanceControlsOpts {
+  current: DictationAppearance;
+  /** Called on EVERY change with the full next (coerced) appearance. */
+  onChange: (next: DictationAppearance) => void;
+}
 
-interface SubheadDesc {
-  kind: "subhead";
-  label: string;
-}
-interface SliderDesc {
-  kind: "slider";
-  key: NumericKey;
-  label: string;
-  help: string;
-  min: number;
-  max: number;
-  step: number;
-  unit: string;
-}
-interface CheckDesc {
-  kind: "check";
-  key: BoolKey;
-  label: string;
-  help: string;
-}
-interface SelectDesc {
-  kind: "select";
-  key: "pillTheme" | "ghostMode";
-  label: string;
-  help: string;
-  options: readonly string[];
-}
-export type ControlDesc = SubheadDesc | SliderDesc | CheckDesc | SelectDesc;
-
-/**
- * The complete, grouped control list. This is the single source of truth for
- * label text, help/tooltip copy, and slider bounds/steps — edit it here and
- * BOTH the panel and the lab update together.
- */
-export const APPEARANCE_CONTROLS: readonly ControlDesc[] = [
+export const APPEARANCE_CONTROLS: readonly ControlDesc<DictationAppearance>[] = [
   { kind: "subhead", label: "Crystallize" },
   {
     kind: "slider",
@@ -224,191 +183,19 @@ export const APPEARANCE_CONTROLS: readonly ControlDesc[] = [
   },
 ];
 
-export interface AppearanceControlsHandle {
-  /** The current (coerced) appearance value. */
-  getValue(): DictationAppearance;
-  /** Replace the value and re-sync every control's DOM (used by Reset). */
-  setAll(next: DictationAppearance): void;
-}
-
-export interface RenderAppearanceControlsOpts {
-  current: DictationAppearance;
-  /** Called on EVERY change with the full next (coerced) appearance. */
-  onChange: (next: DictationAppearance) => void;
-}
-
-/** Decimals to display for a slider, derived from its step (0.001→3, 0.1→1, 1→0). */
-function decimalsFor(step: number): number {
-  return step < 1 ? Math.max(1, Math.ceil(-Math.log10(step))) : 0;
-}
-
-/** Build the ℹ️ info affordance whose hover/focus shows `help`. */
-function makeInfo(help: string): HTMLElement {
-  const info = document.createElement("span");
-  info.className = "dict-ctrl-info";
-  info.tabIndex = 0;
-  info.setAttribute("role", "img");
-  info.setAttribute("aria-label", help);
-  info.title = help; // native fallback
-  info.textContent = "ⓘ";
-  const tip = document.createElement("span");
-  tip.className = "dict-ctrl-tip";
-  tip.textContent = help;
-  info.appendChild(tip);
-  return info;
-}
-
 /**
  * Render the shared appearance controls into `host`. Returns a handle to read
- * the value and to re-sync the DOM after an external change (Reset). All rows
- * use `.dict-ctrl-*` classes (styled in styles.css); the host supplies the
- * palette via `--app-*` variables.
+ * the value and to re-sync the DOM after an external change (Reset).
  */
 export function renderAppearanceControls(
   host: HTMLElement,
   opts: RenderAppearanceControlsOpts,
 ): AppearanceControlsHandle {
-  let state: DictationAppearance = coerceAppearance(opts.current);
-  const syncers: (() => void)[] = [];
-
-  const emit = (): void => {
-    state = coerceAppearance(state);
-    opts.onChange(state);
-  };
-
-  const labelWithInfo = (text: string, help: string): HTMLElement => {
-    const label = document.createElement("span");
-    label.className = "dict-ctrl-label";
-    label.append(document.createTextNode(text), makeInfo(help));
-    return label;
-  };
-
-  const addSlider = (spec: SliderDesc): void => {
-    const row = document.createElement("div");
-    row.className = "dict-ctrl-row dict-ctrl-slider";
-
-    const labelRow = document.createElement("div");
-    labelRow.className = "dict-ctrl-labelrow";
-    const readout = document.createElement("span");
-    readout.className = "dict-ctrl-readout";
-    labelRow.append(labelWithInfo(spec.label, spec.help), readout);
-
-    const range = document.createElement("input");
-    range.type = "range";
-    range.className = "dict-ctrl-range";
-    range.min = String(spec.min);
-    range.max = String(spec.max);
-    range.step = String(spec.step);
-
-    const decimals = decimalsFor(spec.step);
-    const fmt = (n: number): string =>
-      `${decimals > 0 ? n.toFixed(decimals) : String(Math.round(n))}${spec.unit}`;
-
-    const sync = (): void => {
-      const v = state[spec.key];
-      range.value = String(v);
-      readout.textContent = fmt(v);
-    };
-    sync();
-    syncers.push(sync);
-
-    range.addEventListener("input", () => {
-      const raw = Number(range.value);
-      const v = Number.isFinite(raw) ? raw : DEFAULT_APPEARANCE[spec.key];
-      state = { ...state, [spec.key]: v };
-      readout.textContent = fmt(v);
-      emit();
-    });
-
-    row.append(labelRow, range);
-    host.appendChild(row);
-  };
-
-  const addCheck = (spec: CheckDesc): void => {
-    const row = document.createElement("label");
-    row.className = "dict-ctrl-row dict-ctrl-check";
-
-    const check = document.createElement("input");
-    check.type = "checkbox";
-    check.className = "dict-ctrl-checkbox";
-
-    const sync = (): void => {
-      check.checked = state[spec.key];
-    };
-    sync();
-    syncers.push(sync);
-
-    check.addEventListener("change", () => {
-      state = { ...state, [spec.key]: check.checked };
-      emit();
-    });
-
-    row.append(labelWithInfo(spec.label, spec.help), check);
-    host.appendChild(row);
-  };
-
-  const addSelect = (spec: SelectDesc): void => {
-    const row = document.createElement("label");
-    row.className = "dict-ctrl-row dict-ctrl-select";
-
-    const select = document.createElement("select");
-    select.className = "dict-ctrl-selectbox";
-    for (const opt of spec.options) {
-      const o = document.createElement("option");
-      o.value = opt;
-      o.textContent = opt;
-      select.appendChild(o);
-    }
-
-    const sync = (): void => {
-      select.value = String(state[spec.key]);
-    };
-    sync();
-    syncers.push(sync);
-
-    select.addEventListener("change", () => {
-      const v = select.value;
-      if (spec.key === "pillTheme") {
-        state = { ...state, pillTheme: v === "dark" || v === "light" ? v : "auto" };
-      } else {
-        state = { ...state, ghostMode: v === "estimate" ? "estimate" : "onset" };
-      }
-      emit();
-    });
-
-    row.append(labelWithInfo(spec.label, spec.help), select);
-    host.appendChild(row);
-  };
-
-  const addSubhead = (spec: SubheadDesc): void => {
-    const h = document.createElement("div");
-    h.className = "dict-ctrl-subhead";
-    h.textContent = spec.label;
-    host.appendChild(h);
-  };
-
-  for (const desc of APPEARANCE_CONTROLS) {
-    switch (desc.kind) {
-      case "subhead":
-        addSubhead(desc);
-        break;
-      case "slider":
-        addSlider(desc);
-        break;
-      case "check":
-        addCheck(desc);
-        break;
-      case "select":
-        addSelect(desc);
-        break;
-    }
-  }
-
-  return {
-    getValue: () => state,
-    setAll: (next) => {
-      state = coerceAppearance(next);
-      for (const sync of syncers) sync();
-    },
-  };
+  return renderControlRows<DictationAppearance>(host, {
+    descs: APPEARANCE_CONTROLS,
+    current: opts.current,
+    coerce: coerceAppearance,
+    defaults: DEFAULT_APPEARANCE,
+    onChange: opts.onChange,
+  });
 }

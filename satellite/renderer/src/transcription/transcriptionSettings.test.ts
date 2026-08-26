@@ -50,8 +50,17 @@ describe("transcriptionSettings.coerce", () => {
         commitWordCount: 5,
         commitPauseMs: 800,
       },
+      endpointing: { mode: "manual" as const, silenceMs: 1200 },
     };
     expect(coerce(input)).toEqual(input);
+  });
+
+  it("defaults endpointing to auto/500 and keeps a stored preference", () => {
+    expect(coerce({}).endpointing).toEqual({ mode: "auto", silenceMs: 500 });
+    expect(coerce({ endpointing: { mode: "manual", silenceMs: 250 } }).endpointing).toEqual({
+      mode: "manual",
+      silenceMs: 250,
+    });
   });
 
   it("defaults fluidMotion on", () => {

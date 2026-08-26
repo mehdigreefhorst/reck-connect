@@ -16,6 +16,8 @@ declare global {
         deepgramStart: (
           sampleRate: number,
           language?: string,
+          /** Deepgram's `endpointing` (ms); omitted = the main-process default. */
+          endpointingMs?: number,
         ) => Promise<{ ok: boolean; sessionId?: number; error?: string }>;
         deepgramFrame: (sessionId: number, bytes: Uint8Array) => void;
         deepgramStop: (sessionId: number) => Promise<boolean>;

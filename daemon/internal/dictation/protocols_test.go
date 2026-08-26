@@ -312,3 +312,99 @@ func TestValidProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeURLEndpointing(t *testing.T) {
+	cases := []struct {
+		name             string
+		end              Endpointing
+		wantEndpoint     string
+		wantUtteranceEnd string
+	}{
+		{"defaults when unset", Endpointing{}, "300", "1000"},
+		{"tuned window", Endpointing{SilenceMs: 900}, "900", "1600"},
+		{"manual keeps the utterance open", Endpointing{Manual: true}, "60000", "60000"},
+		{
+			"manual wins over an explicit window",
+			Endpointing{Manual: true, SilenceMs: 250},
+			"60000",
+			"60000",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := parseQuery(t, claudeProtocol{}.url(
+				"wss://api.anthropic.com",
+				Config{SampleRate: 16000, Endpointing: tc.end},
+			))
+			if got := q.Get("endpointing_ms"); got != tc.wantEndpoint {
+				t.Errorf("endpointing_ms = %s, want %s", got, tc.wantEndpoint)
+			}
+			if got := q.Get("utterance_end_ms"); got != tc.wantUtteranceEnd {
+				t.Errorf("utterance_end_ms = %s, want %s", got, tc.wantUtteranceEnd)
+			}
+		})
+	}
+}
+
+// codexTurnDetection digs the turn_detection member out of a session.update.
+func codexTurnDetection(t *testing.T, cfg Config) (any, bool) {
+	t.Helper()
+	_, payload, ok := (&codexProtocol{}).hello(cfg)
+	if !ok {
+		t.Fatal("hello returned no payload")
+	}
+	var msg struct {
+		Session struct {
+			Audio struct {
+				Input map[string]any `json:"input"`
+			} `json:"audio"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("unmarshal hello: %v", err)
+	}
+	td, present := msg.Session.Audio.Input["turn_detection"]
+	return td, present
+}
+
+func TestCodexHelloEndpointing(t *testing.T) {
+	t.Run("default silence window", func(t *testing.T) {
+		td, _ := codexTurnDetection(t, Config{SampleRate: 16000})
+		m, ok := td.(map[string]any)
+		if !ok {
+			t.Fatalf("turn_detection = %#v, want an object", td)
+		}
+		if m["type"] != "server_vad" {
+			t.Errorf("type = %v, want server_vad", m["type"])
+		}
+		if m["silence_duration_ms"] != float64(defaultCodexSilenceMs) {
+			t.Errorf("silence_duration_ms = %v, want %d", m["silence_duration_ms"], defaultCodexSilenceMs)
+		}
+	})
+
+	t.Run("tuned silence window", func(t *testing.T) {
+		td, _ := codexTurnDetection(t, Config{
+			SampleRate:  16000,
+			Endpointing: Endpointing{SilenceMs: 1500},
+		})
+		m, _ := td.(map[string]any)
+		if m["silence_duration_ms"] != float64(1500) {
+			t.Errorf("silence_duration_ms = %v, want 1500", m["silence_duration_ms"])
+		}
+	})
+
+	// Manual mode must send turn_detection: null — not omit it — so the API
+	// disables server VAD instead of falling back to its own default.
+	t.Run("manual disables server VAD", func(t *testing.T) {
+		td, present := codexTurnDetection(t, Config{
+			SampleRate:  16000,
+			Endpointing: Endpointing{Manual: true},
+		})
+		if !present {
+			t.Fatal("turn_detection missing from the payload; want an explicit null")
+		}
+		if td != nil {
+			t.Errorf("turn_detection = %#v, want null", td)
+		}
+	})
+}
