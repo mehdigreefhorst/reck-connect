@@ -33,12 +33,26 @@ export function registerTranscriptionIpc(getWindow: () => BrowserWindow | null):
 
   ipcMain.handle(
     "transcription:deepgram:start",
-    async (_e, sampleRate: unknown, language: unknown): Promise<DeepgramStartResult> => {
+    async (
+      _e,
+      sampleRate: unknown,
+      language: unknown,
+      endpointingMs: unknown,
+    ): Promise<DeepgramStartResult> => {
       const rate =
         typeof sampleRate === "number" && sampleRate > 0 ? Math.round(sampleRate) : 16000;
       const lang =
         typeof language === "string" && language !== "auto" && /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(language)
           ? language
+          : undefined;
+      // Renderer-supplied endpointing (docs/plans/dictation-endpointing.md).
+      // Anything unusable falls through to the session's own default rather
+      // than failing the start — a bad number should not cost you the mic.
+      const endpointing =
+        typeof endpointingMs === "number" &&
+        Number.isFinite(endpointingMs) &&
+        endpointingMs > 0
+          ? Math.round(endpointingMs)
           : undefined;
       const key = readConfig("transcription.deepgramKey");
       if (typeof key !== "string" || key.length === 0) {
@@ -50,7 +64,7 @@ export function registerTranscriptionIpc(getWindow: () => BrowserWindow | null):
       const id = nextId++;
       const dg = new DeepgramSession();
       try {
-        await dg.open(key, rate, lang, {
+        await dg.open(key, rate, lang, endpointing, {
           onPartial: (text) => send({ sessionId: id, kind: "partial", text }),
           onFinal: (text) => send({ sessionId: id, kind: "final", text }),
           onError: (message) => send({ sessionId: id, kind: "error", text: message }),

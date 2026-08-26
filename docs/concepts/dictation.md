@@ -71,10 +71,20 @@ Both are bearer-authed by the existing middleware.
 Availability only — **never a token**. `uses_subscription` distinguishes riding a
 subscription from metered API-key billing so the UI can say which is in play.
 
-### `GET /dictation/stream?provider=&sample_rate=&language=`
+### `GET /dictation/stream?provider=&sample_rate=&language=&endpoint_mode=&silence_ms=`
 
 WebSocket. `sample_rate` defaults to 16000 and must be 8000–48000; `language=auto`
 means "no preference" and is passed as empty so each provider picks its own default.
+
+`endpoint_mode` (`auto`|`manual`) and `silence_ms` (100–5000) are the caller's
+endpointing preference — how long a pause has to be before the provider closes an
+utterance. Both are optional, and omitting them keeps each provider's own defaults,
+so an older satellite behaves exactly as it did before the knob existed. Manual mode
+means "never finalize on silence": Codex is sent `turn_detection: null` (no live
+partials — its partials come from the same VAD) and the Deepgram-backed providers get
+an effectively-infinite window, with the transcript arriving on the stop frame either
+way. The per-provider mapping lives in `internal/dictation/protocols.go`; the rationale
+is in `docs/plans/dictation-endpointing.md`.
 
 - **Up**: binary frames are PCM16 audio. Text `{"type":"stop"}` finalizes.
 - **Down**: `{"kind":"ready"|"partial"|"final"|"error"|"debug","text":"…"}`.

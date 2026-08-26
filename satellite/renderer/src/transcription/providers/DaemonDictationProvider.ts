@@ -5,14 +5,20 @@
 // the bearer rides the reck-bearer subprotocol and stays inside ApiClient.
 
 import type { DictationProvidersResponse, DictationStreamEvent } from "@proto/proto";
-import type { DaemonSpeechProvider } from "../transcriptionSettings";
+import type { DaemonSpeechProvider, DictationEndpointing } from "../transcriptionSettings";
+import { daemonEndpointingParams } from "../endpointing";
 import { floatToInt16 } from "../pcm";
 import { sanitizeTranscript } from "../transcriptClean";
 import type { Transcriber, TranscriptionHandlers } from "./types";
 
 /** The slice of ApiClient this provider needs (kept narrow for tests). */
 export interface DaemonDictationApi {
-  dictationStreamUrl(provider: string, sampleRate: number, language: string): string;
+  dictationStreamUrl(
+    provider: string,
+    sampleRate: number,
+    language: string,
+    endpointing?: { mode: "auto" | "manual"; silenceMs: number },
+  ): string;
   wsSubprotocols(): string[];
   dictationProviders(): Promise<DictationProvidersResponse>;
 }
@@ -22,6 +28,8 @@ export interface DaemonDictationOptions {
   /** "auto" = provider default; otherwise an ISO code (e.g. "nl"). */
   language?: string;
   api: DaemonDictationApi;
+  /** When the provider should close an utterance; omitted = daemon defaults. */
+  endpointing?: DictationEndpointing;
   /** Test seam; production uses `new WebSocket(url, protocols)`. */
   socketFactory?: (url: string, protocols: string[]) => WebSocket;
 }
@@ -56,6 +64,7 @@ export class DaemonDictationProvider implements Transcriber {
   private readonly provider: DaemonSpeechProvider;
   private readonly language: string;
   private readonly api: DaemonDictationApi;
+  private readonly endpointing: DictationEndpointing | undefined;
   private readonly socketFactory: (url: string, protocols: string[]) => WebSocket;
 
   private socket: WebSocket | null = null;
@@ -76,6 +85,7 @@ export class DaemonDictationProvider implements Transcriber {
     this.provider = opts.provider;
     this.language = opts.language ?? "auto";
     this.api = opts.api;
+    this.endpointing = opts.endpointing;
     this.socketFactory =
       opts.socketFactory ?? ((url, protocols) => new WebSocket(url, protocols));
   }
@@ -100,6 +110,7 @@ export class DaemonDictationProvider implements Transcriber {
       this.provider,
       sampleRate || 16000,
       this.language,
+      this.endpointing ? daemonEndpointingParams(this.endpointing) : undefined,
     );
     const socket = this.socketFactory(url, this.api.wsSubprotocols());
     socket.binaryType = "arraybuffer";

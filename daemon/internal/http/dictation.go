@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	nethttp "net/http"
 	"strconv"
 	"strings"
@@ -30,6 +31,14 @@ import (
 // and proto.DictationStreamEvent (proto/proto.md documents both routes).
 
 // credLoader is the seam tests use to avoid touching a real keychain.
+// Bounds on the endpointing silence window the satellite may ask for. Below
+// ~100 ms every natural mid-sentence pause cuts an utterance; above 5 s the
+// user is better served by manual mode.
+const (
+	minSilenceMs = 100
+	maxSilenceMs = 5000
+)
+
 type credLoader func(dictation.Provider) (dictation.Credential, error)
 
 func (s *Server) dictationCreds() credLoader {
@@ -114,6 +123,30 @@ func (s *Server) handleDictationStream(w nethttp.ResponseWriter, r *nethttp.Requ
 	// default rather than being handed a bogus language code.
 	if cfg.Language == "auto" {
 		cfg.Language = ""
+	}
+
+	// Endpointing (docs/plans/dictation-endpointing.md). Both params are
+	// optional: an older satellite sends neither and gets the same provider
+	// defaults it always got.
+	switch mode := strings.TrimSpace(r.URL.Query().Get("endpoint_mode")); mode {
+	case "", "auto":
+	case "manual":
+		cfg.Endpointing.Manual = true
+	default:
+		nethttp.Error(w, "endpoint_mode must be auto or manual", nethttp.StatusBadRequest)
+		return
+	}
+	if raw := r.URL.Query().Get("silence_ms"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < minSilenceMs || n > maxSilenceMs {
+			nethttp.Error(
+				w,
+				fmt.Sprintf("silence_ms must be between %d and %d", minSilenceMs, maxSilenceMs),
+				nethttp.StatusBadRequest,
+			)
+			return
+		}
+		cfg.Endpointing.SilenceMs = n
 	}
 
 	// Load credentials BEFORE upgrading, so a missing token is a plain HTTP

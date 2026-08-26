@@ -1,23 +1,31 @@
 // Developer/testing panel opened by right-clicking the floating mic button.
 // Lets the user live-tune the dictation overlay's look (blur, timing, font,
-// blobs, theme, chunking) with immediate apply + persist. The actual controls
-// are the SHARED `renderAppearanceControls` component — the exact same rows the
-// tuning lab uses — so tuning transfers 1:1. This file only owns the panel
+// blobs, theme, chunking) plus engine endpointing, with immediate apply +
+// persist. The actual controls are the SHARED control components — the exact
+// same rows the tuning lab uses — so tuning transfers 1:1. This file only owns the panel
 // chrome: header, footer, positioning, and outside-click/Escape dismissal
 // (mirrors languageMenu.ts so it feels like the mic context menu).
 
 import {
   coerceAppearance,
+  coerceEndpointing,
   DEFAULT_APPEARANCE,
+  DEFAULT_ENDPOINTING,
   type DictationAppearance,
+  type DictationEndpointing,
 } from "./transcriptionSettings";
 import { renderAppearanceControls } from "./appearanceControls";
+import { renderEndpointingControls } from "./endpointingControls";
 import { confirmDialog, confirmDialogOpen } from "../ui/confirmDialog";
 
 export interface AdvancedPanelOpts {
   current: DictationAppearance;
   /** Called on EVERY control change with the full next appearance — used for LIVE apply + persist. */
   onChange: (next: DictationAppearance) => void;
+  /** When streaming engines should close an utterance. */
+  currentEndpointing: DictationEndpointing;
+  /** Called on EVERY endpointing change — persisted; applies to the NEXT utterance. */
+  onEndpointingChange: (next: DictationEndpointing) => void;
   /** Optional: called when the panel closes. */
   onClose?: () => void;
 }
@@ -42,7 +50,7 @@ export function showDictationAdvancedPanel(x: number, y: number, opts: AdvancedP
   header.className = "dictation-adv-header";
   const title = document.createElement("span");
   title.className = "dictation-adv-title";
-  title.textContent = "Dictation appearance";
+  title.textContent = "Dictation tuning";
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "dictation-adv-close";
@@ -60,6 +68,14 @@ export function showDictationAdvancedPanel(x: number, y: number, opts: AdvancedP
   const controls = renderAppearanceControls(body, {
     current: coerceAppearance(opts.current),
     onChange: (next) => opts.onChange(next),
+  });
+
+  // Endpointing lives in the same panel because it is the knob people reach
+  // for when dictation "feels wrong" — but it is a PROVIDER setting, not a
+  // look one, so it renders as its own group below the appearance rows.
+  const endpointing = renderEndpointingControls(body, {
+    current: coerceEndpointing(opts.currentEndpointing),
+    onChange: (next) => opts.onEndpointingChange(next),
   });
 
   // Link to the full tuning lab (replayable timelines + every knob).
@@ -86,7 +102,7 @@ export function showDictationAdvancedPanel(x: number, y: number, opts: AdvancedP
   resetBtn.textContent = "Reset to defaults";
   resetBtn.addEventListener("click", async () => {
     const ok = await confirmDialog({
-      title: "Reset appearance to defaults?",
+      title: "Reset dictation tuning to defaults?",
       detail: "This discards your current tuning and restores the shipped values.",
       confirmLabel: "Yes, reset",
       cancelLabel: "No",
@@ -95,6 +111,9 @@ export function showDictationAdvancedPanel(x: number, y: number, opts: AdvancedP
     const next = { ...DEFAULT_APPEARANCE };
     controls.setAll(next);
     opts.onChange(next);
+    const nextEndpointing = { ...DEFAULT_ENDPOINTING };
+    endpointing.setAll(nextEndpointing);
+    opts.onEndpointingChange(nextEndpointing);
   });
 
   const doneBtn = document.createElement("button");

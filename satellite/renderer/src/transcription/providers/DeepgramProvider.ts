@@ -3,6 +3,8 @@
 // Float32 chunks are converted to linear16 and forwarded; interim/final
 // transcripts arrive via the "transcription:event" IPC channel.
 
+import { deepgramEndpointingMs } from "../endpointing";
+import type { DictationEndpointing } from "../transcriptionSettings";
 import { floatToInt16 } from "../pcm";
 import { sanitizeTranscript } from "../transcriptClean";
 import type { Transcriber, TranscriptionHandlers } from "./types";
@@ -19,10 +21,14 @@ export class DeepgramProvider implements Transcriber {
   // "auto" = let the server default; anything else is passed as Deepgram's
   // `language` query param (e.g. "nl").
   private readonly language: string;
+  // Deepgram's `endpointing`, in ms — how much silence closes an utterance.
+  // Undefined leaves the main process on its own default.
+  private readonly endpointingMs: number | undefined;
   private sessionId: number | null = null;
 
-  constructor(opts: { language?: string } = {}) {
+  constructor(opts: { language?: string; endpointing?: DictationEndpointing } = {}) {
     this.language = opts.language ?? "auto";
+    this.endpointingMs = opts.endpointing ? deepgramEndpointingMs(opts.endpointing) : undefined;
   }
   private unsub: (() => void) | null = null;
   private handlers: TranscriptionHandlers | null = null;
@@ -79,6 +85,7 @@ export class DeepgramProvider implements Transcriber {
     const res = await window.reckAPI.transcription.deepgramStart(
       sampleRate || 16000,
       this.language,
+      this.endpointingMs,
     );
     console.log("[deepgram] start →", res, "@", sampleRate, "Hz");
     if (!res.ok || res.sessionId === undefined) {

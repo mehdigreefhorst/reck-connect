@@ -74,9 +74,13 @@ export async function initTranscription(
           const state = controller.getState();
           if (state === "listening" || state === "preparing") void controller.toggle();
         },
-        // Enter sends the message → stop recording (we're done talking).
+        // Enter sends the message → stop recording (we're done talking) and
+        // claim the keystroke: stopForSend finalizes first and submits once
+        // the tail has landed, so nothing spoken is lost to the send.
         onSubmit: () => {
-          if (controller.isActive()) void controller.stopForSend();
+          if (!controller.isActive()) return false;
+          void controller.stopForSend();
+          return true;
         },
       })
     : () => {};
@@ -116,6 +120,14 @@ export async function initTranscription(
             // Live-apply to the running pill, then persist.
             controller.updateAppearance(appearance);
             void saveTranscriptionSettings({ ...controller.getSettings(), appearance });
+          },
+          currentEndpointing: controller.getSettings().endpointing,
+          onEndpointingChange: (endpointing) => {
+            // Endpointing is baked into the provider session, so this takes
+            // effect on the NEXT utterance, not the one being recorded.
+            const next = { ...controller.getSettings(), endpointing };
+            controller.updateSettings(next);
+            void saveTranscriptionSettings(next);
           },
           onClose: () => {
             if (autoStarted && controller.isActive()) void controller.cancel();

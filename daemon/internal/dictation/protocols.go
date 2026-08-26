@@ -39,6 +39,10 @@ const userAgent = "reck-connect-dictation"
 // calls the same knob `endpointing`.
 type claudeProtocol struct{}
 
+// defaultClaudeEndpointMs is what this endpoint is tuned for out of the box
+// (short CLI dictation); utterance_end lands at 1000 ms with the headroom.
+const defaultClaudeEndpointMs = 300
+
 const claudePath = "/api/ws/speech_to_text/voice_stream"
 
 func (claudeProtocol) url(base string, cfg Config) string {
@@ -46,8 +50,15 @@ func (claudeProtocol) url(base string, cfg Config) string {
 	q.Set("encoding", "linear16")
 	q.Set("sample_rate", strconv.Itoa(cfg.SampleRate))
 	q.Set("channels", "1")
-	q.Set("endpointing_ms", "300")
-	q.Set("utterance_end_ms", "1000")
+	// Endpointing is user-tunable (docs/plans/dictation-endpointing.md); the
+	// defaults below are what Claude Code asks of the same endpoint.
+	end := cfg.Endpointing.silence(defaultClaudeEndpointMs)
+	utteranceEnd := end + UtteranceEndHeadroomMs
+	if cfg.Endpointing.Manual {
+		utteranceEnd = end
+	}
+	q.Set("endpointing_ms", strconv.Itoa(end))
+	q.Set("utterance_end_ms", strconv.Itoa(utteranceEnd))
 	q.Set("use_conversation_engine", "true")
 	q.Set("stt_provider", "deepgram-nova3")
 	lang := strings.TrimSpace(cfg.Language)
@@ -149,13 +160,27 @@ func (*codexProtocol) headers(cred Credential) http.Header {
 	return h
 }
 
+// defaultCodexSilenceMs is OpenAI's server-VAD window we shipped before the
+// knob existed — aggressive enough to cut short phrases, which is exactly why
+// it is now tunable.
+const defaultCodexSilenceMs = 500
+
 // hello configures a transcription session. server_vad is what produces live
-// partials mid-utterance; without it nothing is transcribed until commit.
+// partials mid-utterance; without it nothing is transcribed until commit —
+// which is precisely what manual endpointing asks for, at the cost of live
+// text (goodbye() sends the commit, so the utterance is never lost).
 func (*codexProtocol) hello(cfg Config) (websocket.MessageType, []byte, bool) {
+	var turnDetection any
+	if !cfg.Endpointing.Manual {
+		turnDetection = map[string]any{
+			"type":                "server_vad",
+			"silence_duration_ms": cfg.Endpointing.silence(defaultCodexSilenceMs),
+		}
+	}
 	input := map[string]any{
 		"format":         map[string]any{"type": "audio/pcm", "rate": codexRate},
 		"transcription":  map[string]any{"model": codexTranscribeModel},
-		"turn_detection": map[string]any{"type": "server_vad", "silence_duration_ms": 500},
+		"turn_detection": turnDetection,
 	}
 	if lang := strings.TrimSpace(cfg.Language); lang != "" {
 		input["transcription"] = map[string]any{
