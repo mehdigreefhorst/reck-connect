@@ -4,6 +4,7 @@ import {
   alignWords,
   makeChunk,
   resolvedCount,
+  pillWindow,
   shouldFlush,
   stepChunk,
   takeFlush,
@@ -14,7 +15,6 @@ import {
 const AUTO: StepOpts["endpointing"] = { mode: "auto", silenceMs: 500 };
 const MANUAL: StepOpts["endpointing"] = { mode: "manual", silenceMs: 3900 };
 const OPTS: Omit<StepOpts, "msSinceVoice"> = {
-  commitWordCount: 6,
   commitPauseMs: 700,
   ghostResetMs: 1200,
   endpointing: AUTO,
@@ -224,6 +224,17 @@ describe("chunkModel.stepChunk under manual endpointing", () => {
     expect(r.chunk.committedWords).toBe(2);
   });
 
+  // The phantom-blob reset is the one thing in the step that still fires on a
+  // timer under manual. It must only ever drop UNRESOLVED blobs.
+  it("never lets the phantom reset take resolved words with it", () => {
+    let chunk = makeChunk();
+    chunk = addOnset(addOnset(addOnset(chunk, 1), 2), 3);
+    const r = stepChunk(chunk, ["keep", "these"], { ...MANUAL_OPTS, msSinceVoice: 60_000 }, false);
+    expect(r.cleared).toBe(false);
+    expect(r.commits).toEqual([]);
+    expect(r.chunk.segments.map((s) => s.text)).toEqual(["keep", "these", null]);
+  });
+
   it("still drops phantom blobs that never resolved (display only, no commit)", () => {
     const chunk = addOnset(addOnset(makeChunk(), 1), 2);
     const r = stepChunk(chunk, [], { ...MANUAL_OPTS, msSinceVoice: 2000 }, false);
@@ -246,5 +257,114 @@ describe("chunkModel.stepChunk under a long auto silence", () => {
     expect(early.commits).toEqual([]);
     const late = stepChunk(chunk, ["hello", "world"], { ...SLOW, msSinceVoice: 4000 }, false);
     expect(late.commits.join(" ")).toBe("hello world");
+  });
+});
+
+// Restored alongside the endpointing change: takeFlush is still the thing that
+// decides WHAT a commit contains (the endpointing work only changed WHEN one
+// happens), so its ordering guarantees need to stay covered.
+describe("chunkModel.takeFlush", () => {
+  it("commits the leading resolved run and preserves the blurred tail", () => {
+    let c = makeChunk();
+    c = addOnset(c, 1);
+    c = addOnset(c, 2);
+    c = addOnset(c, 3);
+    c = alignWords(c, ["open", "the"]); // seg 3 still blurred
+    const r = takeFlush(c);
+    expect(r.committedText).toBe("open the");
+    expect(r.committedCount).toBe(2);
+    expect(r.rest.committedWords).toBe(2);
+    expect(r.rest.segments).toEqual([{ id: 3, state: "blurred", text: null }]);
+  });
+
+  it("stops at the first blurred gap so committed text stays in order", () => {
+    // seg1 resolved, seg2 blurred, seg3 resolved (out-of-order resolution).
+    const c: ChunkState = {
+      segments: [
+        { id: 1, state: "sharp", text: "one" },
+        { id: 2, state: "blurred", text: null },
+        { id: 3, state: "crystallizing", text: "three" },
+      ],
+      committedWords: 0,
+    };
+    const r = takeFlush(c);
+    expect(r.committedText).toBe("one");
+    expect(r.rest.segments.map((s) => s.id)).toEqual([2, 3]);
+  });
+
+  it("resolvedCount ignores blurred segments", () => {
+    let c = addOnset(addOnset(makeChunk(), 1), 2);
+    c = alignWords(c, ["hi"]);
+    expect(resolvedCount(c)).toBe(1);
+  });
+});
+
+// A final pass is the ONLY commit under manual endpointing. If the provider
+// hands back an empty final (filtered result, socket died on the last frame),
+// committing "" would silently swallow the entire utterance.
+describe("chunkModel.stepChunk final fallback", () => {
+  const MANUAL_OPTS = { ...OPTS, endpointing: MANUAL, msSinceVoice: 0 };
+
+  it("commits the pill's words when the final transcript comes back empty", () => {
+    let chunk = makeChunk();
+    chunk = addOnset(addOnset(chunk, 1), 2);
+    chunk = alignWords(chunk, ["fix", "everything"]);
+    const r = stepChunk(chunk, [], MANUAL_OPTS, true);
+    expect(r.commits).toEqual(["fix everything"]);
+    expect(r.cleared).toBe(true);
+  });
+
+  it("skips a blurred gap rather than emitting a hole", () => {
+    const chunk: ChunkState = {
+      segments: [
+        { id: 1, state: "sharp", text: "one" },
+        { id: 2, state: "blurred", text: null },
+        { id: 3, state: "sharp", text: "three" },
+      ],
+      committedWords: 0,
+    };
+    const r = stepChunk(chunk, [], MANUAL_OPTS, true);
+    expect(r.commits).toEqual(["one three"]);
+  });
+
+  it("still prefers the transcript when the final does have words", () => {
+    let chunk = makeChunk();
+    chunk = addOnset(addOnset(chunk, 1), 2);
+    chunk = alignWords(chunk, ["fix", "evrything"]);
+    const r = stepChunk(chunk, ["fix", "everything", "please"], MANUAL_OPTS, true);
+    expect(r.commits).toEqual(["fix everything please"]);
+  });
+
+  it("commits nothing when there is genuinely nothing (only blobs)", () => {
+    const chunk = addOnset(addOnset(makeChunk(), 1), 2);
+    const r = stepChunk(chunk, [], MANUAL_OPTS, true);
+    expect(r.commits).toEqual([]);
+    expect(r.cleared).toBe(true);
+  });
+});
+
+// The pill is a clipped, fixed-width overlay. Once endpointing owns the commit
+// a chunk is unbounded (manual holds the whole utterance), so the view has to
+// window it or the words being spoken RIGHT NOW fall off the right edge.
+describe("chunkModel.pillWindow", () => {
+  const segs = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      state: "sharp" as const,
+      text: `w${i + 1}`,
+    }));
+
+  it("passes a short chunk through untouched", () => {
+    const s = segs(3);
+    expect(pillWindow(s, 7)).toBe(s);
+  });
+
+  it("keeps the NEWEST words when the chunk outgrows the pill", () => {
+    expect(pillWindow(segs(300), 7).map((s) => s.id)).toEqual([294, 295, 296, 297, 298, 299, 300]);
+  });
+
+  it("never renders nothing, whatever the slider says", () => {
+    expect(pillWindow(segs(5), 0)).toHaveLength(1);
+    expect(pillWindow(segs(5), -3)).toHaveLength(1);
   });
 });

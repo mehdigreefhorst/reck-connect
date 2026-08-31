@@ -8,7 +8,14 @@
 
 import { TranscriptionEngine, type DictationState } from "./TranscriptionEngine";
 import { DEFAULT_ONSET_CONFIG } from "./onsetDetector";
-import { addOnset, makeChunk, stepChunk, type ChunkState, type Segment } from "./chunkModel";
+import {
+  addOnset,
+  makeChunk,
+  pillWindow,
+  stepChunk,
+  type ChunkState,
+  type Segment,
+} from "./chunkModel";
 import { DictationBar } from "./DictationBar";
 import {
   DaemonDictationProvider,
@@ -195,6 +202,9 @@ export class TranscriptionController {
   private submitAfterFinal = false;
   // Resolves the in-flight send early (a second Enter, or the timeout).
   private forceSend: (() => void) | null = null;
+  // Set by `cancel({ discard: true })` — this session's words are to be thrown
+  // away rather than salvaged into the prompt on the way to idle.
+  private discardUtterance = false;
 
   constructor(private readonly deps: TranscriptionControllerDeps) {
     this.settings = deps.settings;
@@ -236,7 +246,7 @@ export class TranscriptionController {
         // the "text always starts blurred" moment.
         if (this.settings.appearance.ghostMode !== "onset") return;
         this.chunk = addOnset(this.chunk, id);
-        this.bar?.setChunk(this.chunk.segments);
+        this.renderChunk();
       },
       onError: (m) => {
         console.error("[dictation] error:", m);
@@ -358,10 +368,19 @@ export class TranscriptionController {
   }
 
   /**
+   * Show the chunk in the pill — only its trailing window, so an utterance
+   * that never commits (manual endpointing) can't push the words being spoken
+   * right now off the pill's clipped edge.
+   */
+  private renderChunk(): void {
+    this.bar?.setChunk(pillWindow(this.chunk.segments, this.settings.appearance.commitWordCount));
+  }
+
+  /**
    * Onset mode (Phase 2). Align the uncommitted transcript tail onto the chunk
    * (words crystallize left→right in the pill), then commit the leading
-   * resolved run into the terminal once the chunk fills (commitWordCount) or
-   * the speaker pauses (commitPauseMs). On final, everything remaining lands.
+   * resolved run into the terminal when ENDPOINTING says the utterance may be
+   * cut — never on word count. On final, everything remaining lands.
    */
   private flushOnset(): void {
     this.pendingStable = null;
@@ -375,7 +394,6 @@ export class TranscriptionController {
       tailWords,
       {
         msSinceVoice: this.msSinceVoice(),
-        commitWordCount: a.commitWordCount,
         commitPauseMs: a.commitPauseMs,
         ghostResetMs: a.ghostResetMs,
         // Endpointing governs the commit, not just the provider session: a
@@ -389,12 +407,39 @@ export class TranscriptionController {
     this.chunk = chunk;
     this.finalPending = false;
     if (cleared) this.bar?.clearChunk();
-    else this.bar?.setChunk(this.chunk.segments);
+    else this.renderChunk();
+  }
+
+  /**
+   * Commit whatever the pill still holds, then forget it. Runs on the way to
+   * idle from EVERY end path — the normal stop (a no-op: the final pass already
+   * drained the chunk), but also a provider error, a dropped socket, clicking
+   * the mic during the final pass, and the Enter-send flush timeout.
+   *
+   * Without this, `manual` endpointing turns any of those into a silently lost
+   * utterance: nothing has been injected yet, so there is nothing in the prompt
+   * to fall back on. Losing a minute of dictation is far worse than committing
+   * a slightly-early transcript, so the salvage always wins over the discard.
+   * (Estimate mode needs none of it — it types every pass into the prompt as it
+   * goes, so there is never anything held back.)
+   */
+  private salvagePendingChunk(): void {
+    if (this.settings.appearance.ghostMode !== "onset") return;
+    if (this.chunk.segments.length === 0) return;
+    this.finalPending = true;
+    this.flushOnset();
   }
 
   /**
    * Estimate mode (legacy). Apply the latest stable text into the prompt, the
    * latest ghost tail into the pill, and a single blob recompute.
+   *
+   * Endpointing deliberately does NOT gate this path. Every pass here is
+   * re-diffed against what's already typed (`computeInjection` backspaces the
+   * diverged tail), so the prompt always holds the provider's LATEST transcript
+   * and a later revision still corrects it — nothing is frozen mid-utterance,
+   * which is the accuracy loss #164 is about. Onset mode is different, and is
+   * gated, because its commits are append-only and never revised.
    */
   private flushEstimate(): void {
     if (this.pendingStable !== null) {
@@ -447,6 +492,7 @@ export class TranscriptionController {
     this.stableText = "";
     this.tailText = "";
     this.finalPending = false;
+    this.discardUtterance = false;
   }
 
   private onStateChange(state: DictationState): void {
@@ -459,6 +505,10 @@ export class TranscriptionController {
     );
     this.bar?.setState(state);
     if (state === "idle") {
+      // Last chance to keep what was said: commit the pill before the state is
+      // torn down. Skipped only for an explicit discard (the Advanced panel's
+      // preview session, which the user never meant to dictate).
+      if (!this.discardUtterance) this.salvagePendingChunk();
       // Stop batching and DROP any unflushed buffer. The normal stop path
       // already applied the full utterance via onFinal's immediate flush;
       // the send/cancel path deliberately discards the buffered tail (the
@@ -482,8 +532,9 @@ export class TranscriptionController {
     else if (state === "listening") await this.engine.stop();
     else if (state === "preparing") await this.cancel(); // abort a slow model load
     // A slow final pass (big model, long utterance) shouldn't hold the mic
-    // hostage: clicking again abandons the improvement pass. The stable
-    // words already typed into the prompt stay.
+    // hostage: clicking again abandons the improvement pass. What was already
+    // transcribed stays — the words in the prompt, plus whatever the pill still
+    // holds, which cancel() salvages on the way to idle.
     else if (state === "transcribing") await this.cancel();
   }
 
@@ -550,13 +601,22 @@ export class TranscriptionController {
     this.forceSend = null;
     // The engine flushed on its own: onStateChange("idle") already submitted.
     if (winner === "final") return;
-    // We gave up waiting (or the user did). Abandon the tail and send what is
-    // already in the prompt — cancel() goes through "idle", which submits.
+    // We gave up waiting (or the user did). Abandon the provider's improved
+    // tail and send what we have — cancel() salvages the pill into the prompt
+    // and goes through "idle", which submits. (Under manual endpointing the
+    // pill IS the utterance, so without the salvage this would send nothing.)
     if (this.engine.isActive()) await this.cancel();
     else this.submitAfterFinal = false;
   }
 
-  async cancel(): Promise<void> {
+  /**
+   * Abort the session. By default the words already in the pill are still
+   * salvaged into the prompt on the way to idle — a cancel usually means "stop
+   * waiting", not "throw away what I said". Pass `discard` for the one case
+   * where it really is a throwaway: the Advanced panel's preview session.
+   */
+  async cancel(opts: { discard?: boolean } = {}): Promise<void> {
+    this.discardUtterance = opts.discard === true;
     this.stopSettleTimer();
     this.resetSettleBuffers();
     await this.engine.cancel();

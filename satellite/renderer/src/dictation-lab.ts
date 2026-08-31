@@ -12,7 +12,13 @@
 import "./styles.css";
 import { DictationBar } from "./transcription/DictationBar";
 import type { DictationState } from "./transcription/TranscriptionEngine";
-import { addOnset, makeChunk, stepChunk, type ChunkState } from "./transcription/chunkModel";
+import {
+  addOnset,
+  makeChunk,
+  pillWindow,
+  stepChunk,
+  type ChunkState,
+} from "./transcription/chunkModel";
 import { renderAppearanceControls } from "./transcription/appearanceControls";
 import { confirmDialog } from "./ui/confirmDialog";
 import {
@@ -254,7 +260,13 @@ class ReplayEngine {
       this.firedOnsets++;
       fired = true;
     }
-    if (fired) this.bar?.setChunk(this.chunk.segments);
+    if (fired) this.renderChunk();
+  }
+
+  /** Render only the pill's trailing window — same rule as the live
+   *  controller, so the lab shows what the pill really looks like. */
+  private renderChunk(): void {
+    this.bar?.setChunk(pillWindow(this.chunk.segments, this.appearance.commitWordCount));
   }
 
   /** One settle tick: align the tail, commit due phrases (the SAME stepChunk
@@ -270,7 +282,6 @@ class ReplayEngine {
       tailWords,
       {
         msSinceVoice,
-        commitWordCount: a.commitWordCount,
         commitPauseMs: a.commitPauseMs,
         ghostResetMs: a.ghostResetMs,
         // The lab replays a scripted transcript to tune the LOOK; endpointing
@@ -286,7 +297,7 @@ class ReplayEngine {
     this.chunk = chunk;
     if (final) this.finalDone = true;
     if (cleared) this.bar?.clearChunk();
-    else this.bar?.setChunk(this.chunk.segments);
+    else this.renderChunk();
   }
 
   /** Advance the simulation deterministically to sim time `t`. */

@@ -1,15 +1,17 @@
 // The sub-sentence chunk model (Phase 2). A "chunk" is the rolling phrase
-// currently living in the pill overlay — up to ~commitWordCount words, or until
-// a pause. Each word is a SEGMENT with its own identity and lifecycle:
+// currently living in the pill overlay — everything spoken since the last
+// commit. Each word is a SEGMENT with its own identity and lifecycle:
 //
 //   blurred        → an onset was heard; no text yet (a ▓ placeholder)
 //   crystallizing  → transcription assigned/changed its word (animate de-blur)
 //   sharp          → its word is stable (assigned + unchanged) — stop animating
 //
-// When the chunk fills (word count) or the speaker pauses, its leading run of
-// resolved words is committed into the terminal as plain text and dropped from
-// the pill; the still-blurred tail (onsets the transcriber hasn't caught up to)
-// carries into the next chunk.
+// ENDPOINTING decides when the chunk commits (see `shouldFlush`): its leading
+// run of resolved words is then written into the terminal as plain text and
+// dropped from the pill, and the still-blurred tail (onsets the transcriber
+// hasn't caught up to) carries into the next chunk. The pill renders only a
+// trailing window of the chunk (`pillWindow`), so a long one still shows the
+// words being spoken right now.
 //
 // Pure + deterministic so it unit-tests without a DOM, audio, or timers.
 
@@ -80,6 +82,30 @@ export function resolvedCount(chunk: ChunkState): number {
   return chunk.segments.reduce((n, s) => n + (s.text !== null ? 1 : 0), 0);
 }
 
+/** The resolved words of a chunk, in order (blurred gaps skipped). */
+export function resolvedWords(chunk: ChunkState): string[] {
+  return chunk.segments.filter((s) => s.text !== null).map((s) => s.text as string);
+}
+
+/**
+ * What the PILL should show: the trailing `size` segments.
+ *
+ * Since endpointing owns the commit, a chunk is no longer bounded by a word
+ * count — under `manual` it holds the WHOLE utterance, and under a long `auto`
+ * silence it can hold a long one. The pill is a fixed-width overlay with
+ * `overflow: hidden`, so rendering all of it would clip the newest words (the
+ * ones you are actually saying) off the right-hand edge. Showing a trailing
+ * window keeps the leading edge visible however long the utterance runs — and
+ * is exactly what the "Pill size (words)" control now means.
+ *
+ * Display only: the chunk itself keeps every segment, because the final pass
+ * still has to commit all of them.
+ */
+export function pillWindow(segments: readonly Segment[], size: number): readonly Segment[] {
+  const n = Math.max(1, Math.floor(size));
+  return segments.length <= n ? segments : segments.slice(segments.length - n);
+}
+
 /**
  * The endpointing preference, as this module needs it. Structurally the same
  * as `DictationEndpointing`; restated here so the chunk model stays free of
@@ -93,12 +119,6 @@ export interface CommitPolicy {
 
 export interface FlushOpts {
   msSinceVoice: number;
-  /**
-   * Chunk size for the PILL. No longer a commit trigger: committing mid-phrase
-   * because six words happened to arrive is what froze half-transcribed text
-   * in the terminal, and it defeated a long endpointing setting outright.
-   */
-  commitWordCount: number;
   /** Display-side pause cadence. Can only ever make a commit LATER, never earlier. */
   commitPauseMs: number;
   /** The authority over when anything is committed. */
@@ -172,8 +192,9 @@ export interface StepOpts extends FlushOpts {
 
 // A clear pause (~1s) means the speaker has stopped: everything already
 // crystallized is committed, even any word stranded past a blurred gap, and the
-// leftover blobs (onsets that never became words) are dropped. commitPauseMs
-// handles the shorter mid-phrase flush; this is the end-of-utterance sweep.
+// leftover blobs (onsets that never became words) are dropped. Floor only —
+// the endpointing silence still wins when it is longer (and `manual` skips the
+// sweep entirely); this is the auto-mode end-of-utterance sweep.
 export const SILENCE_FINALIZE_MS = 1000;
 
 export interface StepResult {
@@ -203,9 +224,16 @@ export function stepChunk(
   const commits: string[] = [];
 
   if (final) {
-    const remaining = tailWords.join(" ");
+    // A final pass that comes back EMPTY must never swallow the utterance.
+    // Providers do filter/return nothing (a failed or over-filtered final, a
+    // socket that died before the last frame), and under `manual` endpointing
+    // this is the ONLY commit there will be — dropping it loses everything the
+    // user said. Fall back to the words already crystallized in the pill, the
+    // same way `computeInjection` refuses to erase on an empty pass.
+    const words = tailWords.length > 0 ? tailWords : resolvedWords(c);
+    const remaining = words.join(" ");
     if (remaining) commits.push(remaining);
-    return { chunk: makeChunk(c.committedWords + tailWords.length), commits, cleared: true };
+    return { chunk: makeChunk(c.committedWords + words.length), commits, cleared: true };
   }
 
   while (shouldFlush(c, opts)) {
@@ -227,9 +255,7 @@ export function stepChunk(
     opts.msSinceVoice > finalizeMs &&
     c.segments.length > 0
   ) {
-    const resolvedTail = c.segments
-      .filter((s) => s.text !== null)
-      .map((s) => s.text as string);
+    const resolvedTail = resolvedWords(c);
     if (resolvedTail.length > 0) commits.push(resolvedTail.join(" "));
     return {
       chunk: makeChunk(c.committedWords + resolvedTail.length),

@@ -61,6 +61,44 @@ Mapping, applied at the edge that talks to each provider:
 emits no live partials, so there is no crystallizing text until you stop. The
 control's help text says so.
 
+### 1b. Endpointing also governs the RENDERER's commit (#164)
+
+Setting the provider's endpointing was not enough. The renderer's chunk model
+had its own, separate commit policy — flush after `commitWordCount` resolved
+words, or after `commitPauseMs` of silence, plus a hardcoded 1 s end-of-utterance
+sweep — and that policy is what actually injects text into the terminal. So
+`manual` reached the provider while the prompt still filled up mid-utterance,
+which is the accuracy loss the setting exists to prevent: injected text is
+append-only and never revised, and Codex re-transcribes the whole turn.
+
+`shouldFlush` now takes the endpointing preference and is the single authority:
+
+- `manual` — never commits. The only commit is the final pass (Enter, or
+  stopping dictation).
+- `auto` — commits after `max(silenceMs, commitPauseMs)` of silence, and on
+  nothing else. Word count no longer commits at all. The `max` can only ever
+  delay a commit past the endpointing setting, never bring one forward.
+
+The two chunk sliders are therefore display-only and are labelled as such
+("Pill size (words)", "Pill pause (ms)"). Pill size now means what it says: the
+chunk keeps every segment (the final pass has to commit them), but the pill
+renders only its trailing window (`pillWindow`), so an utterance that never
+commits still shows the words being spoken rather than clipping them off the
+overlay's edge.
+
+**The commit must not be lost.** Under `manual` the whole utterance lives in the
+pill until the end, so every way dictation can end has to deliver it:
+`TranscriptionController` salvages the pill on the way to `idle` — covering a
+provider error, a dropped socket, clicking the mic during the final pass, and
+the Enter-send flush timeout — and `stepChunk`'s final pass falls back to the
+pill's words when the provider returns an empty final. The one deliberate
+discard is the Advanced panel's preview session (`cancel({ discard: true })`).
+
+Estimate mode (the legacy non-default ghost mode) is intentionally *not* gated:
+it re-diffs every pass against what it typed and backspaces the divergence, so
+the prompt always holds the provider's latest transcript and nothing is frozen
+mid-utterance.
+
 ### 2. Enter waits for the tail (always)
 
 `onSubmit` becomes an interception rather than an observation:
@@ -103,3 +141,7 @@ newer daemon (or vice versa) keeps the previous behavior.
 - `dictation_test.go` (router) — query parsing + rejection of out-of-range.
 - `TranscriptionController` send path — Enter finalizes, submits once, and
   still submits on flush timeout.
+- `chunkModel.test.ts` — manual never commits, auto commits only on the
+  endpointing silence, the empty-final fallback, and the pill window.
+- `controllerSalvage.test.ts` — the utterance survives a provider error, an
+  abandoned final pass, and the send timeout; a preview discard still discards.

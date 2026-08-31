@@ -130,7 +130,12 @@ export async function initTranscription(
             void saveTranscriptionSettings(next);
           },
           onClose: () => {
-            if (autoStarted && controller.isActive()) void controller.cancel();
+            // A discard, explicitly: this session exists only to give the
+            // sliders something live to preview against, so its words must
+            // not be salvaged into the prompt the way a real cancel's are.
+            if (autoStarted && controller.isActive()) {
+              void controller.cancel({ discard: true });
+            }
           },
         });
       },
