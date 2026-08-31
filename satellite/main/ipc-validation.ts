@@ -123,3 +123,61 @@ export function checkExternalUrl(raw: unknown): UrlSchemeCheck {
   }
   return { ok: true, url: parsed.toString() };
 }
+
+// --- git:clone remote guard --------------------------------------------------
+
+export type GitCloneUrlCheck =
+  | { ok: true; url: string }
+  | { ok: false; error: string };
+
+/**
+ * Characters that must never reach the station's shell, even though the caller
+ * single-quotes the operand. A hyphen mid-string is fine (`Hello-World` is an
+ * ordinary repo name); a LEADING hyphen is checked separately, because git
+ * would read it as an option and `--upload-pack=<cmd>` is remote code
+ * execution.
+ */
+// eslint-disable-next-line no-control-regex
+const GIT_URL_FORBIDDEN = /[\s\u0000-\u001f\u007f;&|<>()$`'"\\*?[\]{}]/;
+
+/**
+ * Validate a renderer-supplied clone URL before it becomes an operand of
+ * `git clone` inside an `ssh` command line on the station.
+ *
+ * The renderer runs the same rules (`renderer/src/ui/git-remote-url.ts`) to
+ * show the user an inline error, but that copy is a UX affordance: anything
+ * that can reach the IPC channel bypasses it, so main re-derives the verdict
+ * here. Deliberately an independent implementation — this module must not
+ * import renderer code — with both test suites asserting the same rule set.
+ *
+ * Accepts `https://…`, `ssh://…` and scp-style `git@host:owner/repo`. Rejects
+ * every other transport, notably `ext::` (which exists to run an arbitrary
+ * command) and `file://`.
+ */
+export function validateGitCloneUrl(raw: unknown): GitCloneUrlCheck {
+  if (typeof raw !== "string") return { ok: false, error: "url must be a string" };
+  const url = raw.trim();
+  if (url === "") return { ok: false, error: "url must not be empty" };
+  if (url.length > 2048) return { ok: false, error: "url is too long" };
+  if (url.startsWith("-")) return { ok: false, error: "url must not start with '-'" };
+  if (GIT_URL_FORBIDDEN.test(url)) {
+    return { ok: false, error: "url contains a forbidden character" };
+  }
+  if (/^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._\-/]+$/.test(url)) {
+    return { ok: true, url };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: "url is not a git remote" };
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "ssh:") {
+    return { ok: false, error: `transport ${parsed.protocol} is not allowed` };
+  }
+  if (parsed.hostname === "") return { ok: false, error: "url has no host" };
+  if (parsed.pathname.replace(/\//g, "") === "") {
+    return { ok: false, error: "url has no repository path" };
+  }
+  return { ok: true, url };
+}

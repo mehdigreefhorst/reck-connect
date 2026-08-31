@@ -340,6 +340,14 @@ declare global {
           cb: (p: { percent: number; bytes: number; speed: string; eta: string }) => void,
         ): void;
       };
+      git: {
+        clone(
+          url: string,
+          slug: string,
+        ): Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
+        cancel(): Promise<{ ok: boolean; error?: string }>;
+        onProgress(cb: (p: { percent: number; phase: string }) => void): void;
+      };
       onMenuAddProject: (cb: () => void) => void;
       onMenuUpdateToken: (cb: () => void) => void;
       onMenuClaudeLaunch: (cb: () => void) => void;

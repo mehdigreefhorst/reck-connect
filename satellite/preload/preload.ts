@@ -489,6 +489,18 @@ contextBridge.exposeInMainWorld("reckAPI", {
       ipcRenderer.on("rsync:progress", (_e, p) => cb(p));
     },
   },
+  // Clone-a-repo project creation (#162). Shares the station SSH transport
+  // and the slug reservation with `rsync` above; only the fill step differs.
+  git: {
+    clone: (url: string, slug: string) =>
+      ipcRenderer.invoke("git:clone", url, slug) as Promise<
+        { ok: true } | { ok: false; error: string; code?: string }
+      >,
+    cancel: () => ipcRenderer.invoke("git:cancel"),
+    onProgress: (cb: (p: { percent: number; phase: string }) => void) => {
+      ipcRenderer.on("git:clone-progress", (_e, p) => cb(p));
+    },
+  },
   onMenuAddProject: (cb: () => void) => ipcRenderer.on("menu:add-project", cb),
   onMenuUpdateToken: (cb: () => void) => ipcRenderer.on("menu:update-token", cb),
   onMenuClaudeLaunch: (cb: () => void) => ipcRenderer.on("menu:claude-launch", cb),

@@ -18,6 +18,7 @@ import {
 } from "./content-zoom";
 import { pinPageZoom } from "./page-zoom";
 import { registerRsyncIpc } from "./rsync-copy";
+import { registerGitCloneIpc } from "./git-clone";
 import { registerTranscriptionIpc } from "./transcription/router";
 import { checkExternalUrl, resolveInsideMountPoint } from "./ipc-validation";
 import { planMigration } from "./settings-migration";
@@ -1234,6 +1235,8 @@ ipcMain.handle(
 // --- IPC: rsync copy-to-station for "From existing folder…" flow ---
 
 registerRsyncIpc(() => mainWindow);
+// Clone-a-repo project creation (#162) — same station SSH transport as rsync.
+registerGitCloneIpc(() => mainWindow);
 
 // --- IPC: voice dictation (Deepgram cloud streaming; issue #67) ---
 
