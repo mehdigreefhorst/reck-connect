@@ -230,9 +230,17 @@ export class TranscriptionController {
       onStatus: (s) => this.bar?.setStatus(s),
       onProgress: (p) => this.bar?.setProgress(p),
       // Meter stays on the raw tick (lively); only note voice activity here.
+      //
+      // The threshold MUST be the onset detector's own `onsetClose` — the RMS
+      // below which it considers a word to have ended — and not a constant of
+      // its own. It used to be a hardcoded 0.01, which sits BELOW the default
+      // onsetClose of 0.012: room noise in that band is "not speech" to the
+      // detector but re-marked voice here, so `msSinceVoice` never grew and
+      // the silence-based commit could never fire. Auto endpointing behaved
+      // exactly like manual. One threshold, one meaning.
       onLevel: (l) => {
         this.bar?.setLevel(l);
-        if (l > 0.01) this.lastVoiceAt = performance.now();
+        if (l >= this.settings.appearance.onsetClose) this.lastVoiceAt = performance.now();
       },
       onSpeechMs: (ms) => {
         // Fallback estimate mode only — "onset" mode uses onWordCount below.
@@ -241,12 +249,21 @@ export class TranscriptionController {
         }
       },
       onWordOnset: (id) => {
+        // A confirmed word is the strongest voice signal there is — stronger
+        // than any RMS sample — so it re-arms the silence clock regardless of
+        // ghost mode.
+        this.lastVoiceAt = performance.now();
         // Onset mode: append a blurred placeholder the INSTANT a word starts,
         // and show it immediately (don't wait for the settle tick) — this is
         // the "text always starts blurred" moment.
         if (this.settings.appearance.ghostMode !== "onset") return;
         this.chunk = addOnset(this.chunk, id);
         this.renderChunk();
+      },
+      // The word ended: this instant is where the silence the user configured
+      // starts being counted from.
+      onWordEnd: () => {
+        this.lastVoiceAt = performance.now();
       },
       onError: (m) => {
         console.error("[dictation] error:", m);
