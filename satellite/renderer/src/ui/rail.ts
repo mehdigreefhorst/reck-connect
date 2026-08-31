@@ -287,7 +287,10 @@ export class Rail {
     });
     (this.props.root.querySelector("#rail-archive-header") as HTMLElement).addEventListener(
       "click",
-      () => this.toggleArchiveCollapsed(),
+      () => {
+        if (this.isArchiveInert()) return;
+        this.toggleArchiveCollapsed();
+      },
     );
     // Mount the overlay onto the non-scrolling wrapper (host) and drive it from
     // the inner scroller (surface). An absolutely-positioned bar mounted INTO
@@ -363,9 +366,44 @@ export class Rail {
    * this alongside it. Per-element CSS transitions keyed off .rail-mini
    * crossfade names/indicators with the initials avatars, the "Projects"
    * text with the brand mark, and reveal the footer chevron.
+   *
+   * The Archive is additionally made `inert` in mini. The crossfade alone
+   * was not enough: `.rail.rail-mini .rail-archive` sets `visibility:
+   * hidden`, but the mini avatar rule re-asserts `visibility: visible` on
+   * every `.rail-item .rail-avatar` — archived rows included, since they
+   * live inside #rail-archive — while the ancestor's `opacity: 0` (a group
+   * opacity a descendant cannot undo) keeps them invisible. The section was
+   * therefore invisible and still clickable. `inert` also drops it from the
+   * focus order and the a11y tree, which the fade never did.
    */
   setMode(mode: RailMode) {
-    this.props.root.classList.toggle("rail-mini", mode === "mini");
+    const mini = mode === "mini";
+    this.props.root.classList.toggle("rail-mini", mini);
+    this.archiveSectionEl.inert = mini;
+    if (mini) this.archiveSectionEl.setAttribute("aria-hidden", "true");
+    else this.archiveSectionEl.removeAttribute("aria-hidden");
+  }
+
+  /**
+   * True while the Archive must not respond to the pointer at all — i.e.
+   * the rail is in mini mode, where the section is invisible. The CSS
+   * (`pointer-events: none` + `inert`) is the real barrier in the app;
+   * this guard is what the handlers below check, because jsdom has no
+   * layout and would otherwise let the regression back in unnoticed.
+   */
+  private isArchiveInert(): boolean {
+    return this.props.root.classList.contains("rail-mini");
+  }
+
+  /**
+   * True for a row the user cannot see or reach: an archived row while the
+   * rail is mini. Every interactive handler on a row consults this, not
+   * just the click one — a right-click opens a menu with "Delete
+   * Project…" in it, and a drag out of the Archive unarchives — so
+   * leaving either unguarded would reproduce #163 through another door.
+   */
+  private isInertArchiveRow(el: HTMLElement): boolean {
+    return this.isArchiveInert() && this.archiveSectionEl.contains(el);
   }
 
   private renderZone(projects: Project[], container: HTMLElement) {
@@ -431,6 +469,7 @@ export class Rail {
   private wireArchiveDropZone() {
     const zone = this.archiveSectionEl;
     zone.addEventListener("dragover", (e) => {
+      if (this.isArchiveInert()) return;
       if (!this.draggedId || this.draggedArchived) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -441,6 +480,8 @@ export class Rail {
     });
     zone.addEventListener("drop", (e) => {
       zone.classList.remove("drop-target");
+      // No dropping into a target the user cannot see.
+      if (this.isArchiveInert()) return;
       if (!this.draggedId || this.draggedArchived) return;
       e.preventDefault();
       e.stopPropagation();
@@ -495,9 +536,16 @@ export class Rail {
     el.appendChild(indicator);
     el.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).isContentEditable) return;
+      // An archived row in the mini rail is invisible — a click there is
+      // aimed at the blank rail, not at this project. (In the app the CSS
+      // `pointer-events: none` means the click never reaches the row at
+      // all and the rail's own handler expands it; this guard is the
+      // layout-free backstop.)
+      if (this.isInertArchiveRow(el)) return;
       this.props.onSelect(p.id);
     });
     el.addEventListener("contextmenu", (e) => {
+      if (this.isInertArchiveRow(el)) return;
       e.preventDefault();
       const row = this.rows.get(p.id);
       const isArchived = row?.lastArchived ?? archived;
@@ -511,6 +559,12 @@ export class Rail {
     });
     el.draggable = true;
     el.addEventListener("dragstart", (e) => {
+      // An invisible archived row must not become a drag source — dropping
+      // it on the active list would unarchive a project the user cannot see.
+      if (this.isInertArchiveRow(el)) {
+        e.preventDefault();
+        return;
+      }
       this.draggedId = p.id;
       this.draggedArchived = this.rows.get(p.id)?.lastArchived ?? archived;
       if (e.dataTransfer) {
@@ -560,6 +614,7 @@ export class Rail {
     // Double-click name → rename in place
     name.addEventListener("dblclick", (e) => {
       if (!this.props.onRename) return;
+      if (this.isInertArchiveRow(el)) return;
       e.stopPropagation();
       this.startRename(p.id, name);
     });
@@ -606,6 +661,7 @@ export class Rail {
       const commitName = commit && next && next !== original ? next : original;
       newName.textContent = commitName;
       newName.addEventListener("dblclick", (e) => {
+        if (this.isInertArchiveRow(row.el)) return;
         e.stopPropagation();
         this.startRename(projectId, newName);
       });

@@ -720,4 +720,181 @@ describe("Rail", () => {
       expect(got).toBe("a");
     });
   });
+  // The Archive section is invisible in mini mode, and must be inert there too.
+  // It used to stay hit-testable: `.rail.rail-mini .rail-archive` sets
+  // `visibility: hidden`, but the mini avatar rule re-asserted
+  // `visibility: visible` on every `.rail-item .rail-avatar` — archived rows
+  // included, since they live inside #rail-archive — while the ancestor's
+  // `opacity: 0` kept them invisible. Invisible but clickable. jsdom has no
+  // layout, so the CSS half can't be asserted here; these pin the JS guard.
+  describe("mini mode: archive is inert", () => {
+    function withArchived() {
+      return [
+        mkProject("a", "Alpha", "gray"),
+        { ...mkProject("z", "Zulu", "gray"), archived: true } as Project,
+      ];
+    }
+    function archivedRow(): HTMLElement {
+      // Scoped to this test's root: earlier tests leave their own roots
+      // attached to document.body.
+      return root.querySelector("#rail-archive-list .rail-item") as HTMLElement;
+    }
+
+    it("archived rows do not fire onSelect while the rail is mini", () => {
+      let got: string | null = null;
+      const r = new Rail({ root, onSelect: (id) => (got = id), onAddProject: () => {} });
+      r.setProjects(withArchived());
+      r.setMode("mini");
+      archivedRow().click();
+      expect(got).toBeNull();
+    });
+
+    it("archived rows still fire onSelect when the rail is expanded", () => {
+      let got: string | null = null;
+      const r = new Rail({ root, onSelect: (id) => (got = id), onAddProject: () => {} });
+      r.setProjects(withArchived());
+      archivedRow().click();
+      expect(got).toBe("z");
+    });
+
+    it("the archive header does not toggle the folder while the rail is mini", () => {
+      const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
+      r.setProjects(withArchived());
+      const header = root.querySelector("#rail-archive-header") as HTMLElement;
+      header.click(); // expand it first, while still expanded
+      const list = root.querySelector("#rail-archive-list") as HTMLElement;
+      expect(list.hidden).toBe(false);
+      r.setMode("mini");
+      header.click();
+      expect(list.hidden).toBe(false);
+    });
+
+    it("a drop on the archive does not archive while the rail is mini", () => {
+      let toggled = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onToggleArchive: () => toggled++,
+      });
+      r.setProjects(withArchived());
+      // Drag the ACTIVE row: archiving-by-drop is an active→archive gesture.
+      const row = root.querySelector(".rail-list .rail-item") as HTMLElement;
+      row.dispatchEvent(new Event("dragstart", { bubbles: true }));
+      r.setMode("mini");
+      const zone = root.querySelector("#rail-archive") as HTMLElement;
+      zone.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      expect(toggled).toBe(0);
+    });
+
+    it("a drop on the archive still archives when the rail is expanded", () => {
+      let toggled: [string, boolean] | null = null;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onToggleArchive: (id, archived) => (toggled = [id, archived]),
+      });
+      r.setProjects(withArchived());
+      const row = root.querySelector(".rail-list .rail-item") as HTMLElement;
+      row.dispatchEvent(new Event("dragstart", { bubbles: true }));
+      const zone = root.querySelector("#rail-archive") as HTMLElement;
+      zone.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      expect(toggled).toEqual(["a", true]);
+    });
+
+    it("setMode marks the archive inert + aria-hidden in mini and clears it on expand", () => {
+      const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
+      const archive = root.querySelector("#rail-archive") as HTMLElement;
+      r.setMode("mini");
+      expect(archive.inert).toBe(true);
+      expect(archive.getAttribute("aria-hidden")).toBe("true");
+      r.setMode("expanded");
+      expect(archive.inert).toBe(false);
+      expect(archive.hasAttribute("aria-hidden")).toBe(false);
+    });
+
+    it("archived rows do not open the context menu while the rail is mini", () => {
+      const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
+      r.setProjects(withArchived());
+      r.setMode("mini");
+      // The menu is a document.body singleton and earlier tests leave one
+      // behind — clear it so "no menu" can't pass for the wrong reason.
+      document.querySelector(".rail-context-menu")?.remove();
+      archivedRow().dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 5, clientY: 5 }),
+      );
+      expect(document.querySelector(".rail-context-menu")).toBeNull();
+    });
+
+    it("archived rows still open the context menu when the rail is expanded", () => {
+      const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
+      r.setProjects(withArchived());
+      document.querySelector(".rail-context-menu")?.remove();
+      archivedRow().dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 5, clientY: 5 }),
+      );
+      expect(document.querySelector(".rail-context-menu")).not.toBeNull();
+      document.querySelector(".rail-context-menu")?.remove();
+    });
+
+    it("an archived row cannot be dragged out to unarchive while the rail is mini", () => {
+      let toggled = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onToggleArchive: () => toggled++,
+      });
+      r.setProjects(withArchived());
+      r.setMode("mini");
+      archivedRow().dispatchEvent(new Event("dragstart", { bubbles: true }));
+      const list = root.querySelector(".rail-list") as HTMLElement;
+      list.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      expect(toggled).toBe(0);
+    });
+
+    it("an archived row can still be dragged out to unarchive when expanded", () => {
+      let toggled: [string, boolean] | null = null;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onToggleArchive: (id, archived) => (toggled = [id, archived]),
+      });
+      r.setProjects(withArchived());
+      archivedRow().dispatchEvent(new Event("dragstart", { bubbles: true }));
+      const list = root.querySelector(".rail-list") as HTMLElement;
+      list.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      expect(toggled).toEqual(["z", false]);
+    });
+
+    it("double-clicking an archived row's name does not start a rename while mini", () => {
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onRename: () => {},
+      });
+      r.setProjects(withArchived());
+      r.setMode("mini");
+      const name = archivedRow().querySelector(".name") as HTMLElement;
+      name.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      expect(root.querySelector("#rail-archive-list .name-edit")).toBeNull();
+    });
+
+    it("a click on blank mini-rail space still expands the rail", () => {
+      let expanded = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onExpand: () => expanded++,
+      });
+      r.setProjects(withArchived());
+      r.setMode("mini");
+      (root.querySelector(".rail-list-scroll") as HTMLElement).click();
+      expect(expanded).toBe(1);
+    });
+  });
 });

@@ -664,6 +664,25 @@ html, body, #app {
   transition: opacity 100ms var(--ease-smooth), visibility 100ms;
 }
 
+/* The Archive needs more than the fade. Archived rows are .rail-items
+   INSIDE #rail-archive, so the mini avatar rule below re-asserts
+   `visibility: visible` on them and hands their hit box back — while the
+   `opacity: 0` above (a group opacity no descendant can undo) keeps them
+   invisible. Invisible-but-clickable is the bug this prevents; the rail
+   also sets `inert` on the section from setMode(). */
+.rail.rail-mini .rail-archive {
+  pointer-events: none;
+}
+/* ...and `pointer-events` is overridable by a descendant exactly the way
+   `visibility` is. The archive's OverlayScrollbar mounts INSIDE
+   #rail-archive and `.reck-scrollbar.visible` sets `pointer-events: auto`,
+   which would hand back an invisible 10px draggable strip whenever the
+   Archive folder was left expanded and overflowing before the rail
+   collapsed — the same state that reproduced #163. Kill it here too. */
+.rail.rail-mini .rail-archive .reck-scrollbar {
+  pointer-events: none;
+}
+
 /* .rail-add's base "transition: all" is overridden by the group rule
    above — restate its hover transition alongside the crossfade. */
 .rail-add {
@@ -737,7 +756,10 @@ html, body, #app {
   transition: opacity 100ms var(--ease-smooth), visibility 100ms,
               border-color 0.15s var(--ease-smooth), box-shadow 0.2s var(--ease-smooth);
 }
-.rail.rail-mini .rail-item .rail-avatar {
+/* Scoped to the ACTIVE list on purpose: an unscoped `.rail-item` also
+   matches archived rows and would resurrect their hit boxes inside the
+   hidden Archive section. */
+.rail.rail-mini .rail-list .rail-item .rail-avatar {
   opacity: 1;
   visibility: visible;
   transition: opacity 140ms var(--ease-smooth) 40ms, visibility 140ms 40ms,
