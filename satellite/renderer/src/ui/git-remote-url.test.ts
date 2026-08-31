@@ -92,3 +92,31 @@ describe("defaultNameFromRemote", () => {
     expect(defaultNameFromRemote(r)).toBe("Hello-World");
   });
 });
+
+// Parity with `main/ipc-validation.ts`. A URL the dialog accepts and main then
+// rejects is a bad-UX bug (the user only finds out after the flow committed to
+// a name); a URL the dialog accepts that is *dangerous* is worse. Both sides
+// must reject the same shapes.
+describe("parseGitRemote — parity with the main-process validator", () => {
+  const rejected = [
+    "ssh://-oProxyCommand=touch/repo",
+    "ssh://-Fevil.conf/owner/repo",
+    "git@-oProxyCommand=touch:a/b",
+    "git@-Fevil.conf:a/b",
+    "ssh://git@github.com/-repo",
+    "git@github.com:-repo/x",
+    "https://-evil.example.com/a/b",
+    // main caps the URL at 2048 characters.
+    `https://github.com/a/${"b".repeat(3000)}`,
+  ];
+  for (const bad of rejected) {
+    it(`rejects ${bad.slice(0, 48)}`, () => {
+      expect(parseGitRemote(bad)).toBeNull();
+    });
+  }
+
+  it("still accepts an ordinary hyphenated repo", () => {
+    expect(parseGitRemote("https://github.com/octo-cat/Hello-World")?.repo).toBe("Hello-World");
+    expect(parseGitRemote("git@github.com:octo-cat/Hello-World.git")?.repo).toBe("Hello-World");
+  });
+});

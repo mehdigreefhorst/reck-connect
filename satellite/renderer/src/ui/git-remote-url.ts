@@ -32,8 +32,26 @@ const FORBIDDEN = /[\s;&|<>()$`'"\\\u0000-\u001f\u007f*?[\]{}]/;
 /** `owner/repo` shorthand — GitHub is the assumed host, as on the CLI. */
 const SHORTHAND = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
-/** scp-style `git@host:path/repo.git`. */
-const SCP_LIKE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._\-/]+$/;
+/** scp-style `git@host:path/repo.git`, captured component by component. */
+const SCP_LIKE = /^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+):([A-Za-z0-9._\-/]+)$/;
+
+/**
+ * Same cap as `main/ipc-validation.ts`'s `MAX_GIT_URL_LENGTH`. Without it the
+ * dialog would happily accept a URL main then rejects, and the user would only
+ * find out after the flow had committed to a project name.
+ */
+const MAX_URL_LENGTH = 2048;
+
+/**
+ * No component may start with `-`. See the long-form reasoning on
+ * `hasOptionLikeComponent` in `main/ipc-validation.ts`: for an ssh remote the
+ * host and path become separate `ssh` argv entries on the station, so
+ * `ssh://-oProxyCommand=…/repo` and `git@-Fevil.conf:a/b` are option
+ * injection without needing a single shell metacharacter.
+ */
+function hasOptionLikeComponent(components: readonly string[]): boolean {
+  return components.some((c) => c.startsWith("-"));
+}
 
 function stripDotGit(s: string): string {
   return s.endsWith(".git") ? s.slice(0, -4) : s;
@@ -67,6 +85,7 @@ export function parseGitRemote(input: string): ParsedRemote | null {
   if (typeof input !== "string") return null;
   const raw = input.trim();
   if (raw === "") return null;
+  if (raw.length > MAX_URL_LENGTH) return null;
   if (raw.startsWith("-")) return null;
   if (FORBIDDEN.test(raw)) return null;
 
@@ -76,8 +95,11 @@ export function parseGitRemote(input: string): ParsedRemote | null {
     return { url: `https://github.com/${raw}`, owner: split.owner, repo: split.repo };
   }
 
-  if (SCP_LIKE.test(raw)) {
-    const split = splitPath(raw.slice(raw.indexOf(":") + 1));
+  const scp = SCP_LIKE.exec(raw);
+  if (scp) {
+    const [, user, host, path] = scp;
+    if (hasOptionLikeComponent([user, host, ...path.split("/")])) return null;
+    const split = splitPath(path);
     if (!split) return null;
     return { url: raw, owner: split.owner, repo: split.repo };
   }
@@ -90,6 +112,9 @@ export function parseGitRemote(input: string): ParsedRemote | null {
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "ssh:") return null;
   if (parsed.hostname === "") return null;
+  if (hasOptionLikeComponent([parsed.hostname, parsed.username, ...parsed.pathname.split("/")])) {
+    return null;
+  }
   const split = splitPath(parsed.pathname);
   if (!split) return null;
   return { url: raw, owner: split.owner, repo: split.repo };

@@ -268,4 +268,44 @@ describe("git:clone", () => {
     expect(res.code).toBe("canceled");
     expect(remoteCmd(spawned[spawned.length - 1])).toBe(`rm -rf ${STATION_ROOT}/cancelme`);
   });
+  // The reservation is a full ssh round trip. A cancel that lands inside it
+  // has no process to signal — before this was handled, `git:cancel` returned
+  // "no active clone", the clone ran to completion anyway, and the renderer
+  // registered a project the user had already backed out of.
+  it("honours a cancel that lands while the reservation is still in flight", async () => {
+    let finishReservation: (() => void) | null = null;
+    onSpawn = (call) => {
+      if (spawned.length === 1) finishReservation = () => call.proc.emit("exit", 0, null);
+      else call.proc.emit("exit", 0, null); // rollback
+    };
+    const pending = clone("https://github.com/a/b", "cancel-early");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(spawned.length).toBe(1); // only the mkdir so far
+    const cancelRes = handlers.get("git:cancel")!(null) as { ok: boolean };
+    expect(cancelRes.ok).toBe(true);
+    finishReservation!();
+    const res = await pending;
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe("canceled");
+    // Nothing was cloned, and the reservation was released.
+    expect(spawned.length).toBe(2);
+    expect(remoteCmd(spawned[1])).toBe(`rm -rf ${STATION_ROOT}/cancel-early`);
+  });
+
+  it("rolls back when a cancel races a clone that had already succeeded", async () => {
+    let finishClone: (() => void) | null = null;
+    onSpawn = (call) => {
+      if (spawned.length === 1) call.proc.emit("exit", 0, null);
+      else if (spawned.length === 2) finishClone = () => call.proc.emit("exit", 0, null);
+      else call.proc.emit("exit", 0, null); // rollback
+    };
+    const pending = clone("https://github.com/a/b", "cancel-race");
+    await new Promise((r) => setTimeout(r, 0));
+    handlers.get("git:cancel")!(null);
+    finishClone!();
+    const res = await pending;
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe("canceled");
+    expect(remoteCmd(spawned[spawned.length - 1])).toBe(`rm -rf ${STATION_ROOT}/cancel-race`);
+  });
 });

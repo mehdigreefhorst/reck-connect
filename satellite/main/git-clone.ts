@@ -38,7 +38,18 @@ export interface CloneProgress {
   phase: string;
 }
 
-let active: { proc: ChildProcess; slug: string } | null = null;
+/**
+ * The clone in flight, if any.
+ *
+ * `proc` is null for the window between "the user pressed Add" and "ssh is
+ * running": the `mkdir` reservation is a whole round trip, and a cancel that
+ * lands inside it has no process to signal. Recording the *intent* here is
+ * what makes that cancel stick — without it the clone ran to completion and
+ * the renderer registered a project the user had already backed out of.
+ */
+type ActiveClone = { proc: ChildProcess | null; slug: string; canceled: boolean };
+
+let active: ActiveClone | null = null;
 
 /**
  * git writes progress to stderr as `Receiving objects:  42% (420/1000), …`,
@@ -146,106 +157,140 @@ export function registerGitCloneIpc(getWindow: () => BrowserWindow | null): void
         return { ok: false, code: "bad-url", error: check.error };
       }
 
-      // ---- Atomic slug reservation (same lock the rsync flow takes) --------
-      const reservation = await reserveRemoteSlug(slug);
-      if (!reservation.ok) {
-        if (reservation.reason === "slug-in-use") {
-          return {
-            ok: false,
-            code: "slug-in-use",
-            error:
-              `A folder already exists on the station at ${remotePath(slug)}. ` +
-              `Choose a different name.`,
-          };
-        }
-        if (reservation.reason === "parent-missing") {
-          return {
-            ok: false,
-            code: "parent-missing",
-            error:
-              `Station projects root missing (${REMOTE_ROOT}). ` +
-              `Re-run install-station.sh on the station. ` +
-              `Detail: ${reservation.detail}`,
-          };
-        }
-        return {
-          ok: false,
-          code: "ssh-error",
-          error: `Could not reserve project slug on station: ${reservation.detail}`,
-        };
-      }
-
-      // From here the slug is reserved: every failure path MUST roll back, or
-      // the name stays locked from the user's point of view.
+      // Claim the slot BEFORE the reservation round trip, so `git:cancel` has
+      // something to mark from the first moment the overlay is on screen.
+      const job: ActiveClone = { proc: null, slug, canceled: false };
+      active = job;
       try {
-        const result: CloneResult = await new Promise((resolve) => {
-          const win = getWindow();
-          const proc = spawn("ssh", sshArgs(buildCloneCommand(check.url, remotePath(slug))), {
-            stdio: ["ignore", "ignore", "pipe"],
-          });
-          active = { proc, slug };
-
-          let stderrBuf = "";
-          let carry = "";
-          let finalized = false;
-          // Detach explicitly on every termination path: between `exit` and
-          // GC, late-buffered stderr can still emit progress for a clone the
-          // UI has already moved on from (same hazard rsync-copy guards).
-          const finalize = () => {
-            if (finalized) return;
-            finalized = true;
-            proc.stderr?.removeListener("data", onStderr);
-            proc.removeListener("exit", onExit);
-            proc.removeListener("error", onError);
-            if (active && active.proc === proc) active = null;
-          };
-          const onStderr = (chunk: Buffer) => {
-            const text = carry + chunk.toString("utf8");
-            const parts = text.split(/[\r\n]+/);
-            carry = parts.pop() ?? "";
-            for (const line of parts) {
-              stderrBuf += `${line}\n`;
-              const prog = parseCloneProgressLine(line);
-              if (prog) win?.webContents.send("git:clone-progress", prog);
-            }
-          };
-          const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-            finalize();
-            if (code === 0) {
-              resolve({ ok: true });
-            } else if (signal === "SIGTERM") {
-              resolve({ ok: false, code: "canceled", error: "canceled" });
-            } else {
-              resolve({ ok: false, ...classifyCloneFailure(stderrBuf + carry) });
-            }
-          };
-          const onError = (err: Error) => {
-            finalize();
-            resolve({ ok: false, code: "ssh-error", error: err.message });
-          };
-
-          proc.stderr!.on("data", onStderr);
-          proc.on("exit", onExit);
-          proc.on("error", onError);
-        });
-
-        if (!result.ok) await rollbackRemote(slug);
-        return result;
-      } catch (err) {
-        // Defensive: an unexpected throw before/around the spawn block must
-        // still release the reservation.
-        await rollbackRemote(slug);
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return await runClone(job, check.url, getWindow);
+      } finally {
+        if (active === job) active = null;
       }
     },
   );
 
   ipcMain.handle("git:cancel", () => {
-    if (active) {
-      // The SIGTERM exit path rolls the reservation back.
-      active.proc.kill("SIGTERM");
-      return { ok: true };
-    }
-    return { ok: false, error: "no active clone" };
+    if (!active) return { ok: false, error: "no active clone" };
+    // Two cases. If ssh is up, SIGTERM it and let the exit path roll back.
+    // If it isn't — the reservation is still in flight — the flag is the whole
+    // mechanism: `runClone` checks it before spawning, and rolls back instead.
+    active.canceled = true;
+    active.proc?.kill("SIGTERM");
+    return { ok: true };
   });
+}
+
+/** Reserve the slug, clone into it, and roll back on every failure path. */
+async function runClone(
+  job: ActiveClone,
+  url: string,
+  getWindow: () => BrowserWindow | null,
+): Promise<CloneResult> {
+  const { slug } = job;
+
+  // ---- Atomic slug reservation (same lock the rsync flow takes) ------------
+  const reservation = await reserveRemoteSlug(slug);
+  if (!reservation.ok) {
+    if (reservation.reason === "slug-in-use") {
+      return {
+        ok: false,
+        code: "slug-in-use",
+        error:
+          `A folder already exists on the station at ${remotePath(slug)}. ` +
+          `Choose a different name.`,
+      };
+    }
+    if (reservation.reason === "parent-missing") {
+      return {
+        ok: false,
+        code: "parent-missing",
+        error:
+          `Station projects root missing (${REMOTE_ROOT}). ` +
+          `Re-run install-station.sh on the station. ` +
+          `Detail: ${reservation.detail}`,
+      };
+    }
+    return {
+      ok: false,
+      code: "ssh-error",
+      error: `Could not reserve project slug on station: ${reservation.detail}`,
+    };
+  }
+
+  // From here the slug is reserved: every failure path MUST roll back, or
+  // the name stays locked from the user's point of view.
+  try {
+    // A cancel that landed while the mkdir was in flight has no process to
+    // signal; it lands here instead, before anything is cloned.
+    if (job.canceled) {
+      await rollbackRemote(slug);
+      return { ok: false, code: "canceled", error: "canceled" };
+    }
+
+    const result: CloneResult = await new Promise((resolve) => {
+      const win = getWindow();
+      const proc = spawn("ssh", sshArgs(buildCloneCommand(url, remotePath(slug))), {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      job.proc = proc;
+
+      let stderrBuf = "";
+      let carry = "";
+      let finalized = false;
+      // Detach explicitly on every termination path: between `exit` and
+      // GC, late-buffered stderr can still emit progress for a clone the
+      // UI has already moved on from (same hazard rsync-copy guards).
+      const finalize = () => {
+        if (finalized) return;
+        finalized = true;
+        proc.stderr?.removeListener("data", onStderr);
+        proc.removeListener("exit", onExit);
+        proc.removeListener("error", onError);
+        job.proc = null;
+      };
+      const onStderr = (chunk: Buffer) => {
+        const text = carry + chunk.toString("utf8");
+        const parts = text.split(/[\r\n]+/);
+        carry = parts.pop() ?? "";
+        for (const line of parts) {
+          stderrBuf += `${line}\n`;
+          const prog = parseCloneProgressLine(line);
+          if (prog) win?.webContents.send("git:clone-progress", prog);
+        }
+      };
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        finalize();
+        if (code === 0) {
+          resolve({ ok: true });
+        } else if (signal === "SIGTERM") {
+          resolve({ ok: false, code: "canceled", error: "canceled" });
+        } else {
+          resolve({ ok: false, ...classifyCloneFailure(stderrBuf + carry) });
+        }
+      };
+      const onError = (err: Error) => {
+        finalize();
+        resolve({ ok: false, code: "ssh-error", error: err.message });
+      };
+
+      proc.stderr!.on("data", onStderr);
+      proc.on("exit", onExit);
+      proc.on("error", onError);
+    });
+
+    // A cancel that raced a successful exit still means "I don't want this
+    // project": honour the intent rather than the exit code, or the renderer
+    // registers a project the user backed out of.
+    if (result.ok && job.canceled) {
+      await rollbackRemote(slug);
+      return { ok: false, code: "canceled", error: "canceled" };
+    }
+    if (!result.ok) await rollbackRemote(slug);
+    return result;
+  } catch (err) {
+    // Defensive: an unexpected throw before/around the spawn block must
+    // still release the reservation.
+    await rollbackRemote(slug);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }

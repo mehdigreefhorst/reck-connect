@@ -346,7 +346,8 @@ declare global {
           slug: string,
         ): Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
         cancel(): Promise<{ ok: boolean; error?: string }>;
-        onProgress(cb: (p: { percent: number; phase: string }) => void): void;
+        /** Returns an unsubscribe — call it when the overlay goes away. */
+        onProgress(cb: (p: { percent: number; phase: string }) => void): () => void;
       };
       onMenuAddProject: (cb: () => void) => void;
       onMenuUpdateToken: (cb: () => void) => void;

@@ -218,8 +218,13 @@ function showCopyProgress(
  * The clone's progress overlay. Same furniture as the copy one, but git
  * reports a phase and a percentage rather than bytes/ETA — "Receiving
  * objects" is most of the wall-clock, "Resolving deltas" the tail.
+ *
+ * Exported for tests: `remove()` must also drop the IPC progress listener, or
+ * every Add-Project flow leaves one behind, each still writing into a detached
+ * overlay. (The older rsync overlay has the same shape and is left as-is —
+ * fixing it is not this PR's change.)
  */
-function showCloneProgress(
+export function showCloneProgress(
   url: string,
   slug: string,
   onCancel: () => void,
@@ -249,13 +254,18 @@ function showCloneProgress(
 
   const fill = overlay.querySelector("#ap-clone-fill") as HTMLElement;
   const text = overlay.querySelector("#ap-clone-text") as HTMLElement;
-  window.reckAPI.git.onProgress((p) => {
+  const stopProgress = window.reckAPI.git.onProgress((p) => {
     fill.style.width = `${p.percent}%`;
     text.textContent = `${p.phase} — ${p.percent}%`;
   });
 
   (overlay.querySelector("#ap-cancel-clone") as HTMLElement).addEventListener("click", onCancel);
-  return { remove: () => overlay.remove() };
+  return {
+    remove: () => {
+      stopProgress();
+      overlay.remove();
+    },
+  };
 }
 
 function escapeHtml(s: string): string {

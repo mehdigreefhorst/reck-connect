@@ -140,6 +140,27 @@ export type GitCloneUrlCheck =
 // eslint-disable-next-line no-control-regex
 const GIT_URL_FORBIDDEN = /[\s\u0000-\u001f\u007f;&|<>()$`'"\\*?[\]{}]/;
 
+/** Longest URL we will hand to the station. Mirrored in the renderer parser. */
+export const MAX_GIT_URL_LENGTH = 2048;
+
+/** scp-style `user@host:path`, captured so each component can be checked. */
+const SCP_LIKE_RE = /^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+):([A-Za-z0-9._\-/]+)$/;
+
+/**
+ * No *component* of the remote may begin with `-`.
+ *
+ * A leading `-` on the whole string is the obvious case, but not the only one:
+ * for an ssh remote git hands the host and the path to `ssh` as separate argv
+ * entries, so `ssh://-oProxyCommand=…/repo` and `git@-Fevil.conf:a/b` — neither
+ * of which starts with `-`, and neither of which needs a single shell
+ * metacharacter — arrive on the station as `ssh` *options*. Current git blocks
+ * these itself ("strange hostname … blocked"), but that leaves the guarantee
+ * resting on the station's git version. Reject them here.
+ */
+function hasOptionLikeComponent(components: readonly string[]): boolean {
+  return components.some((c) => c.startsWith("-"));
+}
+
 /**
  * Validate a renderer-supplied clone URL before it becomes an operand of
  * `git clone` inside an `ssh` command line on the station.
@@ -158,12 +179,17 @@ export function validateGitCloneUrl(raw: unknown): GitCloneUrlCheck {
   if (typeof raw !== "string") return { ok: false, error: "url must be a string" };
   const url = raw.trim();
   if (url === "") return { ok: false, error: "url must not be empty" };
-  if (url.length > 2048) return { ok: false, error: "url is too long" };
+  if (url.length > MAX_GIT_URL_LENGTH) return { ok: false, error: "url is too long" };
   if (url.startsWith("-")) return { ok: false, error: "url must not start with '-'" };
   if (GIT_URL_FORBIDDEN.test(url)) {
     return { ok: false, error: "url contains a forbidden character" };
   }
-  if (/^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._\-/]+$/.test(url)) {
+  const scp = SCP_LIKE_RE.exec(url);
+  if (scp) {
+    const [, user, host, remotePath] = scp;
+    if (hasOptionLikeComponent([user, host, ...remotePath.split("/")])) {
+      return { ok: false, error: "url component must not start with '-'" };
+    }
     return { ok: true, url };
   }
   let parsed: URL;
@@ -178,6 +204,15 @@ export function validateGitCloneUrl(raw: unknown): GitCloneUrlCheck {
   if (parsed.hostname === "") return { ok: false, error: "url has no host" };
   if (parsed.pathname.replace(/\//g, "") === "") {
     return { ok: false, error: "url has no repository path" };
+  }
+  if (
+    hasOptionLikeComponent([
+      parsed.hostname,
+      parsed.username,
+      ...parsed.pathname.split("/"),
+    ])
+  ) {
+    return { ok: false, error: "url component must not start with '-'" };
   }
   return { ok: true, url };
 }

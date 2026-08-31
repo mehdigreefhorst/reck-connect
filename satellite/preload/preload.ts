@@ -497,8 +497,15 @@ contextBridge.exposeInMainWorld("reckAPI", {
         { ok: true } | { ok: false; error: string; code?: string }
       >,
     cancel: () => ipcRenderer.invoke("git:cancel"),
+    // Returns an unsubscribe. The progress overlay is created once per
+    // Add-Project flow, so a bare `ipcRenderer.on` would leave a live listener
+    // — holding a detached overlay — behind on every run.
     onProgress: (cb: (p: { percent: number; phase: string }) => void) => {
-      ipcRenderer.on("git:clone-progress", (_e, p) => cb(p));
+      const listener = (_e: unknown, p: { percent: number; phase: string }) => cb(p);
+      ipcRenderer.on("git:clone-progress", listener);
+      return () => {
+        ipcRenderer.removeListener("git:clone-progress", listener);
+      };
     },
   },
   onMenuAddProject: (cb: () => void) => ipcRenderer.on("menu:add-project", cb),

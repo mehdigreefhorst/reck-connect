@@ -288,3 +288,31 @@ describe("validateGitCloneUrl", () => {
     expect(validateGitCloneUrl({}).ok).toBe(false);
   });
 });
+
+// Option injection without a single shell metacharacter. git hands the host
+// and path of an ssh remote to `ssh` as separate argv entries, so a component
+// that starts with `-` becomes an ssh *option* on the station —
+// `-oProxyCommand=…` / `-F<file>` are the RCE-shaped ones. Recent git blocks
+// these itself ("strange hostname … blocked"); we must not depend on the
+// station's git version for that.
+describe("validateGitCloneUrl — option-like components", () => {
+  const rejected = [
+    "ssh://-oProxyCommand=touch/repo",
+    "ssh://-Fevil.conf/owner/repo",
+    "git@-oProxyCommand=touch:a/b",
+    "git@-Fevil.conf:a/b",
+    "ssh://git@github.com/-repo",
+    "git@github.com:-repo/x",
+    "https://-evil.example.com/a/b",
+  ];
+  for (const bad of rejected) {
+    it(`rejects ${bad}`, () => {
+      expect(validateGitCloneUrl(bad).ok).toBe(false);
+    });
+  }
+
+  it("still accepts an ordinary hyphenated repo", () => {
+    expect(validateGitCloneUrl("https://github.com/octo-cat/Hello-World").ok).toBe(true);
+    expect(validateGitCloneUrl("git@github.com:octo-cat/Hello-World.git").ok).toBe(true);
+  });
+});

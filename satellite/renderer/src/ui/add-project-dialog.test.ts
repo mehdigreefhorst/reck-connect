@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach } from "vitest";
-import { promptAddProject, slugify } from "./add-project-dialog";
+import { promptAddProject, showCloneProgress, slugify } from "./add-project-dialog";
 
 describe("slugify", () => {
   it("lowercases letters", () => {
@@ -96,5 +96,34 @@ describe("promptAddProject", () => {
     const pending = promptAddProject();
     el<HTMLElement>("#ap-cancel").click();
     await expect(pending).resolves.toBeNull();
+  });
+});
+
+// The overlay is rebuilt for every Add-Project flow, so its IPC subscription
+// has to go when it does — otherwise each run leaves a listener alive holding
+// a detached overlay, and every past overlay is written to on the next clone.
+describe("showCloneProgress", () => {
+  it("drops its progress subscription when the overlay is removed", () => {
+    const listeners: Array<(p: { percent: number; phase: string }) => void> = [];
+    let unsubscribed = 0;
+    (window as unknown as { reckAPI: unknown }).reckAPI = {
+      git: {
+        onProgress: (cb: (p: { percent: number; phase: string }) => void) => {
+          listeners.push(cb);
+          return () => {
+            unsubscribed += 1;
+          };
+        },
+      },
+    };
+
+    const overlay = showCloneProgress("https://github.com/a/b", "b", () => {});
+    expect(listeners.length).toBe(1);
+    listeners[0]({ percent: 40, phase: "Receiving objects" });
+    expect((document.querySelector("#ap-clone-text") as HTMLElement).textContent).toContain("40%");
+
+    overlay.remove();
+    expect(unsubscribed).toBe(1);
+    expect(document.querySelector("#ap-clone-text")).toBeNull();
   });
 });
