@@ -17,6 +17,7 @@ import { renderAppearanceControls } from "./transcription/appearanceControls";
 import { confirmDialog } from "./ui/confirmDialog";
 import {
   DEFAULT_APPEARANCE,
+  DEFAULT_ENDPOINTING,
   coerceAppearance,
   type DictationAppearance,
 } from "./transcription/transcriptionSettings";
@@ -272,6 +273,9 @@ class ReplayEngine {
         commitWordCount: a.commitWordCount,
         commitPauseMs: a.commitPauseMs,
         ghostResetMs: a.ghostResetMs,
+        // The lab replays a scripted transcript to tune the LOOK; endpointing
+        // is a live-provider concern, so it runs the default auto policy.
+        endpointing: DEFAULT_ENDPOINTING,
       },
       final,
     );

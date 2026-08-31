@@ -378,6 +378,10 @@ export class TranscriptionController {
         commitWordCount: a.commitWordCount,
         commitPauseMs: a.commitPauseMs,
         ghostResetMs: a.ghostResetMs,
+        // Endpointing governs the commit, not just the provider session: a
+        // commit here is injected into the terminal and never revised, so
+        // "manual" must mean nothing lands until Enter / stop.
+        endpointing: this.settings.endpointing,
       },
       this.finalPending,
     );

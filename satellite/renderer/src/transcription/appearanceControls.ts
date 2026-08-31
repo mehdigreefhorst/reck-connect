@@ -111,8 +111,8 @@ export const APPEARANCE_CONTROLS: readonly ControlDesc<DictationAppearance>[] = 
   {
     kind: "slider",
     key: "commitWordCount",
-    label: "Commit after (words)",
-    help: "Drop the pill's crystallized phrase into the terminal once it reaches this many words. 1–20.",
+    label: "Pill size (words)",
+    help: "How many crystallized words the pill holds before it is considered a full phrase. Display only — Endpointing below decides when anything reaches the terminal. 1–20.",
     min: 1,
     max: 20,
     step: 1,
@@ -121,8 +121,8 @@ export const APPEARANCE_CONTROLS: readonly ControlDesc<DictationAppearance>[] = 
   {
     kind: "slider",
     key: "commitPauseMs",
-    label: "Commit on pause (ms)",
-    help: "…or after this much silence, whichever comes first — flushes the current phrase. 150–3000 ms.",
+    label: "Pill pause (ms)",
+    help: "Extra pause before the phrase leaves the pill. Can only ever DELAY a commit past the Endpointing silence below, never bring one forward. 150–3000 ms.",
     min: 150,
     max: 3000,
     step: 50,

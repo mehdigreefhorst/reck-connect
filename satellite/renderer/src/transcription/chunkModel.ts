@@ -80,22 +80,63 @@ export function resolvedCount(chunk: ChunkState): number {
   return chunk.segments.reduce((n, s) => n + (s.text !== null ? 1 : 0), 0);
 }
 
+/**
+ * The endpointing preference, as this module needs it. Structurally the same
+ * as `DictationEndpointing`; restated here so the chunk model stays free of
+ * the settings module (it is pure and unit-tested without one).
+ */
+export interface CommitPolicy {
+  mode: "auto" | "manual";
+  /** Silence before an utterance may be committed (ms). Unused when manual. */
+  silenceMs: number;
+}
+
 export interface FlushOpts {
   msSinceVoice: number;
+  /**
+   * Chunk size for the PILL. No longer a commit trigger: committing mid-phrase
+   * because six words happened to arrive is what froze half-transcribed text
+   * in the terminal, and it defeated a long endpointing setting outright.
+   */
   commitWordCount: number;
+  /** Display-side pause cadence. Can only ever make a commit LATER, never earlier. */
   commitPauseMs: number;
+  /** The authority over when anything is committed. */
+  endpointing: CommitPolicy;
 }
 
 /**
- * Should the chunk commit now? Only ever true when there's at least one resolved
- * word to commit, and either the chunk reached `commitWordCount` resolved words
- * or the speaker has been silent for `commitPauseMs`.
+ * How long the speaker must have been silent before this chunk may commit.
+ *
+ * `silenceMs` is the floor: the endpointing preference is the user's explicit
+ * "don't finalize before this" and nothing may commit earlier. A longer
+ * `commitPauseMs` still wins over it, because that direction is safe — it only
+ * ever delays.
+ */
+function commitAfterMs(opts: FlushOpts): number {
+  return Math.max(opts.endpointing.silenceMs, opts.commitPauseMs);
+}
+
+/**
+ * Should the chunk commit now?
+ *
+ * Committed text is injected into the terminal and never revised
+ * (`TranscriptionController.commitToTerminal`), so this decision is where
+ * transcription accuracy is won or lost: a word committed 700 ms into a pause
+ * can no longer be corrected when the provider revises the phrase with more
+ * context — and providers like Codex re-transcribe the whole turn, so an early
+ * cut is a permanently worse transcript.
+ *
+ * Therefore endpointing, not the chunking knobs, decides:
+ *   - `manual` — never. Only the final pass (Enter / stop dictation) commits.
+ *   - `auto`   — after `commitAfterMs` of continuous silence, and on nothing
+ *                else. Speaking on without a pause keeps the phrase in the
+ *                pill, however long it gets.
  */
 export function shouldFlush(chunk: ChunkState, opts: FlushOpts): boolean {
-  const resolved = resolvedCount(chunk);
-  if (resolved === 0) return false;
-  if (resolved >= opts.commitWordCount) return true;
-  return opts.msSinceVoice >= opts.commitPauseMs;
+  if (resolvedCount(chunk) === 0) return false;
+  if (opts.endpointing.mode === "manual") return false;
+  return opts.msSinceVoice >= commitAfterMs(opts);
 }
 
 export interface FlushResult {
@@ -177,9 +218,15 @@ export function stepChunk(
   // End-of-utterance sweep: after a clear (~1s) silence, commit every remaining
   // crystallized word — even one stranded past a blurred gap that takeFlush
   // stops at — and clear the chunk (dropping unresolved blobs). Never earlier
-  // than commitPauseMs so a higher pause setting is respected.
-  const finalizeMs = Math.max(SILENCE_FINALIZE_MS, opts.commitPauseMs);
-  if (opts.msSinceVoice > finalizeMs && c.segments.length > 0) {
+  // than the endpointing floor or a longer commitPauseMs, and never at all in
+  // manual mode: "manual" means the user has asked for exactly one commit, at
+  // the end, and a silence sweep is still a silence-triggered commit.
+  const finalizeMs = Math.max(SILENCE_FINALIZE_MS, commitAfterMs(opts));
+  if (
+    opts.endpointing.mode === "auto" &&
+    opts.msSinceVoice > finalizeMs &&
+    c.segments.length > 0
+  ) {
     const resolvedTail = c.segments
       .filter((s) => s.text !== null)
       .map((s) => s.text as string);
