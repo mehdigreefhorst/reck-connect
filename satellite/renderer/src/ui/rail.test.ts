@@ -787,6 +787,22 @@ describe("Rail", () => {
       expect(toggled).toBe(0);
     });
 
+    it("a drop on the archive still archives when the rail is expanded", () => {
+      let toggled: [string, boolean] | null = null;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onToggleArchive: (id, archived) => (toggled = [id, archived]),
+      });
+      r.setProjects(withArchived());
+      const row = root.querySelector(".rail-list .rail-item") as HTMLElement;
+      row.dispatchEvent(new Event("dragstart", { bubbles: true }));
+      const zone = root.querySelector("#rail-archive") as HTMLElement;
+      zone.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      expect(toggled).toEqual(["a", true]);
+    });
+
     it("setMode marks the archive inert + aria-hidden in mini and clears it on expand", () => {
       const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
       const archive = root.querySelector("#rail-archive") as HTMLElement;
@@ -796,6 +812,75 @@ describe("Rail", () => {
       r.setMode("expanded");
       expect(archive.inert).toBe(false);
       expect(archive.hasAttribute("aria-hidden")).toBe(false);
+    });
+
+    it("archived rows do not open the context menu while the rail is mini", () => {
+      const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
+      r.setProjects(withArchived());
+      r.setMode("mini");
+      // The menu is a document.body singleton and earlier tests leave one
+      // behind — clear it so "no menu" can't pass for the wrong reason.
+      document.querySelector(".rail-context-menu")?.remove();
+      archivedRow().dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 5, clientY: 5 }),
+      );
+      expect(document.querySelector(".rail-context-menu")).toBeNull();
+    });
+
+    it("archived rows still open the context menu when the rail is expanded", () => {
+      const r = new Rail({ root, onSelect: () => {}, onAddProject: () => {} });
+      r.setProjects(withArchived());
+      document.querySelector(".rail-context-menu")?.remove();
+      archivedRow().dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, clientX: 5, clientY: 5 }),
+      );
+      expect(document.querySelector(".rail-context-menu")).not.toBeNull();
+      document.querySelector(".rail-context-menu")?.remove();
+    });
+
+    it("an archived row cannot be dragged out to unarchive while the rail is mini", () => {
+      let toggled = 0;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onToggleArchive: () => toggled++,
+      });
+      r.setProjects(withArchived());
+      r.setMode("mini");
+      archivedRow().dispatchEvent(new Event("dragstart", { bubbles: true }));
+      const list = root.querySelector(".rail-list") as HTMLElement;
+      list.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      expect(toggled).toBe(0);
+    });
+
+    it("an archived row can still be dragged out to unarchive when expanded", () => {
+      let toggled: [string, boolean] | null = null;
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onToggleArchive: (id, archived) => (toggled = [id, archived]),
+      });
+      r.setProjects(withArchived());
+      archivedRow().dispatchEvent(new Event("dragstart", { bubbles: true }));
+      const list = root.querySelector(".rail-list") as HTMLElement;
+      list.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      expect(toggled).toEqual(["z", false]);
+    });
+
+    it("double-clicking an archived row's name does not start a rename while mini", () => {
+      const r = new Rail({
+        root,
+        onSelect: () => {},
+        onAddProject: () => {},
+        onRename: () => {},
+      });
+      r.setProjects(withArchived());
+      r.setMode("mini");
+      const name = archivedRow().querySelector(".name") as HTMLElement;
+      name.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      expect(root.querySelector("#rail-archive-list .name-edit")).toBeNull();
     });
 
     it("a click on blank mini-rail space still expands the rail", () => {

@@ -395,6 +395,17 @@ export class Rail {
     return this.props.root.classList.contains("rail-mini");
   }
 
+  /**
+   * True for a row the user cannot see or reach: an archived row while the
+   * rail is mini. Every interactive handler on a row consults this, not
+   * just the click one — a right-click opens a menu with "Delete
+   * Project…" in it, and a drag out of the Archive unarchives — so
+   * leaving either unguarded would reproduce #163 through another door.
+   */
+  private isInertArchiveRow(el: HTMLElement): boolean {
+    return this.isArchiveInert() && this.archiveSectionEl.contains(el);
+  }
+
   private renderZone(projects: Project[], container: HTMLElement) {
     for (let i = 0; i < projects.length; i++) {
       const p = projects[i];
@@ -526,12 +537,15 @@ export class Rail {
     el.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).isContentEditable) return;
       // An archived row in the mini rail is invisible — a click there is
-      // aimed at the blank rail, not at this project (the delegated
-      // root handler turns it into "expand the rail").
-      if (this.isArchiveInert() && this.archiveSectionEl.contains(el)) return;
+      // aimed at the blank rail, not at this project. (In the app the CSS
+      // `pointer-events: none` means the click never reaches the row at
+      // all and the rail's own handler expands it; this guard is the
+      // layout-free backstop.)
+      if (this.isInertArchiveRow(el)) return;
       this.props.onSelect(p.id);
     });
     el.addEventListener("contextmenu", (e) => {
+      if (this.isInertArchiveRow(el)) return;
       e.preventDefault();
       const row = this.rows.get(p.id);
       const isArchived = row?.lastArchived ?? archived;
@@ -545,6 +559,12 @@ export class Rail {
     });
     el.draggable = true;
     el.addEventListener("dragstart", (e) => {
+      // An invisible archived row must not become a drag source — dropping
+      // it on the active list would unarchive a project the user cannot see.
+      if (this.isInertArchiveRow(el)) {
+        e.preventDefault();
+        return;
+      }
       this.draggedId = p.id;
       this.draggedArchived = this.rows.get(p.id)?.lastArchived ?? archived;
       if (e.dataTransfer) {
@@ -594,6 +614,7 @@ export class Rail {
     // Double-click name → rename in place
     name.addEventListener("dblclick", (e) => {
       if (!this.props.onRename) return;
+      if (this.isInertArchiveRow(el)) return;
       e.stopPropagation();
       this.startRename(p.id, name);
     });
@@ -640,6 +661,7 @@ export class Rail {
       const commitName = commit && next && next !== original ? next : original;
       newName.textContent = commitName;
       newName.addEventListener("dblclick", (e) => {
+        if (this.isInertArchiveRow(row.el)) return;
         e.stopPropagation();
         this.startRename(projectId, newName);
       });

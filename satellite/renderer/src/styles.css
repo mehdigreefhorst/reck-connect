@@ -673,6 +673,15 @@ html, body, #app {
 .rail.rail-mini .rail-archive {
   pointer-events: none;
 }
+/* ...and `pointer-events` is overridable by a descendant exactly the way
+   `visibility` is. The archive's OverlayScrollbar mounts INSIDE
+   #rail-archive and `.reck-scrollbar.visible` sets `pointer-events: auto`,
+   which would hand back an invisible 10px draggable strip whenever the
+   Archive folder was left expanded and overflowing before the rail
+   collapsed — the same state that reproduced #163. Kill it here too. */
+.rail.rail-mini .rail-archive .reck-scrollbar {
+  pointer-events: none;
+}
 
 /* .rail-add's base "transition: all" is overridden by the group rule
    above — restate its hover transition alongside the crossfade. */
