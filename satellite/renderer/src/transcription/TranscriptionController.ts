@@ -88,6 +88,18 @@ const SILENCE_RECONCILE_MS = 800;
 // 8 s daemon) so a slow-but-alive engine still usually wins.
 const SEND_FLUSH_TIMEOUT_MS = 3000;
 
+/**
+ * How long the mic button refuses to abandon an in-flight final pass.
+ *
+ * Stopping puts the engine in `transcribing` and the words are then IN FLIGHT
+ * at the provider — under `manual` endpointing they exist NOWHERE else, since
+ * the pill holds only blurred placeholders until the final arrives. A second
+ * click inside this window is an accidental double-click, and honouring it
+ * threw the entire recording away. After the window a deliberate click still
+ * abandons, so a wedged provider can never hold the mic hostage.
+ */
+const ABANDON_FINAL_AFTER_MS = 3000;
+
 function wordCount(text: string): number {
   return text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
 }
@@ -202,6 +214,9 @@ export class TranscriptionController {
   private submitAfterFinal = false;
   // Resolves the in-flight send early (a second Enter, or the timeout).
   private forceSend: (() => void) | null = null;
+  // When the engine entered `transcribing` (0 = not transcribing). Guards the
+  // double-click that used to discard an in-flight utterance.
+  private transcribingSince = 0;
   // Set by `cancel({ discard: true })` — this session's words are to be thrown
   // away rather than salvaged into the prompt on the way to idle.
   private discardUtterance = false;
@@ -346,6 +361,13 @@ export class TranscriptionController {
   private flushSettle(): void {
     if (this.settings.appearance.ghostMode === "onset") this.flushOnset();
     else this.flushEstimate();
+  }
+
+  /** Milliseconds since the engine entered `transcribing` (∞ if it hasn't). */
+  private msSinceTranscribing(): number {
+    return this.transcribingSince > 0
+      ? performance.now() - this.transcribingSince
+      : Number.POSITIVE_INFINITY;
   }
 
   /** Milliseconds since the last voiced chunk (∞ if we haven't heard any). */
@@ -504,6 +526,7 @@ export class TranscriptionController {
       })`,
     );
     this.bar?.setState(state);
+    this.transcribingSince = state === "transcribing" ? performance.now() : 0;
     if (state === "idle") {
       // Last chance to keep what was said: commit the pill before the state is
       // torn down. Skipped only for an explicit discard (the Advanced panel's
@@ -535,7 +558,20 @@ export class TranscriptionController {
     // hostage: clicking again abandons the improvement pass. What was already
     // transcribed stays — the words in the prompt, plus whatever the pill still
     // holds, which cancel() salvages on the way to idle.
-    else if (state === "transcribing") await this.cancel();
+    //
+    // But not IMMEDIATELY. The words are in flight at the provider the moment
+    // we stop, and under `manual` endpointing that is the only place they
+    // exist — the pill is still all blurred placeholders, so there is nothing
+    // for the salvage to recover and an accidental double-click destroyed the
+    // whole recording. Inside the grace window the click is ignored and the
+    // pill says so; after it, abandoning is assumed to be deliberate.
+    else if (state === "transcribing") {
+      // Ignored, not queued. The pill is already showing `transcribing`, so
+      // the state is visible; there is no bar affordance for "your click was
+      // deliberately dropped" and inventing one is a separate change.
+      if (this.msSinceTranscribing() < ABANDON_FINAL_AFTER_MS) return;
+      await this.cancel();
+    }
   }
 
   async startDictation(): Promise<void> {

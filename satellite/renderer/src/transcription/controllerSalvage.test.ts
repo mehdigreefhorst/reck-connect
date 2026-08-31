@@ -173,7 +173,15 @@ describe("TranscriptionController salvage (manual endpointing)", () => {
     const h = await startManualDictation();
     h.say(["abandon", "the", "improvement", "pass"]);
     await h.engine.stop(); // → "transcribing"
-    await h.controller.toggle(); // user clicks again
+    // Abandoning is only honoured once the grace window has passed; inside it
+    // the click is an accidental double-click (see the double-click tests).
+    vi.useFakeTimers({ toFake: ["performance"] });
+    try {
+      vi.advanceTimersByTime(10_000);
+      await h.controller.toggle(); // user clicks again, deliberately
+    } finally {
+      vi.useRealTimers();
+    }
     expect(h.inserted.join("")).toBe("abandon the improvement pass");
   });
 
@@ -198,5 +206,68 @@ describe("TranscriptionController salvage (manual endpointing)", () => {
     h.say(["just", "previewing", "the", "sliders"]);
     await h.controller.cancel({ discard: true });
     expect(h.inserted).toEqual([]);
+  });
+});
+
+// A double-click on the mic used to destroy the whole recording. Stopping puts
+// the engine in `transcribing` with the words IN FLIGHT at the provider —
+// under `manual` endpointing that is the only place they exist, because the
+// pill is still all blurred placeholders until the final arrives (Codex sends
+// no partials at all in manual). The second click cancelled, the socket closed
+// before the final landed, and the salvage had nothing to recover.
+describe("double-clicking the mic must not discard an in-flight utterance", () => {
+  it("ignores the second click and still delivers the final", async () => {
+    const h = await startManualDictation();
+    h.say(["do", "not", "lose", "this"]);
+    await h.engine.stop(); // → "transcribing"
+    await h.controller.toggle(); // the accidental second click
+    expect(h.engine.getState()).toBe("transcribing"); // NOT torn down
+    expect(h.inserted).toEqual([]); // nothing salvaged early either
+    // The provider's final arrives as it always would have.
+    (h.engine.handlers.onFinal as (t: string) => void)("do not lose this");
+    (h.engine as { setState(s: string): void }).setState("idle");
+    expect(h.inserted.join("")).toBe("do not lose this");
+  });
+
+  it("survives a rapid burst of clicks", async () => {
+    const h = await startManualDictation();
+    h.say(["still", "here"]);
+    await h.engine.stop();
+    for (let i = 0; i < 5; i++) await h.controller.toggle();
+    expect(h.engine.getState()).toBe("transcribing");
+    (h.engine.handlers.onFinal as (t: string) => void)("still here");
+    (h.engine as { setState(s: string): void }).setState("idle");
+    expect(h.inserted.join("")).toBe("still here");
+  });
+
+  // The worst case, and the one the user hit: Codex under manual sends no
+  // partials, so every pill segment is blurred and the salvage can recover
+  // NOTHING. Cancelling here loses the entire recording with no trace.
+  it("protects an utterance the pill cannot salvage (no partials arrived)", async () => {
+    const h = await startManualDictation();
+    const eng = h.engine.handlers as Record<string, (...a: never[]) => void>;
+    // Onsets only — no transcript text has ever been delivered.
+    for (let id = 1; id <= 4; id++) eng.onWordOnset?.(id as never);
+    await h.engine.stop();
+    await h.controller.toggle();
+    expect(h.engine.getState()).toBe("transcribing");
+    (h.engine.handlers.onFinal as (t: string) => void)("four words at last");
+    (h.engine as { setState(s: string): void }).setState("idle");
+    expect(h.inserted.join("")).toBe("four words at last");
+  });
+
+  it("still abandons a wedged final pass after the grace window", async () => {
+    const h = await startManualDictation();
+    h.say(["wedged", "provider"]);
+    await h.engine.stop();
+    vi.useFakeTimers({ toFake: ["performance"] });
+    try {
+      vi.advanceTimersByTime(10_000);
+      await h.controller.toggle();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(h.engine.getState()).toBe("idle");
+    expect(h.inserted.join("")).toBe("wedged provider"); // salvaged, not lost
   });
 });
