@@ -148,6 +148,20 @@ describe("classifyCloneFailure", () => {
     expect(classifyCloneFailure("remote: Repository not found.").code).toBe("not-found");
   });
 
+  it("scrubs credentials git echoed back in its own error text", () => {
+    const r = classifyCloneFailure(
+      "fatal: Authentication failed for 'https://alice:s3cret@github.com/o/r.git/'",
+    );
+    expect(r.error).not.toContain("s3cret");
+    // auth-required returns fixed guidance text; the scrub protects the
+    // ssh-error path, which passes git's message through verbatim.
+    const passthrough = classifyCloneFailure(
+      "fatal: unable to update url base from redirection https://tok3n@github.com/o/r",
+    );
+    expect(passthrough.error).not.toContain("tok3n");
+    expect(passthrough.error).toContain("://***@");
+  });
+
   it("keeps an unrecognised message verbatim under ssh-error", () => {
     const r = classifyCloneFailure("fatal: something entirely new");
     expect(r.code).toBe("ssh-error");

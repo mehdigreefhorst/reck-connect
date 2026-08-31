@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseGitRemote, defaultNameFromRemote } from "./git-remote-url";
+import { parseGitRemote, defaultNameFromRemote, redactGitUrl } from "./git-remote-url";
 
 describe("parseGitRemote", () => {
   it("accepts a plain GitHub https URL", () => {
@@ -118,5 +118,35 @@ describe("parseGitRemote — parity with the main-process validator", () => {
   it("still accepts an ordinary hyphenated repo", () => {
     expect(parseGitRemote("https://github.com/octo-cat/Hello-World")?.repo).toBe("Hello-World");
     expect(parseGitRemote("git@github.com:octo-cat/Hello-World.git")?.repo).toBe("Hello-World");
+  });
+});
+
+// A credentialed remote is still cloneable, but the secret must never be
+// painted into the progress overlay or a log line.
+describe("redactGitUrl", () => {
+  it("masks a user:password pair", () => {
+    expect(redactGitUrl("https://alice:s3cret@github.com/o/r.git")).toBe(
+      "https://***@github.com/o/r.git",
+    );
+  });
+
+  it("masks a token carried in the username alone", () => {
+    expect(redactGitUrl("https://ghp_abc123@github.com/o/r")).toBe("https://***@github.com/o/r");
+  });
+
+  it("leaves a credential-free URL untouched", () => {
+    expect(redactGitUrl("https://github.com/o/r.git")).toBe("https://github.com/o/r.git");
+  });
+
+  it("leaves scp-style git@host alone — that is a login name, not a secret", () => {
+    expect(redactGitUrl("git@github.com:o/r.git")).toBe("git@github.com:o/r.git");
+  });
+
+  it("returns unparseable input unchanged (display helper, not a validator)", () => {
+    expect(redactGitUrl("not a url")).toBe("not a url");
+  });
+
+  it("never leaks the secret substring", () => {
+    expect(redactGitUrl("https://alice:s3cret@github.com/o/r")).not.toContain("s3cret");
   });
 });

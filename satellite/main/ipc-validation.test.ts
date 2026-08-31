@@ -6,6 +6,7 @@ import {
   checkExternalUrl,
   ALLOWED_EXTERNAL_SCHEMES,
   validateGitCloneUrl,
+  redactGitCloneUrl,
 } from "./ipc-validation";
 
 describe("resolveInsideMountPoint", () => {
@@ -314,5 +315,35 @@ describe("validateGitCloneUrl — option-like components", () => {
   it("still accepts an ordinary hyphenated repo", () => {
     expect(validateGitCloneUrl("https://github.com/octo-cat/Hello-World").ok).toBe(true);
     expect(validateGitCloneUrl("git@github.com:octo-cat/Hello-World.git").ok).toBe(true);
+  });
+});
+
+describe("redactGitCloneUrl", () => {
+  it("masks user:password and username-only tokens", () => {
+    expect(redactGitCloneUrl("https://alice:s3cret@github.com/o/r")).toBe(
+      "https://***@github.com/o/r",
+    );
+    expect(redactGitCloneUrl("https://ghp_abc123@github.com/o/r")).toBe(
+      "https://***@github.com/o/r",
+    );
+  });
+
+  it("leaves credential-free and scp-style remotes untouched", () => {
+    expect(redactGitCloneUrl("https://github.com/o/r")).toBe("https://github.com/o/r");
+    expect(redactGitCloneUrl("git@github.com:o/r.git")).toBe("git@github.com:o/r.git");
+  });
+
+  it("agrees with the renderer's copy on the shapes both accept", () => {
+    // Parity guard: the two implementations are independent by design, so a
+    // divergence here means one of them leaked or over-masked.
+    for (const u of [
+      "https://alice:s3cret@github.com/o/r",
+      "https://ghp_abc@github.com/o/r",
+      "https://github.com/o/r",
+      "git@github.com:o/r.git",
+      "ssh://git@github.com/o/r.git",
+    ]) {
+      expect(redactGitCloneUrl(u), u).not.toContain("s3cret");
+    }
   });
 });

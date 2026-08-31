@@ -1,6 +1,6 @@
 import { ApiClient } from "@client-core/api/client";
 import type { Project } from "@proto/proto";
-import { defaultNameFromRemote, parseGitRemote } from "./git-remote-url";
+import { defaultNameFromRemote, parseGitRemote, redactGitUrl } from "./git-remote-url";
 
 export type DialogResult =
   | { kind: "new"; name: string; preamble: string }
@@ -236,7 +236,7 @@ export function showCloneProgress(
       <div class="dialog-title">Cloning to station</div>
       <div class="dialog-body" style="margin-top:12px;">
         <div style="font-size:12px; opacity:0.8; margin-bottom:8px;">
-          ${escapeHtml(url)} → ${REMOTE_PROJECTS_ROOT}/${escapeHtml(slug)}
+          ${escapeHtml(redactGitUrl(url))} → ${REMOTE_PROJECTS_ROOT}/${escapeHtml(slug)}
         </div>
         <div style="height:6px; background:rgba(0,0,0,0.1); border-radius:3px; overflow:hidden;">
           <div id="ap-clone-fill" style="height:100%; width:0%; background:var(--accent, #5b8def); transition:width 0.15s ease;"></div>

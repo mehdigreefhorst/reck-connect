@@ -216,3 +216,30 @@ export function validateGitCloneUrl(raw: unknown): GitCloneUrlCheck {
   }
   return { ok: true, url };
 }
+
+/**
+ * Mask embedded credentials in a clone URL before it is logged or shown.
+ *
+ * `https://token@host/repo` is a valid remote we still clone, but the secret
+ * must not reach a log file or a bug report. The whole userinfo is replaced,
+ * because a token is often carried in the username field alone. scp-style
+ * `git@host:path` is left alone — that user part is a login name with no
+ * password field. Display helper only, never a validator; anything
+ * unparseable is returned unchanged.
+ *
+ * The renderer has its own copy (`ui/git-remote-url.ts` → `redactGitUrl`) for
+ * the progress overlay; this module must not import renderer code.
+ */
+export function redactGitCloneUrl(url: string): string {
+  if (/^[^@/]+@[^:]+:/.test(url)) return url;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (parsed.username === "" && parsed.password === "") return url;
+  parsed.username = "";
+  parsed.password = "";
+  return parsed.toString().replace("://", "://***@");
+}

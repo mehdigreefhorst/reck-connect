@@ -124,3 +124,34 @@ export function parseGitRemote(input: string): ParsedRemote | null {
 export function defaultNameFromRemote(r: ParsedRemote): string {
   return r.repo;
 }
+
+/**
+ * A clone URL with any embedded credentials masked, for display and logs.
+ *
+ * `https://user:token@host/repo` is a perfectly valid remote and we still
+ * clone it — but the secret must not be painted into the progress overlay,
+ * written to a log, or pasted into a bug report. The userinfo is replaced
+ * wholesale (not just the password) because a token is often carried in the
+ * username field alone, e.g. `https://ghp_xxx@github.com/owner/repo`.
+ *
+ * Anything that doesn't parse, or carries no userinfo, is returned unchanged:
+ * this is a display helper, never a validator.
+ */
+export function redactGitUrl(url: string): string {
+  const scp = url.match(/^([^@/]+)@([^:]+):(.*)$/);
+  if (scp) {
+    // scp-style `git@host:path` — the user part is a login name, not a
+    // secret, and there is no password field to hide.
+    return url;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (parsed.username === "" && parsed.password === "") return url;
+  parsed.username = "";
+  parsed.password = "";
+  return parsed.toString().replace("://", "://***@");
+}

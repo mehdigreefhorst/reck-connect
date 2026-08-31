@@ -17,7 +17,7 @@
 
 import { BrowserWindow, ipcMain } from "electron";
 import { spawn, ChildProcess } from "node:child_process";
-import { validateGitCloneUrl } from "./ipc-validation";
+import { redactGitCloneUrl, validateGitCloneUrl } from "./ipc-validation";
 import {
   assertValidSlug,
   remotePath,
@@ -65,13 +65,22 @@ export function parseCloneProgressLine(line: string): CloneProgress | null {
   return { phase: m[1], percent: Number(m[2]) };
 }
 
+/** Mask `scheme://userinfo@` anywhere inside a free-text message. */
+function scrubUrlCredentials(text: string): string {
+  return text.replace(/:\/\/[^\s'"@/]+@/g, "://***@");
+}
+
 /**
  * Classify a failed clone from git's stderr into a stable `code` the renderer
  * can branch on without re-parsing English. Anything unrecognised stays
  * `ssh-error` and the raw message is surfaced verbatim.
  */
 export function classifyCloneFailure(stderr: string): { code: string; error: string } {
-  const msg = stderr.trim().split(/\n/).slice(-3).join(" ") || "git clone failed";
+  // git echoes the remote back in its own messages ("Authentication failed
+  // for 'https://token@host/repo'"), so scrub any userinfo before this string
+  // becomes a dialog message or a log line.
+  const msg =
+    scrubUrlCredentials(stderr.trim().split(/\n/).slice(-3).join(" ")) || "git clone failed";
   const lower = msg.toLowerCase();
   if (
     lower.includes("authentication failed") ||
@@ -152,7 +161,8 @@ export function registerGitCloneIpc(getWindow: () => BrowserWindow | null): void
       const check = validateGitCloneUrl(url);
       if (!check.ok) {
         console.warn(
-          `[satellite] rejected git:clone url: ${check.error}; value=${JSON.stringify(url)}`,
+          `[satellite] rejected git:clone url: ${check.error}; ` +
+            `value=${JSON.stringify(redactGitCloneUrl(String(url)))}`,
         );
         return { ok: false, code: "bad-url", error: check.error };
       }
