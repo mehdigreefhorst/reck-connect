@@ -287,7 +287,10 @@ export class Rail {
     });
     (this.props.root.querySelector("#rail-archive-header") as HTMLElement).addEventListener(
       "click",
-      () => this.toggleArchiveCollapsed(),
+      () => {
+        if (this.isArchiveInert()) return;
+        this.toggleArchiveCollapsed();
+      },
     );
     // Mount the overlay onto the non-scrolling wrapper (host) and drive it from
     // the inner scroller (surface). An absolutely-positioned bar mounted INTO
@@ -363,9 +366,33 @@ export class Rail {
    * this alongside it. Per-element CSS transitions keyed off .rail-mini
    * crossfade names/indicators with the initials avatars, the "Projects"
    * text with the brand mark, and reveal the footer chevron.
+   *
+   * The Archive is additionally made `inert` in mini. The crossfade alone
+   * was not enough: `.rail.rail-mini .rail-archive` sets `visibility:
+   * hidden`, but the mini avatar rule re-asserts `visibility: visible` on
+   * every `.rail-item .rail-avatar` — archived rows included, since they
+   * live inside #rail-archive — while the ancestor's `opacity: 0` (a group
+   * opacity a descendant cannot undo) keeps them invisible. The section was
+   * therefore invisible and still clickable. `inert` also drops it from the
+   * focus order and the a11y tree, which the fade never did.
    */
   setMode(mode: RailMode) {
-    this.props.root.classList.toggle("rail-mini", mode === "mini");
+    const mini = mode === "mini";
+    this.props.root.classList.toggle("rail-mini", mini);
+    this.archiveSectionEl.inert = mini;
+    if (mini) this.archiveSectionEl.setAttribute("aria-hidden", "true");
+    else this.archiveSectionEl.removeAttribute("aria-hidden");
+  }
+
+  /**
+   * True while the Archive must not respond to the pointer at all — i.e.
+   * the rail is in mini mode, where the section is invisible. The CSS
+   * (`pointer-events: none` + `inert`) is the real barrier in the app;
+   * this guard is what the handlers below check, because jsdom has no
+   * layout and would otherwise let the regression back in unnoticed.
+   */
+  private isArchiveInert(): boolean {
+    return this.props.root.classList.contains("rail-mini");
   }
 
   private renderZone(projects: Project[], container: HTMLElement) {
@@ -431,6 +458,7 @@ export class Rail {
   private wireArchiveDropZone() {
     const zone = this.archiveSectionEl;
     zone.addEventListener("dragover", (e) => {
+      if (this.isArchiveInert()) return;
       if (!this.draggedId || this.draggedArchived) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -441,6 +469,8 @@ export class Rail {
     });
     zone.addEventListener("drop", (e) => {
       zone.classList.remove("drop-target");
+      // No dropping into a target the user cannot see.
+      if (this.isArchiveInert()) return;
       if (!this.draggedId || this.draggedArchived) return;
       e.preventDefault();
       e.stopPropagation();
@@ -495,6 +525,10 @@ export class Rail {
     el.appendChild(indicator);
     el.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).isContentEditable) return;
+      // An archived row in the mini rail is invisible — a click there is
+      // aimed at the blank rail, not at this project (the delegated
+      // root handler turns it into "expand the rail").
+      if (this.isArchiveInert() && this.archiveSectionEl.contains(el)) return;
       this.props.onSelect(p.id);
     });
     el.addEventListener("contextmenu", (e) => {
