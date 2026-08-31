@@ -5,6 +5,8 @@ import {
   validateRsyncLocalPath,
   checkExternalUrl,
   ALLOWED_EXTERNAL_SCHEMES,
+  validateGitCloneUrl,
+  redactGitCloneUrl,
 } from "./ipc-validation";
 
 describe("resolveInsideMountPoint", () => {
@@ -221,5 +223,127 @@ describe("checkExternalUrl", () => {
     // of real in-repo callers first. Intentional widening should update this
     // test too.
     expect([...ALLOWED_EXTERNAL_SCHEMES]).toEqual(["https:", "http:"]);
+  });
+});
+
+// The main-process half of the clone-URL contract (#162). The renderer has an
+// independent parser with the same rules; these assertions are what keeps the
+// two honest, because this side is the actual security boundary — the value
+// becomes an operand of `git clone` inside an ssh command line.
+describe("validateGitCloneUrl", () => {
+  it("accepts https, ssh and scp-style remotes", () => {
+    expect(validateGitCloneUrl("https://github.com/octocat/Hello-World")).toEqual({
+      ok: true,
+      url: "https://github.com/octocat/Hello-World",
+    });
+    expect(validateGitCloneUrl("https://github.com/octocat/Hello-World.git").ok).toBe(true);
+    expect(validateGitCloneUrl("ssh://git@github.com/octocat/Hello-World.git").ok).toBe(true);
+    expect(validateGitCloneUrl("git@github.com:octocat/Hello-World.git").ok).toBe(true);
+    expect(validateGitCloneUrl("https://gitlab.com/group/sub/repo").ok).toBe(true);
+  });
+
+  it("trims surrounding whitespace", () => {
+    expect(validateGitCloneUrl("  https://github.com/a/b  ")).toEqual({
+      ok: true,
+      url: "https://github.com/a/b",
+    });
+  });
+
+  it("rejects the ext:: transport, which runs an arbitrary command", () => {
+    expect(validateGitCloneUrl("ext::sh").ok).toBe(false);
+    expect(validateGitCloneUrl("ext::sh -c 'curl x|sh'").ok).toBe(false);
+  });
+
+  it("rejects option injection via a leading dash", () => {
+    expect(validateGitCloneUrl("--upload-pack=touch /tmp/pwn").ok).toBe(false);
+    expect(validateGitCloneUrl("-u").ok).toBe(false);
+  });
+
+  it("rejects shell metacharacters, whitespace and control characters", () => {
+    for (const bad of [
+      "https://github.com/a/b;whoami",
+      "https://github.com/a/b|whoami",
+      "https://github.com/a/b&whoami",
+      "https://github.com/a/$(whoami)",
+      "https://github.com/a/b c",
+      "https://github.com/a/b\u0000c",
+      "https://github.com/a/b\nrm -rf /",
+    ]) {
+      expect(validateGitCloneUrl(bad).ok, bad).toBe(false);
+    }
+  });
+
+  it("rejects other transports and shapes", () => {
+    expect(validateGitCloneUrl("file:///etc/passwd").ok).toBe(false);
+    expect(validateGitCloneUrl("http://github.com/a/b").ok).toBe(false);
+    expect(validateGitCloneUrl("https://github.com/").ok).toBe(false);
+    expect(validateGitCloneUrl("octocat/Hello-World").ok).toBe(false); // shorthand is expanded in the renderer
+    expect(validateGitCloneUrl("").ok).toBe(false);
+    expect(validateGitCloneUrl("   ").ok).toBe(false);
+    expect(validateGitCloneUrl(`https://github.com/a/${"b".repeat(3000)}`).ok).toBe(false);
+  });
+
+  it("rejects non-string input", () => {
+    expect(validateGitCloneUrl(undefined).ok).toBe(false);
+    expect(validateGitCloneUrl(null).ok).toBe(false);
+    expect(validateGitCloneUrl({}).ok).toBe(false);
+  });
+});
+
+// Option injection without a single shell metacharacter. git hands the host
+// and path of an ssh remote to `ssh` as separate argv entries, so a component
+// that starts with `-` becomes an ssh *option* on the station —
+// `-oProxyCommand=…` / `-F<file>` are the RCE-shaped ones. Recent git blocks
+// these itself ("strange hostname … blocked"); we must not depend on the
+// station's git version for that.
+describe("validateGitCloneUrl — option-like components", () => {
+  const rejected = [
+    "ssh://-oProxyCommand=touch/repo",
+    "ssh://-Fevil.conf/owner/repo",
+    "git@-oProxyCommand=touch:a/b",
+    "git@-Fevil.conf:a/b",
+    "ssh://git@github.com/-repo",
+    "git@github.com:-repo/x",
+    "https://-evil.example.com/a/b",
+  ];
+  for (const bad of rejected) {
+    it(`rejects ${bad}`, () => {
+      expect(validateGitCloneUrl(bad).ok).toBe(false);
+    });
+  }
+
+  it("still accepts an ordinary hyphenated repo", () => {
+    expect(validateGitCloneUrl("https://github.com/octo-cat/Hello-World").ok).toBe(true);
+    expect(validateGitCloneUrl("git@github.com:octo-cat/Hello-World.git").ok).toBe(true);
+  });
+});
+
+describe("redactGitCloneUrl", () => {
+  it("masks user:password and username-only tokens", () => {
+    expect(redactGitCloneUrl("https://alice:s3cret@github.com/o/r")).toBe(
+      "https://***@github.com/o/r",
+    );
+    expect(redactGitCloneUrl("https://ghp_abc123@github.com/o/r")).toBe(
+      "https://***@github.com/o/r",
+    );
+  });
+
+  it("leaves credential-free and scp-style remotes untouched", () => {
+    expect(redactGitCloneUrl("https://github.com/o/r")).toBe("https://github.com/o/r");
+    expect(redactGitCloneUrl("git@github.com:o/r.git")).toBe("git@github.com:o/r.git");
+  });
+
+  it("agrees with the renderer's copy on the shapes both accept", () => {
+    // Parity guard: the two implementations are independent by design, so a
+    // divergence here means one of them leaked or over-masked.
+    for (const u of [
+      "https://alice:s3cret@github.com/o/r",
+      "https://ghp_abc@github.com/o/r",
+      "https://github.com/o/r",
+      "git@github.com:o/r.git",
+      "ssh://git@github.com/o/r.git",
+    ]) {
+      expect(redactGitCloneUrl(u), u).not.toContain("s3cret");
+    }
   });
 });

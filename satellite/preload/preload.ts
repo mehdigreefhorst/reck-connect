@@ -489,6 +489,25 @@ contextBridge.exposeInMainWorld("reckAPI", {
       ipcRenderer.on("rsync:progress", (_e, p) => cb(p));
     },
   },
+  // Clone-a-repo project creation (#162). Shares the station SSH transport
+  // and the slug reservation with `rsync` above; only the fill step differs.
+  git: {
+    clone: (url: string, slug: string) =>
+      ipcRenderer.invoke("git:clone", url, slug) as Promise<
+        { ok: true } | { ok: false; error: string; code?: string }
+      >,
+    cancel: () => ipcRenderer.invoke("git:cancel"),
+    // Returns an unsubscribe. The progress overlay is created once per
+    // Add-Project flow, so a bare `ipcRenderer.on` would leave a live listener
+    // — holding a detached overlay — behind on every run.
+    onProgress: (cb: (p: { percent: number; phase: string }) => void) => {
+      const listener = (_e: unknown, p: { percent: number; phase: string }) => cb(p);
+      ipcRenderer.on("git:clone-progress", listener);
+      return () => {
+        ipcRenderer.removeListener("git:clone-progress", listener);
+      };
+    },
+  },
   onMenuAddProject: (cb: () => void) => ipcRenderer.on("menu:add-project", cb),
   onMenuUpdateToken: (cb: () => void) => ipcRenderer.on("menu:update-token", cb),
   onMenuClaudeLaunch: (cb: () => void) => ipcRenderer.on("menu:claude-launch", cb),

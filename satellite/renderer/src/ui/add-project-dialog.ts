@@ -1,9 +1,11 @@
 import { ApiClient } from "@client-core/api/client";
 import type { Project } from "@proto/proto";
+import { defaultNameFromRemote, parseGitRemote, redactGitUrl } from "./git-remote-url";
 
-type DialogResult =
+export type DialogResult =
   | { kind: "new"; name: string; preamble: string }
   | { kind: "existing"; cwd: string; name: string; preamble: string }
+  | { kind: "clone"; url: string; name: string; preamble: string }
   | null;
 
 // Vite inlines `import.meta.env.VITE_RECK_STATION_ROOT` at build time.
@@ -26,10 +28,10 @@ export function slugify(name: string): string {
 }
 
 /** Runs the add-project flow. Defaults to name-first (daemon picks cwd);
- *  user can opt into folder-picker via the secondary button. An
- *  existing-folder pick is rsync'd to the station before the daemon
- *  registers it — the Satellite sends the station-side path, not the
- *  laptop one. */
+ *  the user can opt into the folder picker via the secondary button, or
+ *  paste a git URL to clone. Both of those fill a station directory the
+ *  Satellite reserves first, then register the station-side path with the
+ *  daemon — never the laptop one. */
 export async function addProjectFlow(client: ApiClient): Promise<Project | null> {
   const picked = await promptAddProject();
   if (picked === null) return null;
@@ -37,6 +39,9 @@ export async function addProjectFlow(client: ApiClient): Promise<Project | null>
   try {
     if (picked.kind === "existing") {
       return await copyAndRegisterExisting(client, picked);
+    }
+    if (picked.kind === "clone") {
+      return await cloneAndRegister(client, picked);
     }
     const body: { name: string; preamble?: string } = { name: picked.name };
     if (picked.preamble) body.preamble = picked.preamble;
@@ -90,6 +95,67 @@ async function copyAndRegisterExisting(
     return null;
   }
 
+  return registerFilledSlug(client, picked, slug, "Copied files");
+}
+
+/**
+ * Clone a repository into a fresh station directory, then register it.
+ *
+ * The station does the cloning (`main/git-clone.ts` over the same SSH
+ * transport rsync uses), so the repo never round-trips through the laptop and
+ * `origin` survives. The shape is deliberately identical to the rsync flow:
+ * reserve the slug, fill it, register it, roll back on any failure.
+ */
+async function cloneAndRegister(
+  client: ApiClient,
+  picked: { url: string; name: string; preamble: string },
+): Promise<Project | null> {
+  const slug = slugify(picked.name);
+  if (!slug) {
+    await alertError("Project name must contain at least one letter or digit.");
+    return null;
+  }
+
+  const cancelFlag = { canceled: false };
+  const overlay = showCloneProgress(picked.url, slug, async () => {
+    cancelFlag.canceled = true;
+    await window.reckAPI.git.cancel();
+  });
+
+  const result = await window.reckAPI.git.clone(picked.url, slug);
+  overlay.remove();
+
+  if (!result.ok) {
+    if (result.code === "slug-in-use") {
+      await alertError(
+        `A folder already exists on the station at ${REMOTE_PROJECTS_ROOT}/${slug}.\n\nChoose a different name.`,
+      );
+      return null;
+    }
+    // Every other failure path already rolled the reservation back in the
+    // main process; a second rollback is a no-op `rm -rf` of a missing dir.
+    await window.reckAPI.rsync.rollback(slug);
+    if (!cancelFlag.canceled) {
+      await alertError(result.error);
+    }
+    return null;
+  }
+
+  return registerFilledSlug(client, picked, slug, "Cloned the repository");
+}
+
+/**
+ * Register a station directory this flow just filled (rsync or clone) with
+ * the daemon. Shared so the two flows can't drift on the rollback contract:
+ * if registration fails the directory must go, or the slug stays taken with
+ * nothing to show for it.
+ */
+async function registerFilledSlug(
+  client: ApiClient,
+  picked: { name: string; preamble: string },
+  slug: string,
+  whatSucceeded: string,
+): Promise<Project | null> {
   try {
     const remoteCwd = `${REMOTE_PROJECTS_ROOT}/${slug}`;
     const body: { name: string; cwd: string; id: string; preamble?: string } = {
@@ -103,7 +169,7 @@ async function copyAndRegisterExisting(
   } catch (e: unknown) {
     await window.reckAPI.rsync.rollback(slug);
     const msg = e instanceof Error ? e.message : String(e);
-    await alertError(`Copied files, but registration failed: ${msg}`);
+    await alertError(`${whatSucceeded}, but registration failed: ${msg}`);
     return null;
   }
 }
@@ -148,13 +214,72 @@ function showCopyProgress(
   return { remove: () => overlay.remove() };
 }
 
+/**
+ * The clone's progress overlay. Same furniture as the copy one, but git
+ * reports a phase and a percentage rather than bytes/ETA — "Receiving
+ * objects" is most of the wall-clock, "Resolving deltas" the tail.
+ *
+ * Exported for tests: `remove()` must also drop the IPC progress listener, or
+ * every Add-Project flow leaves one behind, each still writing into a detached
+ * overlay. (The older rsync overlay has the same shape and is left as-is —
+ * fixing it is not this PR's change.)
+ */
+export function showCloneProgress(
+  url: string,
+  slug: string,
+  onCancel: () => void,
+): { remove: () => void } {
+  const overlay = document.createElement("div");
+  overlay.className = "new-pane-dialog";
+  overlay.innerHTML = `
+    <div class="options" role="dialog" aria-label="Cloning to station" style="max-width:480px;">
+      <div class="dialog-title">Cloning to station</div>
+      <div class="dialog-body" style="margin-top:12px;">
+        <div style="font-size:12px; opacity:0.8; margin-bottom:8px;">
+          ${escapeHtml(redactGitUrl(url))} → ${REMOTE_PROJECTS_ROOT}/${escapeHtml(slug)}
+        </div>
+        <div style="height:6px; background:rgba(0,0,0,0.1); border-radius:3px; overflow:hidden;">
+          <div id="ap-clone-fill" style="height:100%; width:0%; background:var(--accent, #5b8def); transition:width 0.15s ease;"></div>
+        </div>
+        <div id="ap-clone-text" style="margin-top:10px; font-size:11px; opacity:0.75; font-variant-numeric:tabular-nums;">
+          Contacting the repository…
+        </div>
+      </div>
+      <div class="dialog-buttons" style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end;">
+        <button id="ap-cancel-clone" type="button">Cancel</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const fill = overlay.querySelector("#ap-clone-fill") as HTMLElement;
+  const text = overlay.querySelector("#ap-clone-text") as HTMLElement;
+  const stopProgress = window.reckAPI.git.onProgress((p) => {
+    fill.style.width = `${p.percent}%`;
+    text.textContent = `${p.phase} — ${p.percent}%`;
+  });
+
+  (overlay.querySelector("#ap-cancel-clone") as HTMLElement).addEventListener("click", onCancel);
+  return {
+    remove: () => {
+      stopProgress();
+      overlay.remove();
+    },
+  };
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
     c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;",
   );
 }
 
-function promptAddProject(): Promise<DialogResult> {
+/**
+ * The Add-a-project dialog. Exported for tests: the three outcomes (empty URL
+ * ⇒ a fresh empty project, a git URL ⇒ clone, the folder picker ⇒ rsync) are
+ * the contract `addProjectFlow` branches on.
+ */
+export function promptAddProject(): Promise<DialogResult> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "new-pane-dialog";
@@ -164,10 +289,13 @@ function promptAddProject(): Promise<DialogResult> {
         <div class="dialog-body" style="margin-top:12px;">
           <label for="ap-name" style="display:block; font-size:12px; opacity:0.8;">Name</label>
           <input id="ap-name" type="text" class="text-input" placeholder="demo" />
+          <label for="ap-url" style="display:block; margin-top:12px; font-size:12px; opacity:0.8;">Git URL (optional) — the station clones it into the new project</label>
+          <input id="ap-url" type="text" class="text-input" placeholder="https://github.com/owner/repo" />
+          <div id="ap-url-error" style="margin-top:6px; font-size:11px; color:var(--sl-red, #c0392b); display:none;"></div>
           <label for="ap-preamble" style="display:block; margin-top:12px; font-size:12px; opacity:0.8;">Preamble (optional) — appended to the agent's system prompt (Claude &amp; Codex) on every session</label>
           <textarea id="ap-preamble" class="text-input" rows="4" style="margin-top:6px; resize:vertical; font-family:inherit;"></textarea>
           <div style="margin-top:14px; font-size:11px; opacity:0.65; line-height:1.4;">
-            A new folder will be created at <code>~/reck/projects/&lt;slug&gt;</code> on the station. To copy an existing laptop folder to the station instead, use the secondary button below.
+            A new folder will be created at <code>~/reck/projects/&lt;slug&gt;</code> on the station — empty, or a clone of the URL above. To copy an existing laptop folder to the station instead, use the secondary button below.
           </div>
         </div>
         <div class="dialog-buttons" style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end; align-items:center;">
@@ -180,8 +308,23 @@ function promptAddProject(): Promise<DialogResult> {
     `;
     document.body.appendChild(overlay);
     const nameInput = overlay.querySelector("#ap-name") as HTMLInputElement;
+    const urlInput = overlay.querySelector("#ap-url") as HTMLInputElement;
+    const urlError = overlay.querySelector("#ap-url-error") as HTMLElement;
     const preambleInput = overlay.querySelector("#ap-preamble") as HTMLTextAreaElement;
     requestAnimationFrame(() => nameInput.focus());
+
+    // Prefill the name from the repo, but stop the moment the user takes
+    // the field over — their name always wins.
+    let nameTouched = false;
+    nameInput.addEventListener("input", () => {
+      nameTouched = true;
+    });
+    urlInput.addEventListener("input", () => {
+      urlError.style.display = "none";
+      if (nameTouched) return;
+      const remote = parseGitRemote(urlInput.value);
+      nameInput.value = remote ? defaultNameFromRemote(remote) : "";
+    });
 
     const finish = (result: DialogResult) => {
       overlay.remove();
@@ -189,12 +332,27 @@ function promptAddProject(): Promise<DialogResult> {
       resolve(result);
     };
     const submitNew = () => {
-      const name = nameInput.value.trim();
+      const rawUrl = urlInput.value.trim();
+      const remote = rawUrl === "" ? null : parseGitRemote(rawUrl);
+      if (rawUrl !== "" && remote === null) {
+        // Stay in the dialog: a typo'd URL should be fixable in place, not
+        // reported after the flow has already committed to a slug.
+        urlError.textContent = "Not a git repository URL.";
+        urlError.style.display = "block";
+        urlInput.focus();
+        return;
+      }
+      const name = nameInput.value.trim() || (remote ? defaultNameFromRemote(remote) : "");
       if (!name) {
         nameInput.focus();
         return;
       }
-      finish({ kind: "new", name, preamble: preambleInput.value.trim() });
+      const preamble = preambleInput.value.trim();
+      finish(
+        remote
+          ? { kind: "clone", url: remote.url, name, preamble }
+          : { kind: "new", name, preamble },
+      );
     };
     const submitExisting = async () => {
       const cwd = await window.reckAPI.dialog.pickFolder();
@@ -209,7 +367,7 @@ function promptAddProject(): Promise<DialogResult> {
       });
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Enter" && e.target === nameInput) {
+      if (e.key === "Enter" && (e.target === nameInput || e.target === urlInput)) {
         e.preventDefault();
         e.stopPropagation();
         submitNew();

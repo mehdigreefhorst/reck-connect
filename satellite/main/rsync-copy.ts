@@ -16,9 +16,9 @@ function requiredEnv(name: string): string {
   if (!v) throw new Error(`${name} is required (set via launchctl setenv or shell env)`);
   return v;
 }
-const REMOTE_ROOT = requiredEnv("RECK_STATION_ROOT");
-const SSH_KEY = path.join(homedir(), ".ssh", "reck_mount");
-const SSH_HOST = "reck-station";
+export const REMOTE_ROOT = requiredEnv("RECK_STATION_ROOT");
+export const SSH_KEY = path.join(homedir(), ".ssh", "reck_mount");
+export const SSH_HOST = "reck-station";
 
 /** macOS 14+ ships `openrsync` as /usr/bin/rsync — it doesn't support
  *  --info=progress2. Prefer Homebrew's real rsync when present; fall
@@ -47,13 +47,13 @@ const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 let active: { proc: ChildProcess; slug: string } | null = null;
 
-function assertValidSlug(slug: string): void {
+export function assertValidSlug(slug: string): void {
   if (!slug || !SLUG_RE.test(slug) || slug.length > 64) {
     throw new Error(`invalid slug: ${JSON.stringify(slug)}`);
   }
 }
 
-function remotePath(slug: string): string {
+export function remotePath(slug: string): string {
   assertValidSlug(slug);
   return `${REMOTE_ROOT}/${slug}`;
 }
@@ -86,11 +86,11 @@ function remotePath(slug: string): string {
  * shell command can't be bent into a different target — but we still
  * single-quote the slug as defence-in-depth (per the audit task design).
  */
-type ReserveResult =
+export type ReserveResult =
   | { ok: true }
   | { ok: false; reason: "slug-in-use" | "parent-missing" | "ssh-error"; detail: string };
 
-async function reserveRemoteSlug(slug: string): Promise<ReserveResult> {
+export async function reserveRemoteSlug(slug: string): Promise<ReserveResult> {
   const target = remotePath(slug); // assertValidSlug runs here
   // remotePath returns `${REMOTE_ROOT}/${slug}` and slug is whitelisted by
   // SLUG_RE; even unquoted this can't shell-escape. Single-quote anyway as
