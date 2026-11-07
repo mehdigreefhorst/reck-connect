@@ -18,7 +18,11 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { StreamingWorkerLike } from "./suffix-search-orchestrator";
-import { cleanSuffix, matchesPathSuffix } from "./search-suffix-match";
+import {
+  basenameGlob,
+  cleanSuffix,
+  matchesPathSuffix,
+} from "./search-suffix-match";
 import { SUFFIX_SEARCH_BLOCKLIST } from "./search-walk";
 
 export interface SpawnedChild {
@@ -94,10 +98,19 @@ export function createRgSshWorker(
   let maxMatches = Number.POSITIVE_INFINITY;
   let finished = false;
 
-  const finish = (totalFound: number): void => {
+  /** `authoritative` marks a zero-match result as a completed search on
+   *  the station (rg exit 0/1) rather than a failure (ssh 255, rg missing,
+   *  rg error). The orchestrator skips the slow mirror fallback only for
+   *  an authoritative zero — the mirror can't hold a file the station
+   *  doesn't. */
+  const finish = (totalFound: number, authoritative = false): void => {
     if (finished) return;
     finished = true;
-    events.emit("message", { type: "done", totalFound });
+    events.emit("message", {
+      type: "done",
+      totalFound,
+      ...(authoritative && totalFound === 0 ? { authoritative: true } : {}),
+    });
     events.emit("exit", 0);
   };
 
@@ -148,6 +161,12 @@ export function createRgSshWorker(
         .map((dir) => `--glob '!**/${dir}/**'`)
         .join(" ");
     const quotedRoots = msg.roots.map(singleQuoteEscape).join(" ");
+    // Let rg drop non-candidates ON the station so only same-named files
+    // cross the ssh connection, instead of the project's whole listing.
+    const nameGlob = basenameGlob(cleaned);
+    const nameGlobFlag = nameGlob
+      ? ` --glob ${singleQuoteEscape(nameGlob)}`
+      : "";
 
     // mirror of the local worker's zero-match second
     // pass: gitignored non-dot files on the Pi are invisible to the
@@ -155,7 +174,7 @@ export function createRgSshWorker(
     const launch = (withIgnoreOverride: boolean): void => {
       const remoteCmd = `rg --files --no-messages${
         withIgnoreOverride ? ignoreOverrideFlags : ""
-      } ${quotedRoots}`;
+      }${nameGlobFlag} ${quotedRoots}`;
 
       const sshArgs = [
         "-i",
@@ -201,17 +220,25 @@ export function createRgSshWorker(
         });
       }
 
-      child.on("exit", (_code, _signal) => {
+      child.on("exit", (code, _signal) => {
         if (finished) return;
         if (buffer.length > 0) {
           processLine(buffer, cleaned);
           buffer = "";
         }
+        // rg: 0 = listed files, 1 = nothing listed. Anything else (ssh's
+        // 255, 127 for a missing rg, rg's 2) means the search didn't run.
+        const searched = code === 0 || code === 1;
+        if (!searched) {
+          // A second pass would fail the same way; let the caller fall back.
+          finish(matchCount);
+          return;
+        }
         if (matchCount === 0 && !withIgnoreOverride) {
           launch(true);
           return;
         }
-        finish(matchCount);
+        finish(matchCount, true);
       });
 
       child.on("error", (err) => {

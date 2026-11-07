@@ -88,9 +88,10 @@ describe("wikilink image rendering", () => {
     expect(imgFrom(html)).not.toBeNull();
   });
 
-  it("leaves a non-image wikilink [[a]] as literal text", () => {
+  it("renders a non-image wikilink [[a]] as a note link, not an image", () => {
+    // [[a]] is handled by wikiLink.ts (see wikiLink.test.ts).
     const html = createMarkdownRenderer().render("[[a]]");
-    expect(html).toContain("[[a]]");
+    expect(html).toContain('href="a.md"');
     expect(imgFrom(html)).toBeNull();
   });
 
