@@ -18,7 +18,11 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { StreamingWorkerLike } from "./suffix-search-orchestrator";
-import { cleanSuffix, matchesPathSuffix } from "./search-suffix-match";
+import {
+  basenameGlob,
+  cleanSuffix,
+  matchesPathSuffix,
+} from "./search-suffix-match";
 import { SUFFIX_SEARCH_BLOCKLIST } from "./search-walk";
 
 export interface SpawnedChild {
@@ -148,6 +152,12 @@ export function createRgSshWorker(
         .map((dir) => `--glob '!**/${dir}/**'`)
         .join(" ");
     const quotedRoots = msg.roots.map(singleQuoteEscape).join(" ");
+    // Let rg drop non-candidates ON the station so only same-named files
+    // cross the ssh connection, instead of the project's whole listing.
+    const nameGlob = basenameGlob(cleaned);
+    const nameGlobFlag = nameGlob
+      ? ` --glob ${singleQuoteEscape(nameGlob)}`
+      : "";
 
     // mirror of the local worker's zero-match second
     // pass: gitignored non-dot files on the Pi are invisible to the
@@ -155,7 +165,7 @@ export function createRgSshWorker(
     const launch = (withIgnoreOverride: boolean): void => {
       const remoteCmd = `rg --files --no-messages${
         withIgnoreOverride ? ignoreOverrideFlags : ""
-      } ${quotedRoots}`;
+      }${nameGlobFlag} ${quotedRoots}`;
 
       const sshArgs = [
         "-i",

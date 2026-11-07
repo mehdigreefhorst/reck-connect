@@ -121,7 +121,41 @@ describe("createRgSshWorker", () => {
     const remoteCmd = fake.spawned[0].remoteCmd ?? "";
     expect(remoteCmd).not.toContain("--hidden");
     expect(remoteCmd).not.toContain("--no-ignore");
-    expect(remoteCmd).not.toContain("--glob");
+    expect(remoteCmd).not.toContain("--glob '!");
+  });
+
+  it("filters by file name on the station so only candidates cross ssh", () => {
+    const worker = createRgSshWorker({ sshSpawnFn: fake.spawnFn, sshConfig });
+    worker.postMessage({
+      type: "start",
+      roots: ["/home/pi/projects/MyProject"],
+      suffix: "wiki/robot-venture-training-data.md",
+    });
+    expect(fake.spawned[0].remoteCmd).toContain(
+      "--glob 'robot-venture-training-data.md' '/home/pi/projects/MyProject'",
+    );
+  });
+
+  it("single-quote-escapes the name glob for the remote shell", () => {
+    const worker = createRgSshWorker({ sshSpawnFn: fake.spawnFn, sshConfig });
+    worker.postMessage({
+      type: "start",
+      roots: ["/home/pi/projects/MyProject"],
+      suffix: "it's; rm -rf ~.md",
+    });
+    expect(fake.spawned[0].remoteCmd).toContain(
+      "--glob 'it'\\''s; rm -rf ~.md'",
+    );
+  });
+
+  it("omits the name glob when the name holds glob metacharacters", () => {
+    const worker = createRgSshWorker({ sshSpawnFn: fake.spawnFn, sshConfig });
+    worker.postMessage({
+      type: "start",
+      roots: ["/home/pi/projects/MyProject"],
+      suffix: "notes[1].md",
+    });
+    expect(fake.spawned[0].remoteCmd).not.toContain("--glob");
   });
 
   it("remote command lists hidden + gitignored files with the walker blocklist excluded", () => {

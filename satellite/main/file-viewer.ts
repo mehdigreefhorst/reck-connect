@@ -64,6 +64,7 @@ import {
 } from "./backend-detection";
 import { createRgLocalWorker } from "./search-worker-rg-local";
 import { createRgSshWorker } from "./search-worker-rg-ssh";
+import { planSuffixSearch, toMountPath } from "./station-first-search";
 import type { SshSpawnFn } from "./search-worker-rg-ssh";
 import {
   SSH_KEY,
@@ -2026,13 +2027,24 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
           // only returns kind "station-remote" when stationHome AND
           // stationRoot were configured. The non-null assertion
           // satisfies TS's narrowing limit across the boundary.
+          // Station-first: the mirror roots map onto the station, so the
+          // ssh search runs on native disk instead of over sshfs.
+          const stationPlan = planSuffixSearch(
+            backend,
+            stationSearchRoots,
+            translateSearchRootsToStation(
+              stationSearchRoots,
+              mountPoint,
+              stationRoot,
+            ),
+          );
           const win = createFileViewerWindow({
             ...baseOpts,
             title: path.basename(stationSuffix),
             suffixSearchPending: {
               searchId,
               suffix: stationSuffix,
-              progressCapable: backend.progressCapable,
+              progressCapable: stationPlan.progressCapable,
             },
             // Round 9 — stamp the Pi FORM: this popup's cascaded clicks
             // send sourceHost:"station", whose expansion anchors on a
@@ -2051,28 +2063,16 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
               // webContents destroyed mid-send.
             }
           };
-          // same translation as the local branch: the
-          // ssh fallback needs Pi-side roots, not the mirror's.
-          const stationRemoteFallbackRoots = backend.fallback
-            ? translateSearchRootsToStation(
-                stationSearchRoots,
-                mountPoint,
-                stationRoot,
-              )
-            : [];
           suffixSearchBuffers.start(searchId);
           const handle = suffixSearchOrchestrator.startSearch({
-            roots: stationSearchRoots,
+            roots: stationPlan.roots,
             suffix: stationSuffix,
-            workerFactory: backend.workerFactory,
-            fallback:
-              backend.fallback && stationRemoteFallbackRoots.length > 0
-                ? {
-                    ...backend.fallback,
-                    roots: stationRemoteFallbackRoots,
-                  }
-                : undefined,
-            onMatch: (matchedPath) => {
+            workerFactory: stationPlan.workerFactory,
+            fallback: stationPlan.fallback,
+            onMatch: (rawMatch) => {
+              // ssh matches arrive in station form; the popup opens
+              // mount-mirror paths.
+              const matchedPath = toMountPath(rawMatch, mountPoint, stationRoot);
               suffixSearchBuffers.recordMatch(searchId, matchedPath);
               safeSend("file:suffix:match", {
                 searchId,
@@ -2407,18 +2407,34 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
       // per-readdir progress, so the renderer must not read
       // scannedDirs===0 as a stalled mount). The thunk body runs only
       // after `safeSend` below is initialised.
+      // A miss under the mount mirror is a station file whatever pane the
+      // click came from (cascaded popup clicks carry no sourceHost), so it
+      // gets the station backends too.
       const backend = await pickSearchBackend(
-        sourceHost ?? "local",
+        sourceHost === "station" || localDisplayTranslation
+          ? "station"
+          : sourceHost ?? "local",
         () => safeSend("file:suffix:fallback-start", { searchId }),
         deps.searchBackendOverrides,
       );
+      // Station-first when every root is on the station: see
+      // station-first-search.ts for the measurements.
+      const plan = planSuffixSearch(
+        backend,
+        searchRoots,
+        translateSearchRootsToStation(searchRoots, mountPoint, stationRoot),
+      );
+      console.log("[file-viewer] search plan", {
+        stationFirst: plan.stationFirst,
+        roots: plan.roots,
+      });
       const win = createFileViewerWindow({
         ...baseOpts,
         title: path.basename(resolved),
         suffixSearchPending: {
           searchId,
           suffix,
-          progressCapable: backend.progressCapable,
+          progressCapable: plan.progressCapable,
         },
         displayPath,
         // Round 9 — validated local-form anchor (cascades self-heal).
@@ -2451,26 +2467,18 @@ export function registerFileViewerIpc(deps: FileViewerIpcDeps): void {
               originalText.replace(/^\.\/+/, ""),
             )
           : null;
-      // the ssh fallback enumerates on the Pi; give it
-      // the station-side translation of the search roots (and disarm
-      // it when none of them exist on the station).
-      const stationFallbackRoots = backend.fallback
-        ? translateSearchRootsToStation(searchRoots, mountPoint, stationRoot)
-        : [];
       suffixSearchBuffers.start(searchId);
       const handle = suffixSearchOrchestrator.startSearch({
-        roots: searchRoots,
+        roots: plan.roots,
         suffix,
-        workerFactory: backend.workerFactory,
-        fallback:
-          backend.fallback && stationFallbackRoots.length > 0
-            ? { ...backend.fallback, roots: stationFallbackRoots }
-            : undefined,
+        workerFactory: plan.workerFactory,
+        fallback: plan.fallback,
         anchoredStat:
           anchoredCandidate && !path.isAbsolute(originalText)
             ? { absolutePath: anchoredCandidate }
             : undefined,
-        onMatch: (matchedPath) => {
+        onMatch: (rawMatch) => {
+          const matchedPath = toMountPath(rawMatch, mountPoint, stationRoot);
           suffixSearchBuffers.recordMatch(searchId, matchedPath);
           safeSend("file:suffix:match", { searchId, path: matchedPath });
         },
