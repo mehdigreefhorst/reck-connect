@@ -358,7 +358,46 @@ describe("createRgSshWorker", () => {
       expect(fake.spawned[0].remoteCmd).toContain("--no-ignore");
       fake.child().emitExit(0);
       expect(fake.spawned).toHaveLength(1);
+      expect(messages).toContainEqual({
+        type: "done",
+        totalFound: 0,
+        authoritative: true,
+      });
+    });
+  });
+
+  describe("authoritative zero results", () => {
+    const run = (exitCodes: number[]): unknown[] => {
+      const messages: unknown[] = [];
+      const worker = createRgSshWorker({ sshSpawnFn: fake.spawnFn, sshConfig });
+      worker.on("message", (msg) => messages.push(msg));
+      worker.postMessage({
+        type: "start",
+        roots: ["/home/pi/projects/X"],
+        suffix: "missing-note.md",
+      });
+      for (const code of exitCodes) fake.child().emitExit(code);
+      return messages;
+    };
+
+    it("marks a clean no-match on the station as authoritative", () => {
+      // pass 1 and the --no-ignore pass 2 both list nothing (rg exit 1).
+      expect(run([1, 1])).toContainEqual({
+        type: "done",
+        totalFound: 0,
+        authoritative: true,
+      });
+      expect(fake.spawned).toHaveLength(2);
+    });
+
+    it("does not mark an ssh connection failure, and skips the second pass", () => {
+      const messages = run([255]);
       expect(messages).toContainEqual({ type: "done", totalFound: 0 });
+      expect(fake.spawned).toHaveLength(1);
+    });
+
+    it("does not mark a missing rg on the station", () => {
+      expect(run([127])).toContainEqual({ type: "done", totalFound: 0 });
     });
   });
 });

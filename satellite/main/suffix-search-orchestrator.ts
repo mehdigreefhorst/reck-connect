@@ -115,6 +115,8 @@ interface IncomingMessage {
   scannedDirs?: unknown;
   foundCount?: unknown;
   totalFound?: unknown;
+  /** Set by a worker whose zero result is final (see search-worker-rg-ssh). */
+  authoritative?: unknown;
 }
 
 /**
@@ -204,8 +206,13 @@ export function createSuffixSearchOrchestrator(opts: OrchestratorOptions): {
                 typeof msg.totalFound === "number"
                   ? msg.totalFound
                   : foundCount;
-              // Phase 3d — second-wave fallback when primary returned 0.
-              if (total === 0 && tryFallback()) {
+              // Phase 3d — second-wave fallback when primary returned 0,
+              // unless the primary says its zero is final.
+              if (
+                total === 0 &&
+                msg.authoritative !== true &&
+                tryFallback()
+              ) {
                 // foundCount reset so fallback's matches count from scratch.
                 // (Primary had 0 by definition.)
                 return;
