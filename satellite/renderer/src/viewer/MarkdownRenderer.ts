@@ -30,6 +30,7 @@ import {
 } from "./markdownEnhancers";
 import { enhanceLocalImages } from "./localImages";
 import { wikiImagePlugin } from "./wikiImage";
+import { wikiLinkPlugin } from "./wikiLink";
 
 export interface MarkdownRendererOptions {
   /**
@@ -150,6 +151,9 @@ function createMarkdownIt(): MarkdownIt {
   // inherits the image renderer rule below, DOMPurify, and the local-image
   // enhancer without a second code path.
   md.use(wikiImagePlugin);
+  // Obsidian-style `[[note|alias]]` links. Emits plain link tokens, so they
+  // get the internal-link class below and the same ⌘+click handler.
+  md.use(wikiLinkPlugin);
 
   // Override the default link renderer to add `class="reck-internal-link"`
   // for hrefs we treat as file references. We don't strip dangerous schemes
