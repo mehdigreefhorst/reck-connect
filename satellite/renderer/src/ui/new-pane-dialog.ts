@@ -259,11 +259,20 @@ export function pickSession(
     const rowsHtml = sessions.length === 0
       ? `<div class="dialog-body" style="opacity:0.7;">No past sessions for this project yet.</div>`
       : `<div class="session-list" role="listbox">${sessions.map((s, i) => {
-          const fallback = (s.session_id || s.slot_id || "").slice(0, 8);
+          const shortId = (s.session_id || s.slot_id || "").slice(0, 8);
+          // Prefer the resolved label (manual tab name, else Claude's
+          // /rename title). Older daemons don't send it, and unnamed
+          // sessions have none — both fall back to the spawn-time seed.
+          const label = s.display_name?.trim();
+          // With a real label the short id is the only thing that tells
+          // two same-named sessions apart; the seed already ends in it.
+          const idHtml = label && shortId
+            ? `<span class="session-id">${escapeHtml(shortId)}</span>`
+            : "";
           return `
           <button class="session-row" data-idx="${i}" role="option">
-            <span class="session-name">${escapeHtml(s.name || fallback)}</span>
-            <span class="session-meta">${escapeHtml(relativeTime(s.last_active_at))}</span>
+            <span class="session-name">${escapeHtml(label || s.name || shortId)}</span>
+            <span class="session-meta">${idHtml}<span class="session-time">${escapeHtml(relativeTime(s.last_active_at))}</span></span>
           </button>`;
         }).join("")}</div>`;
     overlay.innerHTML = `

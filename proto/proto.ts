@@ -333,7 +333,14 @@ export interface PutProjectsResponse {
 export interface SessionInfo {
   /** Claude-only identifier. Empty for shell entries (they carry slot_id). */
   session_id?: string;
+  /** Spawn-time seed (`<project>/<8hex>` for Claude). Stable, not a human label. */
   name: string;
+  /**
+   * Resolved human label: the manual tab name, else Claude's own session
+   * title (`/rename`), else absent. Absent on older daemons too — fall back
+   * to `name`. (issue #175)
+   */
+  display_name?: string;
   cwd: string;
   created_at: string; // RFC3339
   last_active_at: string; // RFC3339

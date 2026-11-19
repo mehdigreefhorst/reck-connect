@@ -1045,6 +1045,77 @@ func TestListSessions_returnsLiveEntries(t *testing.T) {
 	}
 }
 
+// Issue #175: the resume picker needs a human label, not just the
+// spawn-time "<project>/<8hex>" seed. display_name carries the resolved one:
+// the manual tab name, else Claude's own /rename title, else empty.
+func TestListSessions_includesResolvedDisplayName(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	s, store, projectCwd := newServerWithSessions(t)
+	srv := httptest.NewServer(newTestHandler(t, s))
+	defer srv.Close()
+
+	transcriptDir := filepath.Join(fakeHome, ".claude", "projects", sessions.EncodeCwd(projectCwd))
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	title := func(sid, t string) string {
+		return `{"type":"custom-title","customTitle":"` + t + `","sessionId":"` + sid + `"}` + "\n"
+	}
+	now := time.Now().UTC()
+	add := func(seed, transcript string) string {
+		sid := sessions.NewUUID()
+		body := title(sid, "p1/"+sid[:8]) + transcript
+		body = strings.ReplaceAll(body, "SID", sid)
+		if err := os.WriteFile(filepath.Join(transcriptDir, sid+".jsonl"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Upsert("p1", sessions.Entry{
+			SessionID: sid, Name: seed, Cwd: projectCwd, CreatedAt: now, LastActiveAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return sid
+	}
+	seedOnly := add("p1/seed-only", "")
+	renamedInClaude := add("p1/renamed", `{"type":"custom-title","customTitle":"from-slash-rename","sessionId":"SID"}`+"\n")
+	manual := add("p1/manual", `{"type":"custom-title","customTitle":"claude-title","sessionId":"SID"}`+"\n")
+	if err := store.SetDisplayName("p1", manual, "typed-in-tab"); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := nethttp.Get(srv.URL + "/projects/p1/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	var resp proto.SessionsListResponse
+	if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]proto.SessionInfo{}
+	for _, si := range resp.Sessions {
+		got[si.SessionID] = si
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 sessions, got %+v", resp.Sessions)
+	}
+	if d := got[seedOnly].DisplayName; d != "" {
+		t.Errorf("seed-only session: display_name = %q, want empty (seed is not a label)", d)
+	}
+	if d := got[renamedInClaude].DisplayName; d != "from-slash-rename" {
+		t.Errorf("/rename session: display_name = %q, want from-slash-rename", d)
+	}
+	if d := got[manual].DisplayName; d != "typed-in-tab" {
+		t.Errorf("manually named session: display_name = %q, want typed-in-tab", d)
+	}
+	// The original seed stays available as the stable secondary label.
+	if n := got[manual].Name; n != "p1/manual" {
+		t.Errorf("name = %q, want p1/manual", n)
+	}
+}
+
 func TestCreatePane_resumeSessionID_unknown_400s(t *testing.T) {
 	s, _, _ := newServerWithSessions(t)
 	srv := httptest.NewServer(newTestHandler(t, s))

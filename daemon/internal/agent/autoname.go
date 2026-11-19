@@ -43,6 +43,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -51,6 +52,10 @@ import (
 
 	"github.com/rudie-verweij/reck-connect/daemon/internal/sessions"
 )
+
+// customTitleMarker is the record-type token readLatestCustomTitle
+// prefilters transcript lines on before paying for a JSON decode.
+var customTitleMarker = []byte(`"custom-title"`)
 
 // isSeedTitle reports whether title is the "<projectID>/<8-hex>" label the
 // daemon itself seeds via `--name` when spawning fresh Claude panes (see
@@ -137,6 +142,16 @@ func readLatestCustomTitle(claudeProjectsDir, projectID, cwd, sessionID string) 
 		// messages, assistant messages, tool results) without paying a
 		// JSON decode per line.
 		if line[0] != '{' {
+			continue
+		}
+		// Every transcript line is a JSON object, so the check above
+		// filters nothing in practice. The resume picker reads one
+		// transcript per listed session (issue #175) and they run to
+		// megabytes, so skip the decode unless the record type appears
+		// verbatim. Claude Code writes it unescaped; a line that only
+		// mentions it inside a message still goes through the decode
+		// below and is rejected on rec.Type.
+		if !bytes.Contains(line, customTitleMarker) {
 			continue
 		}
 		var rec struct {
