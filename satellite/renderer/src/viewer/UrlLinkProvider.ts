@@ -1,5 +1,5 @@
 // Registers an xterm link provider that underlines http/https URLs in
-// terminal scrollback and routes ⌘-click to a host-provided handler
+// terminal scrollback and routes a click to a host-provided handler
 // (typically `window.open`, which main's setWindowOpenHandler forwards to
 // shell.openExternal → the OS default browser).
 //
@@ -22,7 +22,7 @@ import { showLinkTooltip, hideLinkTooltip } from "./linkTooltip";
 
 export interface UrlLinkProviderDeps {
   /**
-   * Fires when the user ⌘-clicks an underlined URL. The host typically
+   * Fires when the user clicks an underlined URL. The host typically
    * calls `window.open(url)`, which is intercepted by the main process's
    * setWindowOpenHandler and forwarded to shell.openExternal.
    */
@@ -66,13 +66,15 @@ export function installUrlLinkProvider(
             text: cand.text,
             range,
             activate(ev, textArg) {
-              // ⌘-gated, matching the path linkifier — a plain click
-              // must not hijack text selection or normal terminal clicks.
-              if (!ev.metaKey) return;
+              // A plain click opens it (issue #180): requiring ⌘ made a
+              // click on a URL a silent no-op. xterm only activates a
+              // link when the press and release land on it without a
+              // drag, so selecting text across a URL still selects.
+              // Paths stay ⌘-gated in PathLinkProvider.
               deps.onActivateUrl(textArg, ev);
             },
             hover(ev) {
-              showLinkTooltip("⌘+click to open in browser", ev);
+              showLinkTooltip("Click to open in browser", ev);
             },
             leave() {
               hideLinkTooltip();

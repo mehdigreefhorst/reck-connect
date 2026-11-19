@@ -11,6 +11,7 @@ import {
 } from "../api/ws";
 import { installOscFilter } from "./osc-filter";
 import type { Stoplight } from "@proto/proto";
+import { createOscLinkHandler } from "./web-link";
 
 export type PaneTheme = "light" | "dark";
 
@@ -430,6 +431,9 @@ export class TerminalPane {
       scrollSensitivity: SCROLL_SENSITIVITY,
       fastScrollSensitivity: FAST_SCROLL_SENSITIVITY,
       allowProposedApi: true,
+      // Explicit hyperlinks (OSC 8). Without this xterm's default handler
+      // opens a blank window first, which embedders deny (issue #180).
+      linkHandler: createOscLinkHandler(),
     });
     this.fit = new FitAddon();
     this.term.loadAddon(this.fit);

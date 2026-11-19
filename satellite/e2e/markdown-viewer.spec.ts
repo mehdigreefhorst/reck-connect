@@ -28,6 +28,31 @@ async function openHarness(
   await expect(page.locator("body[data-enhanced='true']")).toBeAttached();
 }
 
+// Issue #180: clicking a web link did nothing — every link needed ⌘.
+test.describe("web links", () => {
+  test("a plain click hands an http/https link to the host and never navigates", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const activated: string[] = [];
+    page.on("console", (msg) => {
+      const text = msg.text();
+      if (text.startsWith("[harness] external activate")) activated.push(text);
+    });
+    const urlBefore = page.url();
+
+    const link = page.locator('.file-viewer-body a[href="https://mermaid.js.org/config/usage.html"]');
+    await link.scrollIntoViewIfNeeded();
+    await link.click();
+
+    await expect.poll(() => activated.length).toBe(1);
+    expect(activated[0]).toContain("https://mermaid.js.org/config/usage.html");
+    // The viewer itself must stay put; only the host opens the browser.
+    expect(page.url()).toBe(urlBefore);
+    expect(page.context().pages()).toHaveLength(1);
+  });
+});
+
 test.describe("mermaid", () => {
   test("replaces the fence with an inline SVG diagram", async ({ page }) => {
     await openHarness(page);

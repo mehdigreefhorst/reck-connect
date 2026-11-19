@@ -1161,7 +1161,7 @@ async function renderStationRemote(
 
   if (mode === "markdown-rendered") {
     const md = createMarkdownRenderer({
-      // ⌘+click an http/https URL in the rendered view → OS default browser.
+      // Click an http/https URL in the rendered view → OS default browser.
       onExternalActivate: (href) => {
         window.open(href, "_blank", "noopener");
       },
@@ -1215,7 +1215,7 @@ async function renderStationRemote(
     });
   } else if (mode === "html-static") {
     const html = createHtmlRenderer({
-      // ⌘+click an http/https URL in the rendered view → OS default browser.
+      // Click an http/https URL in the rendered view → OS default browser.
       onExternalActivate: (href) => {
         window.open(href, "_blank", "noopener");
       },
@@ -1676,7 +1676,7 @@ async function renderForPath(
 
   if (mode === "markdown-rendered") {
     const md = createMarkdownRenderer({
-      // ⌘+click an http/https URL in the rendered view → OS default browser.
+      // Click an http/https URL in the rendered view → OS default browser.
       onExternalActivate: (href) => {
         window.open(href, "_blank", "noopener");
       },
@@ -1747,7 +1747,7 @@ async function renderForPath(
     });
   } else if (mode === "html-static") {
     const html = createHtmlRenderer({
-      // ⌘+click an http/https URL in the rendered view → OS default browser.
+      // Click an http/https URL in the rendered view → OS default browser.
       onExternalActivate: (href) => {
         window.open(href, "_blank", "noopener");
       },
