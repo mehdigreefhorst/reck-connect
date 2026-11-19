@@ -39,6 +39,11 @@ export interface PaneLayoutCallbacks {
   onPaneCreated?: (paneId: string, pane: TerminalPane) => void;
   onStoplightChange: (paneId: string, s: Stoplight) => void;
   onExit: (paneId: string) => void;
+  /**
+   * Issue #176: the user clicked an ended tab's placeholder. The host
+   * should resume the tab's session and rebind the tab to the new pane.
+   */
+  onResumeEndedTab?: (tabId: string) => void;
   onTreeChange: (tree: TreeNode | null) => void;
   /**
    * Fires when a pane WebSocket receives a close frame. Lets the
@@ -224,9 +229,15 @@ type TabRecord =
     }
   | {
       kind: "placeholder";
+      // Why there is no terminal: the pane is shown in a popout window
+      // ("detached"), or its process is gone and the tab is waiting to be
+      // resumed ("ended", issue #176).
+      reason: PlaceholderReason;
       tab: Tab;
       wrapper: HTMLElement;
     };
+
+type PlaceholderReason = "detached" | "ended";
 
 interface LeafView {
   el: HTMLElement;
@@ -642,21 +653,22 @@ export class PaneLayout {
     // also reconciles state when a tab's detached-ness changes between
     // syncs — e.g. handlePopoutClosed flips a placeholder back to a
     // live terminal and re-runs syncLeafView.
-    const liveTabIds = new Set(leaf.tabs.map((t) => t.id));
+    const liveTabsById = new Map(leaf.tabs.map((t) => [t.id, t]));
     for (const [tabId, record] of view.terminals) {
-      if (!liveTabIds.has(tabId)) {
+      const liveTab = liveTabsById.get(tabId);
+      if (!liveTab) {
         if (record.kind === "terminal") record.term.dispose();
         record.wrapper.remove();
         view.terminals.delete(tabId);
         continue;
       }
-      // Tab still exists — but its detached-ness may have flipped.
-      // Drop the stale record so the create loop below rebuilds it
-      // in the right kind.
-      const isDetached = this.detachedPanes.has(record.tab.paneId);
-      const wantPlaceholder = isDetached;
-      const havePlaceholder = record.kind === "placeholder";
-      if (wantPlaceholder !== havePlaceholder) {
+      // Tab still exists — but whether it should be a terminal or a
+      // placeholder (and which placeholder) may have flipped: a popout
+      // closed, or an ended tab was resumed. Drop the stale record so
+      // the create loop below rebuilds it in the right kind.
+      const want = this.placeholderReasonFor(liveTab);
+      const have = record.kind === "placeholder" ? record.reason : null;
+      if (want !== have) {
         if (record.kind === "terminal") record.term.dispose();
         record.wrapper.remove();
         view.terminals.delete(tabId);
@@ -666,6 +678,30 @@ export class PaneLayout {
       if (view.terminals.has(t.id)) continue;
       const wrapper = document.createElement("div");
       wrapper.className = "pane-terminal";
+      if (t.ended) {
+        // Issue #176: the pane's process is gone. Building a
+        // TerminalPane would open a WebSocket to a pane id the daemon no
+        // longer knows; show a card that resumes the session instead.
+        wrapper.classList.add("pane-ended-placeholder");
+        const card = document.createElement("div");
+        card.className = "pane-detached-card";
+        const title = document.createElement("div");
+        title.className = "pane-detached-title";
+        title.textContent = "Session ended";
+        const subtitle = document.createElement("div");
+        subtitle.className = "pane-detached-subtitle";
+        subtitle.textContent = "Click to resume this session, or close the tab.";
+        card.appendChild(title);
+        card.appendChild(subtitle);
+        wrapper.appendChild(card);
+        wrapper.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.cb.onResumeEndedTab?.(t.id);
+        });
+        view.termsEl.appendChild(wrapper);
+        view.terminals.set(t.id, { kind: "placeholder", reason: "ended", tab: t, wrapper });
+        continue;
+      }
       if (this.detachedPanes.has(t.paneId)) {
         // an earlier release: render a placeholder DOM in lieu of a TerminalPane.
         // The placeholder is itself tappable — clicking anywhere on it
@@ -692,7 +728,7 @@ export class PaneLayout {
           this.cb.onReattachPane?.(t.paneId);
         });
         view.termsEl.appendChild(wrapper);
-        view.terminals.set(t.id, { kind: "placeholder", tab: t, wrapper });
+        view.terminals.set(t.id, { kind: "placeholder", reason: "detached", tab: t, wrapper });
         continue;
       }
       const term = new TerminalPane({
@@ -900,11 +936,23 @@ export class PaneLayout {
     this.renderTabBar(leaf, view);
   }
 
+  /**
+   * Which placeholder (if any) a tab should render instead of a live
+   * terminal. "ended" wins: an ended tab's paneId is stale, so its
+   * detached-ness is meaningless.
+   */
+  private placeholderReasonFor(t: Tab): PlaceholderReason | null {
+    if (t.ended) return "ended";
+    if (this.detachedPanes.has(t.paneId)) return "detached";
+    return null;
+  }
+
   private renderTabBar(leaf: LeafNode, view: LeafView) {
     view.tabBarEl.innerHTML = "";
     for (const t of leaf.tabs) {
       const tabEl = document.createElement("div");
-      tabEl.className = "tab" + (t.id === leaf.activeTabId ? " active" : "");
+      tabEl.className =
+        "tab" + (t.id === leaf.activeTabId ? " active" : "") + (t.ended ? " tab-ended" : "");
       tabEl.setAttribute("data-tab-id", t.id);
       const dotEl = document.createElement("span");
       const sl = this.cb.getStoplight(t.paneId);
@@ -1105,9 +1153,14 @@ export class PaneLayout {
     const activeTab = leaf.tabs.find((x) => x.id === leaf.activeTabId) ?? leaf.tabs[0] ?? null;
     const activeIsDetached = !!activeTab && this.isDetached(activeTab.paneId);
     let detachButtonHtml = "";
+    // An ended tab (issue #176) has no pane to show in a popout; its
+    // paneId is stale and must not reach a window or a WebSocket.
+    const activeIsEnded = !!activeTab?.ended;
     if (this.cb.onDetachPane && activeTab) {
-      const disabledAttr = activeIsDetached ? " disabled" : "";
-      const title = activeIsDetached
+      const disabledAttr = activeIsDetached || activeIsEnded ? " disabled" : "";
+      const title = activeIsEnded
+        ? "Session ended — resume it before detaching"
+        : activeIsDetached
         ? "Pane is already detached"
         : "Detach pane to its own window (⌘⇧O)";
       detachButtonHtml = `<button class="icon-btn" data-act="detach" title="${title}"${disabledAttr}>${iconDetach}</button>`;
@@ -1125,7 +1178,7 @@ export class PaneLayout {
       btn.addEventListener("click", () => {
         const act = btn.getAttribute("data-act");
         if (act === "detach") {
-          if (activeTab && !activeIsDetached) {
+          if (activeTab && !activeIsDetached && !activeIsEnded) {
             this.cb.onDetachPane?.(activeTab.paneId, leaf.id);
           }
           return;

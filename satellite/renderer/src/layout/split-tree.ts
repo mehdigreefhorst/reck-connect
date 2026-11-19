@@ -36,6 +36,12 @@ export interface Tab {
   // launch args when the pane was spawned with extras. Omitted → default
   // browser behaviour (no tooltip).
   tooltip?: string;
+  // Issue #176: set when this Claude tab's pane is gone (daemon restart
+  // with a declined restore, local daemon shut down on quit, session
+  // exited). The tab is kept as a placeholder that resumes `sessionId`
+  // on click instead of silently vanishing from the layout. `paneId` is
+  // stale while this is set — never send it to a daemon.
+  ended?: boolean;
 }
 
 export interface LeafNode {
@@ -177,6 +183,7 @@ function isValidTab(value: unknown): value is Tab {
   if (t.tooltip !== undefined && typeof t.tooltip !== "string") return false;
   if (t.sessionId !== undefined && typeof t.sessionId !== "string") return false;
   if (t.slotId !== undefined && typeof t.slotId !== "string") return false;
+  if (t.ended !== undefined && typeof t.ended !== "boolean") return false;
   return true;
 }
 
@@ -254,6 +261,27 @@ export function renameTab(tree: TreeNode, tabId: string, newTitle: string): Tree
   function recur(node: TreeNode): TreeNode {
     if (node.kind === "leaf") {
       const tabs = node.tabs.map((t) => (t.id === tabId ? { ...t, title: newTitle } : t));
+      return { ...node, tabs };
+    }
+    return { ...node, a: recur(node.a), b: recur(node.b) };
+  }
+  return recur(tree);
+}
+
+/**
+ * Rebind an ended tab (issue #176) to the pane that now runs its resumed
+ * session, clearing the `ended` flag. Title, identity and position are
+ * kept. Unknown tabId → tree returned structurally unchanged.
+ */
+export function resumeEndedTab(tree: TreeNode, tabId: string, paneId: string): TreeNode {
+  function recur(node: TreeNode): TreeNode {
+    if (node.kind === "leaf") {
+      const tabs = node.tabs.map((t) => {
+        if (t.id !== tabId) return t;
+        const { ended: _ended, ...rest } = t;
+        void _ended;
+        return { ...rest, paneId };
+      });
       return { ...node, tabs };
     }
     return { ...node, a: recur(node.a), b: recur(node.b) };

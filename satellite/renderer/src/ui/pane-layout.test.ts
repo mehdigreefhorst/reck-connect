@@ -1488,3 +1488,83 @@ describe("PaneLayout history button focuses its leaf", () => {
     layout.dispose();
   });
 });
+
+// Issue #176: a Claude tab whose pane died is kept as an "ended"
+// placeholder instead of vanishing from the layout.
+describe("PaneLayout ended tabs", () => {
+  let root: HTMLElement;
+
+  beforeEach(() => {
+    root = document.createElement("div");
+    document.body.appendChild(root);
+    MockTerminalPane.instances.length = 0;
+    (PaneLayout as unknown as { draggedTab: unknown }).draggedTab = null;
+  });
+
+  afterEach(() => {
+    root.remove();
+  });
+
+  function endedLeaf(): LeafNode {
+    const leaf = makeLeaf("leafA", ["t1", "t2"]);
+    return {
+      ...leaf,
+      tabs: leaf.tabs.map((t) => (t.id === "t1" ? { ...t, ended: true, sessionId: "sess-1" } : t)),
+    };
+  }
+
+  it("renders a placeholder, not a terminal, for an ended tab", () => {
+    const layout = new PaneLayout(makeCallbacks(root, makeController()));
+    layout.setTree(endedLeaf());
+    // Only the live tab gets a TerminalPane (and so a WebSocket).
+    expect(MockTerminalPane.instances).toHaveLength(1);
+    const placeholder = root.querySelector(".pane-ended-placeholder");
+    expect(placeholder).not.toBeNull();
+    expect(placeholder?.textContent).toContain("Session ended");
+  });
+
+  it("marks the ended tab in the tab bar", () => {
+    const layout = new PaneLayout(makeCallbacks(root, makeController()));
+    layout.setTree(endedLeaf());
+    expect(root.querySelector('.tab[data-tab-id="t1"]')?.classList.contains("tab-ended")).toBe(true);
+    expect(root.querySelector('.tab[data-tab-id="t2"]')?.classList.contains("tab-ended")).toBe(false);
+  });
+
+  it("clicking the placeholder asks to resume that tab", () => {
+    const cb = makeCallbacks(root, makeController());
+    const resume = vi.fn();
+    cb.onResumeEndedTab = resume;
+    const layout = new PaneLayout(cb);
+    layout.setTree(endedLeaf());
+    root.querySelector<HTMLElement>(".pane-ended-placeholder")!.click();
+    expect(resume).toHaveBeenCalledWith("t1");
+  });
+
+  it("disables Detach while the active tab is ended", () => {
+    const cb = makeCallbacks(root, makeController());
+    const detach = vi.fn();
+    cb.onDetachPane = detach;
+    const layout = new PaneLayout(cb);
+    layout.setTree(endedLeaf());
+    const btn = root.querySelector<HTMLButtonElement>('[data-act="detach"]')!;
+    expect(btn.disabled).toBe(true);
+    // Even a synthetic click must not hand the stale pane id to a popout.
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(detach).not.toHaveBeenCalled();
+  });
+
+  it("swaps the placeholder for a terminal once the tab is resumed", () => {
+    const layout = new PaneLayout(makeCallbacks(root, makeController()));
+    const ended = endedLeaf();
+    layout.setTree(ended);
+    const resumed: LeafNode = {
+      ...ended,
+      tabs: ended.tabs.map((t) =>
+        t.id === "t1" ? { ...t, ended: undefined, paneId: "pane-new" } : t,
+      ),
+    };
+    layout.setTree(resumed);
+    expect(root.querySelector(".pane-ended-placeholder")).toBeNull();
+    expect(MockTerminalPane.instances).toHaveLength(2);
+  });
+});

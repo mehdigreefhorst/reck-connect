@@ -78,6 +78,25 @@ import {
  */
 export type LivePanesByHost = Partial<Record<HostRef, Pane[]>>;
 
+export interface ReconcileOptions {
+  /**
+   * What to do with a saved Claude tab that has a `sessionId` but no live
+   * pane on a host that WAS queried (issue #176):
+   *
+   *   - omitted: drop it (the historical behaviour).
+   *   - "known": keep it only if it is already flagged `ended`. Use while
+   *     a daemon restore may still be bringing panes back — a tab must not
+   *     be declared ended before the retry budget is spent.
+   *   - "all": keep it and flag it `ended`, so it renders as a "session
+   *     ended — click to resume" placeholder in its original position.
+   *
+   * Never applies to shell/codex tabs (nothing to resume by session id),
+   * to Claude tabs without a `sessionId`, or to tabs on a host missing
+   * from `livePanesByHost` (unreachable is not the same as ended).
+   */
+  keepEnded?: "known" | "all";
+}
+
 /**
  * Resolve the tab title for a pane. Precedence chain:
  *
@@ -162,6 +181,7 @@ function forEachTab(tree: TreeNode, fn: (leaf: LeafNode, tab: Tab) => void) {
 export function reconcile(
   saved: TreeNode | null,
   livePanesByHost: LivePanesByHost,
+  opts?: ReconcileOptions,
 ): TreeNode | null;
 /**
  * Back-compat overload for single-host callers. Equivalent to calling
@@ -177,12 +197,12 @@ export function reconcile(
 export function reconcile(
   saved: TreeNode | null,
   arg2: LivePanesByHost | Pane[],
-  host?: HostRef,
+  arg3?: HostRef | ReconcileOptions,
 ): TreeNode | null {
-  const livePanesByHost: LivePanesByHost = Array.isArray(arg2)
-    ? ({ [host as HostRef]: arg2 } as LivePanesByHost)
-    : arg2;
-  return reconcileImpl(saved, livePanesByHost);
+  if (Array.isArray(arg2)) {
+    return reconcileImpl(saved, { [arg3 as HostRef]: arg2 } as LivePanesByHost, {});
+  }
+  return reconcileImpl(saved, arg2, (arg3 as ReconcileOptions | undefined) ?? {});
 }
 
 /**
@@ -251,6 +271,9 @@ export function countSavedIdentityTabsInReachableHosts(
         ((tb.kind === "shell" || tb.kind === "codex") && !!tb.slotId);
       if (!hasIdentity) continue;
       if (!reachable.has(tb.host)) continue;
+      // Already known to be ended (issue #176): nothing to wait for. If
+      // the session does come back, Pass 1 rebinds it regardless.
+      if (tb.ended) continue;
       n++;
     }
   }
@@ -260,6 +283,7 @@ export function countSavedIdentityTabsInReachableHosts(
 function reconcileImpl(
   saved: TreeNode | null,
   livePanesByHost: LivePanesByHost,
+  opts: ReconcileOptions,
 ): TreeNode | null {
   // Build per-host maps. Kind-namespaced so a Claude tab with
   // sessionId == X can't cross-bind to a shell pane with slot_id ==
@@ -339,13 +363,27 @@ function reconcileImpl(
     });
   }
 
-  // --- Pass 2: drop stale. ---
+  // --- Pass 2: drop stale (or keep as an ended placeholder, #176). ---
+  const reachableHosts = new Set(Object.keys(livePanesByHost));
+  const keepsAsEnded = (tb: Tab): boolean => {
+    if (!opts.keepEnded) return false;
+    if (tb.kind !== "claude" || !tb.sessionId) return false;
+    if (!reachableHosts.has(tb.host)) return false;
+    return opts.keepEnded === "all" || tb.ended === true;
+  };
   if (t) {
     const stale: { leafId: string; tabId: string }[] = [];
     forEachTab(t, (leaf, tb) => {
-      if (!boundTabIds.has(tb.id)) {
-        stale.push({ leafId: leaf.id, tabId: tb.id });
+      if (boundTabIds.has(tb.id)) {
+        // Live again (restored, or resumed from another window).
+        delete tb.ended;
+        return;
       }
+      if (keepsAsEnded(tb)) {
+        tb.ended = true;
+        return;
+      }
+      stale.push({ leafId: leaf.id, tabId: tb.id });
     });
     for (const { leafId, tabId } of stale) {
       t = closeTab(t!, leafId, tabId);
@@ -356,6 +394,8 @@ function reconcileImpl(
   // --- Title sync. ---
   if (t) {
     forEachTab(t, (_leaf, tb) => {
+      // Ended tabs keep their last title; their paneId is stale.
+      if (tb.ended) return;
       const p = paneByHostId.get(tb.host)?.get(tb.paneId);
       if (!p) return;
       const wanted = titleFor(p);
@@ -373,6 +413,8 @@ function reconcileImpl(
   for (const host of allHosts) coveredByHost.set(host, new Set<string>());
   if (t) {
     forEachTab(t, (_leaf, tb) => {
+      // An ended tab's paneId is stale; it covers nothing.
+      if (tb.ended) return;
       coveredByHost.get(tb.host)?.add(tb.paneId);
     });
   }

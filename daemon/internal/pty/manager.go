@@ -137,6 +137,14 @@ var defaultRemoveProjectChildWaitTimeout = 5 * time.Second
 // against it with errors.Is.
 var ErrSlotAlreadyLive = errors.New("slot already live")
 
+// ErrSessionAlreadyLive is returned by CreatePaneWith when a
+// ResumeSessionID names a Claude session that is already running in a live
+// pane (or is being resumed by a concurrent request). A second
+// `claude --resume` would have two processes appending to one transcript.
+// The HTTP layer maps this to 409 Conflict; a client that hits it should
+// bind to the existing pane instead. Exported for errors.Is.
+var ErrSessionAlreadyLive = errors.New("session already running in a live pane")
+
 // ErrResumeWorktreeGone is returned by CreatePaneWith when a Claude session's
 // transcript lives under a git worktree that no longer exists, so its real
 // runtime cwd can't be recovered. Resuming in the project root would make
@@ -1417,6 +1425,23 @@ func (m *Manager) CreatePaneWith(projectID string, kind proto.PaneKind, cols, ro
 			if e.Kind != proto.PaneKindClaude {
 				return nil, errors.New("resume_session_id refers to a non-claude entry")
 			}
+			// Refuse a duplicate resume, and hold a reservation until this
+			// spawn lands in m.byID so two concurrent resumes of the same
+			// session can't both pass the check. Shares the slot
+			// reservation map under a prefix no slot UUID can collide with.
+			reservation := "session:" + opts.ResumeSessionID
+			m.mu.Lock()
+			if m.reservedSlots[reservation] || m.isSessionLiveLocked(opts.ResumeSessionID) {
+				m.mu.Unlock()
+				return nil, fmt.Errorf("%w: %s", ErrSessionAlreadyLive, shortSessionID(opts.ResumeSessionID))
+			}
+			m.reservedSlots[reservation] = true
+			m.mu.Unlock()
+			defer func() {
+				m.mu.Lock()
+				delete(m.reservedSlots, reservation)
+				m.mu.Unlock()
+			}()
 			// #56: recover the directory the transcript actually lives in so
 			// `claude --resume` rehydrates the existing session instead of
 			// forking a fresh transcript. For a worktree session e.Cwd is the
@@ -1814,6 +1839,20 @@ func (m *Manager) isSlotLiveLocked(slot string) bool {
 	}
 	for _, p := range m.byID {
 		if p.SlotID == slot {
+			return true
+		}
+	}
+	return false
+}
+
+// isSessionLiveLocked reports whether a live pane is running the given
+// Claude session. Caller holds m.mu.
+func (m *Manager) isSessionLiveLocked(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	for _, p := range m.byID {
+		if p.Kind == proto.PaneKindClaude && p.SessionID == sessionID {
 			return true
 		}
 	}

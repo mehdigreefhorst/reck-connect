@@ -1269,6 +1269,25 @@ html, body, #app {
   background: var(--app-hover);
   color: var(--app-text);
 }
+/* Issue #176: a tab whose pane is gone. Same card as the detached
+   placeholder; clicking resumes the session. */
+.pane-ended-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: var(--app-bg-raised);
+  color: var(--app-text-dim);
+  transition: background 0.2s var(--ease-smooth), color 0.2s var(--ease-smooth);
+}
+.pane-ended-placeholder:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+.tab.tab-ended .tab-title {
+  opacity: 0.6;
+  font-style: italic;
+}
 .pane-detached-card {
   text-align: center;
   padding: 1.5rem;
