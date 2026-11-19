@@ -89,6 +89,7 @@ import {
   findTab,
   leafWithTab,
   renameTab,
+  resumeEndedTab,
   reorderTab,
   splitLeaf,
   switchTab,
@@ -1640,12 +1641,19 @@ export async function boot(splash?: StartupSplashController) {
       if (isRetrying()) return;
       void closeLeafAt(leafId);
     },
+    onResumeEndedTab: (tabId) => {
+      if (isRetrying()) return;
+      void resumeEndedTabAt(tabId);
+    },
     onRenameTab: (tabId, newTitle) => {
       if (isRetrying()) return;
       const tree = layout.getTree();
       if (!tree) return;
       const found = findTab(tree, tabId);
       if (!found || !currentProjectId) return;
+      // An ended tab has no pane to rename on the daemon (issue #176);
+      // its session keeps whatever name it had.
+      if (found.tab.ended) return;
       const paneId = found.tab.paneId;
       const prevTitle = found.tab.title;
       // Optimistic local repaint, then persist to the daemon. A daemon
@@ -2182,12 +2190,55 @@ export async function boot(splash?: StartupSplashController) {
     layout.focusLeaf(newLeaf.id);
   }
 
+  // Tabs with a resume request in flight, so a double-click on the
+  // placeholder can't spawn two panes for one session.
+  const resumingEndedTabs = new Set<string>();
+
+  /**
+   * Issue #176: bring an ended tab back by resuming its Claude session in
+   * a new pane and rebinding the tab to it, in place. On failure (e.g. the
+   * transcript was cleaned up) the daemon's reason is toasted and the
+   * placeholder stays, so the user can close it.
+   */
+  async function resumeEndedTabAt(tabId: string) {
+    const projectId = currentProjectId;
+    if (!projectId || resumingEndedTabs.has(tabId)) return;
+    const found = findTab(layout.getTree(), tabId);
+    if (!found || !found.tab.ended || !found.tab.sessionId) return;
+    const { host, sessionId } = found.tab;
+    resumingEndedTabs.add(tabId);
+    try {
+      const globalPreamble = await resolveEffectiveReckConnectPrompt();
+      const paneId = await createPaneOrToast(host, projectId, "claude", {
+        resumeSessionId: sessionId,
+        globalPreamble,
+      });
+      if (!paneId) return;
+      // Project switched while the pane was spawning: the pane is live on
+      // the daemon and the next select of that project rebinds the saved
+      // tab to it by session id.
+      if (currentProjectId !== projectId) return;
+      const tree = layout.getTree();
+      if (!tree || !findTab(tree, tabId)) return;
+      layout.setTree(resumeEndedTab(tree, tabId, paneId));
+    } finally {
+      resumingEndedTabs.delete(tabId);
+    }
+  }
+
   async function closeTabAt(leafId: string, tabId: string) {
     if (!currentProjectId) return;
     const tree = layout.getTree();
     if (!tree) return;
     const found = findTab(tree, tabId);
     if (!found) return;
+    if (found.tab.ended) {
+      // Issue #176: nothing is running behind an ended tab, so there is
+      // no process to confirm ending and no pane to delete — its paneId
+      // is stale. The session stays available under "Resume session".
+      layout.setTree(closeTab(tree, leafId, tabId));
+      return;
+    }
     const ok = await confirmDialog(document.body, {
       title: `Close ${found.tab.title}?`,
       body: `This will end the ${found.tab.kind === "claude" ? "Claude" : found.tab.kind === "codex" ? "Codex" : "shell"} process running in this tab. Unsaved terminal state will be lost.`,
@@ -2222,6 +2273,8 @@ export async function boot(splash?: StartupSplashController) {
     });
     if (!ok) return;
     for (const t of l.tabs) {
+      // Ended tabs (issue #176) have no live pane; their paneId is stale.
+      if (t.ended) continue;
       // Phase 10: each tab may live on a different host in hybrid mode.
       try { await apiForHost(t.host).deletePane(currentProjectId, t.paneId); } catch (e) { console.error(e); }
     }
@@ -2669,7 +2722,10 @@ export async function boot(splash?: StartupSplashController) {
     }
 
     const saved = savedLayouts[projectId] ?? null;
-    let reconciled = reconcile(saved, livePanesByHost);
+    // "known": tabs already flagged ended stay as placeholders, but a
+    // tab is not newly declared ended until the restore-retry budget
+    // below is spent (issue #176).
+    let reconciled = reconcile(saved, livePanesByHost, { keepEnded: "known" });
 
     // an earlier release: paint immediately *before* the retry loop so the
     // pane area switches the instant the user clicks, even on a
@@ -2755,7 +2811,7 @@ export async function boot(splash?: StartupSplashController) {
               recordPaneCapabilitiesFromHost(panes);
               recordPaneUsageFromHost(panes);
             }
-            reconciled = reconcile(saved, livePanesByHost);
+            reconciled = reconcile(saved, livePanesByHost, { keepEnded: "known" });
             didRetry = true;
             matchedSaved = countMatchingIdentities(saved, livePanesByHost);
             if (matchedSaved >= savedIdTabs) break;
@@ -2774,6 +2830,14 @@ export async function boot(splash?: StartupSplashController) {
           layoutRoot.classList.remove("restoring-layout");
           unmountRestoringOverlay(layoutRoot);
         }
+      }
+      // Budget spent and some saved Claude sessions still have no pane:
+      // they are not coming back on their own. Keep those tabs, in place,
+      // as "session ended" placeholders rather than dropping them without
+      // a trace (issue #176).
+      if (matchedSaved < savedIdTabs) {
+        reconciled = reconcile(saved, livePanesByHost, { keepEnded: "all" });
+        didRetry = true;
       }
     }
 

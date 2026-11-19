@@ -18,6 +18,8 @@ import {
   reorderTab,
   moveTab,
   isValidTreeNode,
+  resumeEndedTab,
+  type TreeNode,
   defaultTabTitle,
 } from "./split-tree";
 
@@ -635,5 +637,36 @@ describe("isValidTreeNode + reconcile recovery", () => {
     const out = reconcile(null, live, "station");
     expect(out).not.toBeNull();
     expect(allPaneIds(out!)).toEqual(["p_live"]);
+  });
+});
+
+describe("ended tabs (issue #176)", () => {
+  const endedTree = (): TreeNode => {
+    const leaf = leafWithTab(tab("p_old", "claude", "station", "alpha", "t1", undefined, "sess-a"), "leaf");
+    return { ...leaf, tabs: leaf.tabs.map((t) => ({ ...t, ended: true })) } as TreeNode;
+  };
+
+  it("resumeEndedTab rebinds the tab to its new pane and clears the flag", () => {
+    const tree = endedTree();
+    const out = resumeEndedTab(tree, "t1", "p_new");
+    const t = findTab(out, "t1")!.tab;
+    expect(t.paneId).toBe("p_new");
+    expect(t.ended).toBeUndefined();
+    expect(t.title).toBe("alpha");
+    expect(t.sessionId).toBe("sess-a");
+    // Immutable: the input is untouched.
+    expect(findTab(tree, "t1")!.tab.ended).toBe(true);
+  });
+
+  it("resumeEndedTab leaves other tabs alone", () => {
+    const tree = endedTree();
+    expect(resumeEndedTab(tree, "nope", "p_new")).toEqual(tree);
+  });
+
+  it("the layout validator accepts a boolean ended flag and rejects anything else", () => {
+    expect(isValidTreeNode(endedTree())).toBe(true);
+    const bad = JSON.parse(JSON.stringify(endedTree()));
+    bad.tabs[0].ended = "yes";
+    expect(isValidTreeNode(bad)).toBe(false);
   });
 });

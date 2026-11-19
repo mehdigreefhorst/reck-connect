@@ -919,3 +919,93 @@ describe("reconcile + auto_name", () => {
     });
   });
 });
+
+// Issue #176: a Claude tab whose pane died used to vanish from the layout
+// with no trace. With `keepEnded` it stays as a resumable placeholder.
+describe("reconcile keepEnded", () => {
+  function savedTwo(): TreeNode {
+    const leaf = leafWithTab(tab("p_old1", "claude", "station", "alpha", "t1", undefined, "sess-a"), "leaf");
+    return addTab(leaf, "leaf", tab("p_old2", "claude", "station", "beta", "t2", undefined, "sess-b"));
+  }
+  const byId = (tree: TreeNode | null) => Object.fromEntries(allTabs(tree).map((t) => [t.id, t]));
+
+  it("drops unmatched tabs by default (unchanged behaviour)", () => {
+    const out = reconcile(savedTwo(), [mkClaude("p_new", "sess-a")], "station");
+    expect(allTabs(out).map((t) => t.id)).toEqual(["t1"]);
+  });
+
+  it('"all" keeps an unmatched Claude tab, flagged ended, in place', () => {
+    const out = reconcile(savedTwo(), { station: [mkClaude("p_new", "sess-a")] }, { keepEnded: "all" });
+    const tabs = byId(out);
+    expect(allTabs(out).map((t) => t.id)).toEqual(["t1", "t2"]);
+    expect(tabs.t1.ended).toBeUndefined();
+    expect(tabs.t1.paneId).toBe("p_new");
+    expect(tabs.t2.ended).toBe(true);
+    expect(tabs.t2.title).toBe("beta");
+    expect(tabs.t2.sessionId).toBe("sess-b");
+  });
+
+  it("keeps a layout whose every tab ended instead of returning null", () => {
+    const out = reconcile(savedTwo(), { station: [] }, { keepEnded: "all" });
+    expect(allTabs(out).map((t) => t.ended)).toEqual([true, true]);
+  });
+
+  it("clears the flag when the session is live again", () => {
+    const ended = reconcile(savedTwo(), { station: [] }, { keepEnded: "all" });
+    const out = reconcile(ended, { station: [mkClaude("p_back", "sess-b")] }, { keepEnded: "all" });
+    const tabs = byId(out);
+    expect(tabs.t2.ended).toBeUndefined();
+    expect(tabs.t2.paneId).toBe("p_back");
+    expect(tabs.t1.ended).toBe(true);
+  });
+
+  it('"known" keeps tabs already flagged ended but still drops newly unmatched ones', () => {
+    // Used while a daemon restore may still be bringing panes back: a tab
+    // must not be declared ended until the retry budget is spent.
+    const ended = reconcile(savedTwo(), { station: [mkClaude("p_1", "sess-a")] }, { keepEnded: "all" });
+    const out = reconcile(ended, { station: [] }, { keepEnded: "known" });
+    expect(allTabs(out).map((t) => t.id)).toEqual(["t2"]);
+  });
+
+  it("never keeps shell tabs, or Claude tabs without a session id", () => {
+    const leaf = leafWithTab(tab("p_s", "shell", "station", "sh", "ts", undefined, undefined, "slot-1"), "leaf");
+    const saved = addTab(leaf, "leaf", tab("p_c", "claude", "station", "c", "tc"));
+    expect(reconcile(saved, { station: [] }, { keepEnded: "all" })).toBeNull();
+  });
+
+  it("does not flag tabs on a host that was not queried", () => {
+    // Unreachable is not the same as ended.
+    const saved = leafWithTab(tab("p_l", "claude", "local", "loc", "tl", undefined, "sess-l"), "leaf");
+    expect(reconcile(saved, { station: [] }, { keepEnded: "all" })).toBeNull();
+  });
+
+  it("does not let an ended tab's stale pane id hide a live pane", () => {
+    // Pane ids are regenerated per spawn, but a stale id must never count
+    // as "covered" in the append-uncovered pass.
+    const saved = leafWithTab(tab("p_x", "claude", "station", "old", "t1", undefined, "sess-gone"), "leaf");
+    const out = reconcile(saved, { station: [mkClaude("p_x", "sess-new")] }, { keepEnded: "all" });
+    const tabs = allTabs(out);
+    expect(tabs).toHaveLength(2);
+    expect(tabs.find((t) => t.sessionId === "sess-new")?.ended).toBeUndefined();
+  });
+
+  it("does not mutate the saved tree", () => {
+    const saved = savedTwo();
+    const before = JSON.stringify(saved);
+    reconcile(saved, { station: [] }, { keepEnded: "all" });
+    expect(JSON.stringify(saved)).toBe(before);
+  });
+});
+
+describe("countSavedIdentityTabsInReachableHosts with ended tabs", () => {
+  it("skips tabs already known to be ended", () => {
+    // Otherwise every open of a project with a placeholder would sit in
+    // the 12 s restore-retry loop waiting for a pane that is not coming.
+    const leaf = leafWithTab(tab("p_1", "claude", "station", "a", "t1", undefined, "sess-a"), "leaf");
+    const saved = addTab(leaf, "leaf", {
+      ...tab("p_2", "claude", "station", "b", "t2", undefined, "sess-b"),
+      ended: true,
+    });
+    expect(countSavedIdentityTabsInReachableHosts(saved, { station: [] })).toBe(1);
+  });
+});
