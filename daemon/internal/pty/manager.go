@@ -1284,6 +1284,35 @@ func transcriptCwd(entry sessions.Entry, projCwd string) string {
 	return projCwd
 }
 
+// SessionLabel returns the resolved human label for a persisted session:
+// the user-given name, else (Claude sessions) Claude Code's own session
+// title, else "". Same precedence as a live pane's tab, so a session reads
+// the same in the resume picker as it did while running (issue #175).
+//
+// The transcript is looked up under the cwd the session actually ran in
+// (entry.Cwd), falling back to the project root for rows that predate it.
+func (m *Manager) SessionLabel(projectID string, entry sessions.Entry) string {
+	if entry.Kind != proto.PaneKindClaude || entry.SessionID == "" {
+		return entry.DisplayName
+	}
+	cwd := entry.Cwd
+	if cwd == "" {
+		m.mu.RLock()
+		if p, ok := m.projects[projectID]; ok {
+			cwd = p.Cwd
+		}
+		m.mu.RUnlock()
+	}
+	// Session-scoped cache key: these rows have no live pane. Never
+	// forgotten, but bounded by the number of sessions with a transcript
+	// on disk and a few dozen bytes each.
+	display, auto := m.resolveClaudeLabel(projectID, cwd, "session:"+entry.SessionID, entry.SessionID, entry)
+	if display != "" {
+		return display
+	}
+	return auto
+}
+
 // CreatePane spawns a new pane in the given project with default options.
 func (m *Manager) CreatePane(projectID string, kind proto.PaneKind, cols, rows int) (*Pane, error) {
 	return m.CreatePaneWith(projectID, kind, cols, rows, CreatePaneOptions{})

@@ -157,7 +157,8 @@ interface SessionInfo {
   slot_id?: string;       // Shell + codex identity (Scope B), empty on Claude rows
   thread_id?: string;     // Codex thread UUID; empty elsewhere and on not-yet-resumable codex rows
   kind?: PaneKind;        // pre-Scope-B omits; clients default to "claude"
-  name: string;
+  name: string;           // spawn-time seed ("<project>/<8hex>"); stable, not a human label
+  display_name?: string;  // resolved label: manual tab name, else Claude's /rename title; absent if neither (or older daemon)
   cwd: string;
   created_at: string;     // RFC3339
   last_active_at: string; // RFC3339

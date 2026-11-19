@@ -589,9 +589,18 @@ func (s *Server) handleListSessions(w nethttp.ResponseWriter, r *nethttp.Request
 		if e.Kind != proto.PaneKindClaude && e.Kind != proto.PaneKindCodex {
 			continue
 		}
-		out = append(out, entryToWire(e))
+		out = append(out, s.sessionToWire(id, e))
 	}
 	writeJSON(w, proto.SessionsListResponse{Sessions: out})
+}
+
+// sessionToWire is entryToWire plus the resolved human label, which needs
+// the Manager (it reads Claude's transcript title). Used by every endpoint
+// that lists sessions so the resume picker and the restore prompt agree.
+func (s *Server) sessionToWire(projectID string, e sessions.Entry) proto.SessionInfo {
+	info := entryToWire(e)
+	info.DisplayName = s.Manager.SessionLabel(projectID, e)
+	return info
 }
 
 // entryToWire converts a store Entry to the JSON-wire SessionInfo.
@@ -684,7 +693,7 @@ func (s *Server) handleRestoreCandidates(w nethttp.ResponseWriter, r *nethttp.Re
 			if livePaneIDs[e.LastPaneID] {
 				continue
 			}
-			matching = append(matching, entryToWire(e))
+			matching = append(matching, s.sessionToWire(proj.ID, e))
 		}
 		if len(matching) > 0 {
 			groups = append(groups, proto.RestoreCandidateGroup{

@@ -377,8 +377,16 @@ type PutProjectsResponse struct {
 // here) and SlotID as absent, so the wire shape stays backwards-
 // compatible.
 type SessionInfo struct {
-	SessionID    string   `json:"session_id,omitempty"`
-	Name         string   `json:"name"`
+	SessionID string `json:"session_id,omitempty"`
+	// Name is the spawn-time seed ("<project>/<8hex>" for Claude). Stable,
+	// but not a human label — see DisplayName.
+	Name string `json:"name"`
+	// DisplayName is the session's resolved human label: the name the user
+	// typed into the tab, else Claude Code's own session title (/rename),
+	// else empty. The same precedence a live pane's tab uses, so a session
+	// reads the same in the resume picker as it did while running
+	// (issue #175). Absent on older daemons — clients fall back to Name.
+	DisplayName  string   `json:"display_name,omitempty"`
 	Cwd          string   `json:"cwd"`
 	CreatedAt    string   `json:"created_at"`
 	LastActiveAt string   `json:"last_active_at"`

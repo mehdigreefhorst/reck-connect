@@ -43,6 +43,37 @@ describe("pickSession", () => {
     };
   }
 
+  // Issue #175: the picker showed only the spawn-time seed.
+  it("shows the resolved display_name, with the short id as secondary text", () => {
+    const root = mount();
+    void pickSession(root, [
+      session("0123456789abcdef", { name: "proj/01234567", display_name: "helpspot-wholesale" }),
+    ]);
+    const row = root.querySelector(".session-row")!;
+    expect(row.querySelector(".session-name")?.textContent).toBe("helpspot-wholesale");
+    expect(row.querySelector(".session-id")?.textContent).toBe("01234567");
+    (root.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
+  });
+
+  it("falls back to the seed name when there is no display_name (older daemon)", () => {
+    const root = mount();
+    void pickSession(root, [session("0123456789abcdef", { name: "proj/01234567" })]);
+    const row = root.querySelector(".session-row")!;
+    expect(row.querySelector(".session-name")?.textContent).toBe("proj/01234567");
+    // The seed already ends in the short id — don't print it twice.
+    expect(row.querySelector(".session-id")).toBeNull();
+    (root.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
+  });
+
+  it("escapes a display_name before putting it in the DOM", () => {
+    const root = mount();
+    void pickSession(root, [session("a", { display_name: "<img src=x onerror=alert(1)>" })]);
+    const name = root.querySelector(".session-name")!;
+    expect(name.querySelector("img")).toBeNull();
+    expect(name.textContent).toBe("<img src=x onerror=alert(1)>");
+    (root.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
+  });
+
   it("renders each session as a clickable row", () => {
     const root = mount();
     const sessions = [session("a"), session("b"), session("c")];
