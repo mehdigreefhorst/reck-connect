@@ -187,14 +187,14 @@ func TestClearDisplayNameIfUnchanged(t *testing.T) {
 	title := "t"
 	_ = s.SetDisplayNameWithBaseline("proj", sid, "manual", &title)
 	// A manual rename raced in: the stale clear must not discard it.
-	if err := s.ClearDisplayNameIfUnchanged("proj", sid, "older-name"); err != nil {
-		t.Fatal(err)
+	if cleared, err := s.ClearDisplayNameIfUnchanged("proj", sid, "older-name"); err != nil || cleared {
+		t.Fatalf("stale clear: cleared=%v err=%v, want false/nil", cleared, err)
 	}
 	if e, _, _ := s.Get("proj", sid); e.DisplayName != "manual" {
 		t.Fatalf("DisplayName = %q, want manual (expected value did not match)", e.DisplayName)
 	}
-	if err := s.ClearDisplayNameIfUnchanged("proj", sid, "manual"); err != nil {
-		t.Fatal(err)
+	if cleared, err := s.ClearDisplayNameIfUnchanged("proj", sid, "manual"); err != nil || !cleared {
+		t.Fatalf("matching clear: cleared=%v err=%v, want true/nil", cleared, err)
 	}
 	e, _, _ := s.Get("proj", sid)
 	if e.DisplayName != "" || e.AutoTitleAtRename != nil {

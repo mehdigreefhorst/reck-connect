@@ -1906,7 +1906,12 @@ export async function boot(splash?: StartupSplashController) {
   const paneTitleRefresher = createPaneTitleRefresher({
     getProjectId: () => currentProjectId,
     getTree: () => layout.getTree(),
-    setTree: (tree) => layout.setTree(tree),
+    // persist:false — the live tree may be the select flow's reconciled
+    // projection, which has already dropped tabs it couldn't bind (e.g. a
+    // host that was down). Saving it on a mere title change would make
+    // that loss permanent. Titles are re-derived from the daemon on every
+    // select, so nothing is lost by not saving them here.
+    setTree: (tree) => layout.setTree(tree, { persist: false }),
     fetchPanes: async (host, projectId) =>
       (await apiForHost(host).getProject(projectId, { autoSpawn: false })).panes,
     // A restore-retry is rebuilding the layout, or the user is typing a

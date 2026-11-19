@@ -388,11 +388,14 @@ func (s *Store) SetAutoTitleBaseline(projectID, identity, title string) error {
 // ClearDisplayNameIfUnchanged clears the user-given label only when it
 // still equals expected. Used when a later /rename supersedes a manual
 // name: a manual rename racing in between must not be thrown away.
-func (s *Store) ClearDisplayNameIfUnchanged(projectID, identity, expected string) error {
+//
+// Reports whether the name was actually cleared, so the caller can keep
+// showing the (newer) manual name when it wasn't.
+func (s *Store) ClearDisplayNameIfUnchanged(projectID, identity, expected string) (bool, error) {
 	if identity == "" {
-		return nil
+		return false, nil
 	}
-	return s.mutateEntry(projectID, identity, func(e Entry) (Entry, bool) {
+	return s.mutateEntryReport(projectID, identity, func(e Entry) (Entry, bool) {
 		if e.DisplayName == "" || e.DisplayName != expected {
 			return e, false
 		}
@@ -405,11 +408,18 @@ func (s *Store) ClearDisplayNameIfUnchanged(projectID, identity, expected string
 // mutateEntry applies fn to the entry matching identity and persists the
 // result when fn reports a change. Missing identity is a no-op.
 func (s *Store) mutateEntry(projectID, identity string, fn func(Entry) (Entry, bool)) error {
+	_, err := s.mutateEntryReport(projectID, identity, fn)
+	return err
+}
+
+// mutateEntryReport is mutateEntry that also reports whether a change was
+// persisted.
+func (s *Store) mutateEntryReport(projectID, identity string, fn func(Entry) (Entry, bool)) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries, err := s.loadLocked(projectID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for i, e := range entries {
 		if !entryMatches(e, identity) {
@@ -417,12 +427,15 @@ func (s *Store) mutateEntry(projectID, identity string, fn func(Entry) (Entry, b
 		}
 		updated, changed := fn(e)
 		if !changed {
-			return nil
+			return false, nil
 		}
 		entries[i] = updated
-		return s.saveLocked(projectID, entries)
+		if err := s.saveLocked(projectID, entries); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 func equalStringPtr(a, b *string) bool {

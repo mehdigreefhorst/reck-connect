@@ -1146,7 +1146,11 @@ func (m *Manager) SetPaneDisplayName(projectID string, paneID string, displayNam
 	// yet; ProjectDetail captures it on the first successful read.
 	var baseline *string
 	if displayName != "" && pane.Kind == proto.PaneKindClaude && pane.SessionID != "" && autoNames != nil {
-		if title, ok := autoNames.LookupOK(paneID, projectID, projCwd, pane.SessionID); ok {
+		cwd := projCwd
+		if e, found, gerr := store.Get(projectID, identity); gerr == nil && found {
+			cwd = transcriptCwd(e, projCwd)
+		}
+		if title, ok := autoNames.LookupOK(paneID, projectID, cwd, pane.SessionID); ok {
 			baseline = &title
 		}
 	}
@@ -1230,7 +1234,7 @@ func (m *Manager) resolveClaudeLabel(projectID, projCwd, cacheKey, sessionID str
 	if m.autoNames == nil || sessionID == "" {
 		return display, ""
 	}
-	title, ok := m.autoNames.LookupOK(cacheKey, projectID, projCwd, sessionID)
+	title, ok := m.autoNames.LookupOK(cacheKey, projectID, transcriptCwd(entry, projCwd), sessionID)
 	if display == "" {
 		return "", title
 	}
@@ -1249,13 +1253,35 @@ func (m *Manager) resolveClaudeLabel(projectID, projCwd, cacheKey, sessionID str
 	if title == "" || title == *entry.AutoTitleAtRename {
 		return display, ""
 	}
-	if err := m.sessions.ClearDisplayNameIfUnchanged(projectID, sessionID, display); err != nil {
+	cleared, err := m.sessions.ClearDisplayNameIfUnchanged(projectID, sessionID, display)
+	if err != nil {
 		// Couldn't persist the hand-over; keep showing the manual name so
 		// the label doesn't flap between polls.
 		slog.Warn("pane label: clear superseded display_name failed", "err", err, "project", projectID)
 		return display, ""
 	}
+	if !cleared {
+		// A manual rename landed between our read of the entry and the
+		// clear. It is newer than the /rename we noticed; the entry we
+		// hold is stale, so re-read rather than show the auto title for
+		// one poll.
+		if e, ok, gerr := m.sessions.Get(projectID, sessionID); gerr == nil && ok && e.DisplayName != "" {
+			return e.DisplayName, ""
+		}
+	}
 	return "", title
+}
+
+// transcriptCwd is the directory a Claude session's transcript is keyed
+// on: the cwd the session actually ran in (entry.Cwd — the worktree for a
+// worktree session, issue #56), falling back to the project root for rows
+// that predate it. Every label lookup must go through this so the tab, the
+// rename baseline and the resume picker all read the same file.
+func transcriptCwd(entry sessions.Entry, projCwd string) string {
+	if entry.Cwd != "" {
+		return entry.Cwd
+	}
+	return projCwd
 }
 
 // CreatePane spawns a new pane in the given project with default options.

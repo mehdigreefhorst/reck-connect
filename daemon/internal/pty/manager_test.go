@@ -2183,3 +2183,39 @@ func TestIsHiddenProjectID(t *testing.T) {
 		}
 	}
 }
+
+// A session that ran somewhere other than the project root (a git worktree,
+// issue #56) keeps its transcript under that cwd. The tab label must be
+// read from there, not from the project root, or a /rename never shows.
+func TestProjectDetail_autoNameReadFromSessionCwd(t *testing.T) {
+	mgr, claudeDir, projCwd, store := autoNameTestManager(t)
+	pane, err := mgr.CreatePane("p1", proto.PaneKindClaude, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = mgr.DeletePane("p1", pane.ID)
+		time.Sleep(50 * time.Millisecond)
+	}()
+	sid := pane.SessionID
+	worktree := filepath.Join(projCwd, ".claude", "worktrees", "feature")
+	e, ok, err := store.Get("p1", sid)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	e.Cwd = worktree
+	if err := store.Upsert("p1", e); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeTranscript(t, claudeDir, worktree, sid, customTitleLine(sid, "in-worktree"))
+	if d, a := paneLabels(t, mgr, pane.ID); d != "" || a != "in-worktree" {
+		t.Fatalf("display=%q auto=%q, want empty/in-worktree", d, a)
+	}
+	// The rename baseline is taken from the same file.
+	if err := mgr.SetPaneDisplayName("p1", pane.ID, "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if e, _, _ := store.Get("p1", sid); e.AutoTitleAtRename == nil || *e.AutoTitleAtRename != "in-worktree" {
+		t.Fatalf("baseline = %v, want in-worktree", e.AutoTitleAtRename)
+	}
+}
