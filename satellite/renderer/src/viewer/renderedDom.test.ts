@@ -47,6 +47,31 @@ describe("createRenderedDom.mount", () => {
     );
   });
 
+  // Issue #180: web links open on a plain click; nothing else does.
+  it("routes a plain click on an http/https link to onExternalActivate", () => {
+    const onExternalActivate = vi.fn();
+    const dom = createRenderedDom({ onExternalActivate });
+    const el = document.createElement("div");
+    dom.mount(el, '<a href="https://example.com">e</a>');
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+    el.querySelector("a")!.dispatchEvent(ev);
+    expect(onExternalActivate).toHaveBeenCalledWith("https://example.com", expect.any(MouseEvent));
+    // Still never navigates the app window itself.
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("keeps non-web external links (mailto:) behind Cmd+click", () => {
+    const onExternalActivate = vi.fn();
+    const dom = createRenderedDom({ onExternalActivate });
+    const el = document.createElement("div");
+    dom.mount(el, '<a href="mailto:a@b.c">m</a>');
+    const a = el.querySelector("a")!;
+    a.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(onExternalActivate).not.toHaveBeenCalled();
+    a.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+    expect(onExternalActivate).toHaveBeenCalledTimes(1);
+  });
+
   it("dispose() detaches the click handler", () => {
     const onLinkActivate = vi.fn();
     const dom = createRenderedDom({ onLinkActivate });

@@ -54,18 +54,25 @@ describe("installUrlLinkProvider", () => {
     expect(links[0].text).toBe("https://example.com/docs");
   });
 
-  it("⌘-click activates onActivateUrl with the URL; plain click does not", () => {
+  // Issue #180: a plain click used to be a silent no-op (⌘ was required).
+  it("a plain click activates onActivateUrl with the URL", () => {
     const onActivateUrl = vi.fn();
     const { term, getRegistered } = makeFakeTerminal(["see https://a.com/x"]);
     installUrlLinkProvider(term as never, { onActivateUrl });
     const link = linksFor(getRegistered, 1)[0];
 
     link.activate({ metaKey: false } as MouseEvent, link.text);
-    expect(onActivateUrl).not.toHaveBeenCalled();
-
-    link.activate({ metaKey: true } as MouseEvent, link.text);
     expect(onActivateUrl).toHaveBeenCalledTimes(1);
     expect(onActivateUrl.mock.calls[0][0]).toBe("https://a.com/x");
+  });
+
+  it("⌘-click still activates it", () => {
+    const onActivateUrl = vi.fn();
+    const { term, getRegistered } = makeFakeTerminal(["see https://a.com/x"]);
+    installUrlLinkProvider(term as never, { onActivateUrl });
+    const link = linksFor(getRegistered, 1)[0];
+    link.activate({ metaKey: true } as MouseEvent, link.text);
+    expect(onActivateUrl).toHaveBeenCalledWith("https://a.com/x", expect.anything());
   });
 
   it("emits no links for a line without URLs", () => {
@@ -74,7 +81,7 @@ describe("installUrlLinkProvider", () => {
     expect(linksFor(getRegistered, 1)).toEqual([]);
   });
 
-  it("hover shows a '⌘+click to open in browser' tooltip; leave hides it", () => {
+  it("hover shows a 'Click to open in browser' tooltip; leave hides it", () => {
     document.body.innerHTML = "";
     const { term, getRegistered } = makeFakeTerminal(["see https://a.com/x"]);
     installUrlLinkProvider(term as never, { onActivateUrl: vi.fn() });
@@ -83,7 +90,7 @@ describe("installUrlLinkProvider", () => {
     link.hover!({ clientX: 10, clientY: 10 } as MouseEvent, link.text);
     const tip = document.querySelector(".reck-link-tooltip") as HTMLElement | null;
     expect(tip).not.toBeNull();
-    expect(tip!.textContent).toBe("⌘+click to open in browser");
+    expect(tip!.textContent).toBe("Click to open in browser");
     expect(tip!.style.display).toBe("block");
 
     link.leave!();

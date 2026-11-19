@@ -366,6 +366,23 @@ describe("TranscriptView", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #180: clicking a web link in the History view did nothing.
+  it("opens an http/https link on a plain click", () => {
+    const onLinkActivate = vi.fn();
+    const onExternalActivate = vi.fn();
+    const v = createTranscriptView({ host, onClose, onLinkActivate, onExternalActivate });
+    v.render([{ role: "assistant", blocks: [{ kind: "text", text: "[docs](https://example.com/x)" }] }], 0);
+    const link = v.body.querySelector('a[href="https://example.com/x"]') as HTMLAnchorElement;
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+    link.dispatchEvent(ev);
+    expect(onExternalActivate).toHaveBeenCalledTimes(1);
+    expect(onExternalActivate).toHaveBeenCalledWith("https://example.com/x", expect.any(MouseEvent));
+    expect(onLinkActivate).not.toHaveBeenCalled();
+    // The app window itself must never navigate.
+    expect(ev.defaultPrevented).toBe(true);
+    v.dispose();
+  });
+
   it("routes external links to onExternalActivate on ⌘+click", () => {
     const onLinkActivate = vi.fn();
     const onExternalActivate = vi.fn();

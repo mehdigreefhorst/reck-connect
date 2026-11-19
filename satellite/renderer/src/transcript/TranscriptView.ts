@@ -26,6 +26,7 @@ import { MarkdownSurfaceAdapter } from "../tts/MarkdownSurfaceAdapter";
 import type { SpeakSurfaceAdapter } from "../tts/SpeakSurfaceAdapter";
 import { ensurePaneControls } from "../ui/paneControls";
 import type { TranscriptTurn, TranscriptBlock } from "./parseTranscript";
+import { isWebUrl } from "@client-core/terminal/web-link";
 
 export interface TranscriptViewOptions {
   /** Positioned pane wrapper the overlay covers. */
@@ -196,8 +197,8 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
   // incremental appends with no per-turn bookkeeping, and (b) covers user
   // prose, which never goes through the markdown renderer and so has no
   // per-container handler of its own. We always preventDefault so a file href
-  // never navigates the app window; opening requires ⌘, matching the terminal
-  // + file-viewer linkifiers.
+  // never navigates the app window. Web links open on a plain click; file
+  // references require ⌘, matching the terminal + file-viewer linkifiers.
   function onBodyClick(ev: MouseEvent): void {
     const target = ev.target as HTMLElement | null;
     // Match ANY anchor, not just `.reck-internal-link`: external links
@@ -206,9 +207,11 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
     if (!anchor) return;
     ev.preventDefault();
-    if (!ev.metaKey) return;
     const href = anchor.getAttribute("href") ?? "";
     if (href === "" || href.startsWith("#")) return;
+    // Web links open on a plain click (issue #180). File references and
+    // other schemes (mailto:, …) still need ⌘.
+    if (!ev.metaKey && !isWebUrl(href)) return;
     if (isExternalHref(href)) opts.onExternalActivate?.(href, ev);
     else opts.onLinkActivate?.(href, ev);
   }

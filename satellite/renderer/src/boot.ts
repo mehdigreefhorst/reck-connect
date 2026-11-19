@@ -1269,7 +1269,7 @@ export async function boot(splash?: StartupSplashController) {
           })
           .catch((e) => console.warn("[click:transcript] openInViewer error", e));
       },
-      // ⌘+click an http/https URL in the transcript → OS default browser.
+      // Click an http/https URL in the transcript → OS default browser.
       onExternalActivate: (href) => {
         window.open(href, "_blank", "noopener");
       },
@@ -1402,7 +1402,7 @@ export async function boot(splash?: StartupSplashController) {
             });
         },
       });
-      // Clickable http/https URLs alongside the path linkifier. ⌘-click
+      // Clickable http/https URLs alongside the path linkifier. A click
       // opens the OS default browser: window.open is intercepted by main's
       // setWindowOpenHandler and forwarded to shell.openExternal.
       installUrlLinkProvider(pane.getXterm(), {

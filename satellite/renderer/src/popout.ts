@@ -229,7 +229,7 @@ async function bootPopout(): Promise<void> {
       });
     },
   });
-  // Clickable http/https URLs in the popout terminal too. ⌘-click →
+  // Clickable http/https URLs in the popout terminal too. Click →
   // window.open → main's setWindowOpenHandler → shell.openExternal.
   installUrlLinkProvider(term.getXterm(), {
     onActivateUrl: (url) => {

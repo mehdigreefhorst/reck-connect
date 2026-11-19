@@ -43,12 +43,12 @@ export interface MarkdownRendererOptions {
    */
   onLinkActivate?: (href: string, ev: MouseEvent) => void;
   /**
-   * Round 8.4 Bug C — Cmd+click handler for external `<a>` whose href is
-   * NOT a relative path (http, https, mailto, etc.). The host can route
-   * to `shell.openExternal` so external URLs open in the user's default
-   * browser. Plain clicks still preventDefault unconditionally; only
-   * Cmd+click invokes this callback. Omit to make external Cmd+clicks a
-   * no-op (still no in-popup navigation).
+   * Handler for external `<a>` whose href is NOT a relative path (http,
+   * https, mailto, etc.). The host can route to `shell.openExternal` so
+   * external URLs open in the user's default browser. Every click is
+   * preventDefault-ed, so the popup itself never navigates. http/https
+   * links invoke this on a plain click (issue #180); other schemes only
+   * on Cmd+click. Omit to make external clicks a no-op.
    */
   onExternalActivate?: (href: string, ev: MouseEvent) => void;
   /**

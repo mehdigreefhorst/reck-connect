@@ -197,7 +197,7 @@ describe("createMarkdownRenderer", () => {
       expect(onLinkActivate).not.toHaveBeenCalled();
     });
 
-    it("plain click on an external link calls preventDefault and fires no callback (Bug C)", () => {
+    it("plain click on a web link calls preventDefault and opens it externally (issue #180)", () => {
       const onLinkActivate = vi.fn();
       const onExternalActivate = vi.fn();
       const r = createMarkdownRenderer({ onLinkActivate, onExternalActivate });
@@ -210,8 +210,23 @@ describe("createMarkdownRenderer", () => {
       expect(a).not.toBeNull();
       const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
       a!.dispatchEvent(ev);
+      // The popup itself never navigates...
       expect(ev.defaultPrevented).toBe(true);
       expect(onLinkActivate).not.toHaveBeenCalled();
+      // ...but the link is handed to the host to open in the browser.
+      expect(onExternalActivate).toHaveBeenCalledTimes(1);
+      expect(onExternalActivate).toHaveBeenCalledWith("https://example.com", expect.any(MouseEvent));
+    });
+
+    it("plain click on a non-web external link (mailto:) fires no callback", () => {
+      const onExternalActivate = vi.fn();
+      const r = createMarkdownRenderer({ onExternalActivate });
+      r.mount(container, r.render("[mail](mailto:a@b.c)"));
+      const a = container.querySelector('a[href="mailto:a@b.c"]') as HTMLAnchorElement | null;
+      expect(a).not.toBeNull();
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      a!.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
       expect(onExternalActivate).not.toHaveBeenCalled();
     });
 

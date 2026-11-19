@@ -10,6 +10,7 @@
 
 import { detectPathsInLine } from "./LinkDetector";
 import { attachLightbox, type LightboxHandle } from "./Lightbox";
+import { isWebUrl } from "@client-core/terminal/web-link";
 
 const INTERNAL_LINK_CLASS = "reck-internal-link";
 const PATH_LINK_TOOLTIP = "⌘+click to open";
@@ -154,9 +155,11 @@ export function createRenderedDom(
         if (!anchor) return;
         // Block ALL native anchor navigation regardless of modifier.
         ev.preventDefault();
-        if (!ev.metaKey) return;
         const href = anchor.getAttribute("href");
         if (!href || href.startsWith("#")) return;
+        // Web links open on a plain click (issue #180). File references
+        // and other schemes (mailto:, …) still need Cmd.
+        if (!ev.metaKey && !isWebUrl(href)) return;
         if (isInternalLinkHref(href)) {
           opts.onLinkActivate?.(href, ev);
         } else {
