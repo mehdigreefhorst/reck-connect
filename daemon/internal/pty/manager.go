@@ -1118,6 +1118,11 @@ func (m *Manager) SetPaneDisplayName(projectID string, paneID string, displayNam
 	m.mu.RLock()
 	pane, ok := m.byID[paneID]
 	store := m.sessions
+	autoNames := m.autoNames
+	projCwd := ""
+	if p, pok := m.projects[projectID]; pok {
+		projCwd = p.Cwd
+	}
 	m.mu.RUnlock()
 	if !ok {
 		return errors.New("pane not found")
@@ -1135,7 +1140,17 @@ func (m *Manager) SetPaneDisplayName(projectID string, paneID string, displayNam
 	if store == nil {
 		return errors.New("session persistence disabled")
 	}
-	if err := store.SetDisplayName(projectID, identity, displayName); err != nil {
+	// For Claude panes, record Claude's current session title alongside
+	// the manual name so a /rename made later can be told apart from one
+	// made earlier (issue #174). nil when the transcript isn't readable
+	// yet; ProjectDetail captures it on the first successful read.
+	var baseline *string
+	if displayName != "" && pane.Kind == proto.PaneKindClaude && pane.SessionID != "" && autoNames != nil {
+		if title, ok := autoNames.LookupOK(paneID, projectID, projCwd, pane.SessionID); ok {
+			baseline = &title
+		}
+	}
+	if err := store.SetDisplayNameWithBaseline(projectID, identity, displayName, baseline); err != nil {
 		return fmt.Errorf("persist pane display_name: %w", err)
 	}
 	return nil
@@ -1168,19 +1183,20 @@ func (m *Manager) ProjectDetail(id string) (proto.ProjectDetail, bool) {
 		if identity == "" {
 			identity = info.SlotID
 		}
+		var entry sessions.Entry
 		if identity != "" && m.sessions != nil {
 			if e, ok, err := m.sessions.Get(id, identity); err == nil && ok {
+				entry = e
 				info.DisplayName = e.DisplayName
 			}
 		}
-		// AutoName: Claude panes only, and only when no user-set
-		// DisplayName has been resolved above. Cache keyed by pane.ID
-		// so two concurrent panes sharing a resumed SessionID don't
-		// confuse each other's stat state (not currently possible — a
-		// SessionID can only live on one pane at a time — but keeping
-		// the cache pane-scoped is the defensive choice).
-		if info.Kind == proto.PaneKindClaude && info.DisplayName == "" && info.SessionID != "" && m.autoNames != nil {
-			info.AutoName = m.autoNames.Lookup(info.ID, id, projCwd, info.SessionID)
+		// Claude panes: resolve the manual name against Claude's own
+		// session title. A /rename made after a manual rename supersedes
+		// it (issue #174); otherwise the manual name wins and AutoName
+		// stays empty. Cache keyed by pane.ID so a new pane generation
+		// doesn't inherit stale stat state.
+		if info.Kind == proto.PaneKindClaude && info.SessionID != "" {
+			info.DisplayName, info.AutoName = m.resolveClaudeLabel(id, projCwd, info.ID, info.SessionID, entry)
 		}
 		panes = append(panes, info)
 	}
@@ -1191,6 +1207,55 @@ func (m *Manager) ProjectDetail(id string) (proto.ProjectDetail, bool) {
 		Panes:       panes,
 		DisplayName: p.DisplayName,
 	}, true
+}
+
+// resolveClaudeLabel decides which label a Claude session shows: the
+// user-given name (entry.DisplayName) or Claude Code's own session title
+// from the transcript. Returns (displayName, autoName); at most one of
+// them is non-empty unless neither source has a name.
+//
+// Precedence is "the most recent rename wins" (issue #174). The transcript's
+// custom-title records carry no timestamp and Claude re-appends the current
+// title periodically, so recency is detected by change: the title observed
+// when the manual name was set is stored as a baseline, and a title that
+// later differs from it means a /rename happened afterwards. That clears
+// the manual name. An unreadable transcript is "unknown" and changes
+// nothing.
+//
+// cacheKey scopes the AutoNameCache row (pane id for live panes). Safe to
+// call with m.mu held for reading: it only touches the sessions store and
+// the autoname cache, both of which have their own locks.
+func (m *Manager) resolveClaudeLabel(projectID, projCwd, cacheKey, sessionID string, entry sessions.Entry) (string, string) {
+	display := entry.DisplayName
+	if m.autoNames == nil || sessionID == "" {
+		return display, ""
+	}
+	title, ok := m.autoNames.LookupOK(cacheKey, projectID, projCwd, sessionID)
+	if display == "" {
+		return "", title
+	}
+	if !ok || m.sessions == nil {
+		return display, ""
+	}
+	if entry.AutoTitleAtRename == nil {
+		// Renamed before the baseline existed (or while the transcript
+		// was unreadable): no way to order the two renames, so keep the
+		// manual name and start watching from the current title.
+		if err := m.sessions.SetAutoTitleBaseline(projectID, sessionID, title); err != nil {
+			slog.Warn("pane label: record auto-title baseline failed", "err", err, "project", projectID)
+		}
+		return display, ""
+	}
+	if title == "" || title == *entry.AutoTitleAtRename {
+		return display, ""
+	}
+	if err := m.sessions.ClearDisplayNameIfUnchanged(projectID, sessionID, display); err != nil {
+		// Couldn't persist the hand-over; keep showing the manual name so
+		// the label doesn't flap between polls.
+		slog.Warn("pane label: clear superseded display_name failed", "err", err, "project", projectID)
+		return display, ""
+	}
+	return "", title
 }
 
 // CreatePane spawns a new pane in the given project with default options.
