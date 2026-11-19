@@ -71,6 +71,15 @@ type Entry struct {
 	// Empty = no override. Persisted here (not on the ephemeral Pane)
 	// so the label survives pane respawn and daemon kickstart.
 	DisplayName string `json:"display_name,omitempty"`
+	// AutoTitleAtRename is Claude Code's own session title (the transcript's
+	// latest custom-title, "" when it has none) as observed when DisplayName
+	// was set. It lets the daemon tell a /rename made AFTER the manual rename
+	// from one made before it: the title records carry no timestamp, so
+	// "later" is detected as "differs from this baseline" (issue #174).
+	// nil = not captured yet (row renamed before this field existed, or the
+	// transcript was unreadable at rename time); the next successful read
+	// records it. Only meaningful while DisplayName is non-empty.
+	AutoTitleAtRename *string `json:"auto_title_at_rename,omitempty"`
 	// Kind of pane this entry represents. Introduced with Scope B of
 	// an earlier release; missing on disk for older indexes, defaulted to
 	// PaneKindClaude by loadLocked().
@@ -221,6 +230,7 @@ func (s *Store) Upsert(projectID string, entry Entry) error {
 			// built the Entry without reading the previous value.
 			if e.DisplayName != "" && entry.DisplayName == "" {
 				entry.DisplayName = e.DisplayName
+				entry.AutoTitleAtRename = e.AutoTitleAtRename
 			}
 			// Preserve ShellArgv for shell entries unless the caller
 			// explicitly supplied one. Respawn/resume paths rebuild the
@@ -330,26 +340,117 @@ func entryMatches(e Entry, id string) bool {
 // can only target sessions the daemon already knows about (i.e. spawned
 // or resumed panes). Identity is matched against SessionID for Claude
 // entries and SlotID for shell entries (Scope B).
+//
+// The auto-title baseline is reset to "not captured" — callers that know
+// Claude's current title should use SetDisplayNameWithBaseline instead.
 func (s *Store) SetDisplayName(projectID, identity, displayName string) error {
+	return s.SetDisplayNameWithBaseline(projectID, identity, displayName, nil)
+}
+
+// SetDisplayNameWithBaseline is SetDisplayName that also records Claude's
+// own session title at the moment of the rename (see
+// Entry.AutoTitleAtRename). baseline nil = unknown. Clearing the name
+// (displayName == "") always drops the baseline.
+func (s *Store) SetDisplayNameWithBaseline(projectID, identity, displayName string, baseline *string) error {
 	if identity == "" {
 		return nil
 	}
+	if displayName == "" {
+		baseline = nil
+	}
+	return s.mutateEntry(projectID, identity, func(e Entry) (Entry, bool) {
+		if e.DisplayName == displayName && equalStringPtr(e.AutoTitleAtRename, baseline) {
+			return e, false
+		}
+		e.DisplayName = displayName
+		e.AutoTitleAtRename = copyStringPtr(baseline)
+		return e, true
+	})
+}
+
+// SetAutoTitleBaseline records Claude's current session title as the
+// baseline for an entry that already has a DisplayName but no baseline
+// yet. It never overwrites a captured baseline and is a no-op for entries
+// without a DisplayName, so a concurrent rename can't be clobbered.
+func (s *Store) SetAutoTitleBaseline(projectID, identity, title string) error {
+	if identity == "" {
+		return nil
+	}
+	return s.mutateEntry(projectID, identity, func(e Entry) (Entry, bool) {
+		if e.DisplayName == "" || e.AutoTitleAtRename != nil {
+			return e, false
+		}
+		e.AutoTitleAtRename = &title
+		return e, true
+	})
+}
+
+// ClearDisplayNameIfUnchanged clears the user-given label only when it
+// still equals expected. Used when a later /rename supersedes a manual
+// name: a manual rename racing in between must not be thrown away.
+//
+// Reports whether the name was actually cleared, so the caller can keep
+// showing the (newer) manual name when it wasn't.
+func (s *Store) ClearDisplayNameIfUnchanged(projectID, identity, expected string) (bool, error) {
+	if identity == "" {
+		return false, nil
+	}
+	return s.mutateEntryReport(projectID, identity, func(e Entry) (Entry, bool) {
+		if e.DisplayName == "" || e.DisplayName != expected {
+			return e, false
+		}
+		e.DisplayName = ""
+		e.AutoTitleAtRename = nil
+		return e, true
+	})
+}
+
+// mutateEntry applies fn to the entry matching identity and persists the
+// result when fn reports a change. Missing identity is a no-op.
+func (s *Store) mutateEntry(projectID, identity string, fn func(Entry) (Entry, bool)) error {
+	_, err := s.mutateEntryReport(projectID, identity, fn)
+	return err
+}
+
+// mutateEntryReport is mutateEntry that also reports whether a change was
+// persisted.
+func (s *Store) mutateEntryReport(projectID, identity string, fn func(Entry) (Entry, bool)) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries, err := s.loadLocked(projectID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for i, e := range entries {
-		if entryMatches(e, identity) {
-			if entries[i].DisplayName == displayName {
-				return nil
-			}
-			entries[i].DisplayName = displayName
-			return s.saveLocked(projectID, entries)
+		if !entryMatches(e, identity) {
+			continue
 		}
+		updated, changed := fn(e)
+		if !changed {
+			return false, nil
+		}
+		entries[i] = updated
+		if err := s.saveLocked(projectID, entries); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	return nil
+	return false, nil
+}
+
+func equalStringPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func copyStringPtr(p *string) *string {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 // SetLive toggles the WasLive flag on a single entry. Used to mark a

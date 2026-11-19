@@ -86,3 +86,118 @@ func TestUpsert_preservesDisplayNameOnResume(t *testing.T) {
 		t.Fatalf("Upsert clobbered DisplayName; got %q want %q", got.DisplayName, "Deployment Agent")
 	}
 }
+
+// --- auto-title baseline (issue #174) ---
+
+func baselineStore(t *testing.T) (*Store, string) {
+	t.Helper()
+	s, _ := newStore(t)
+	sid := NewUUID()
+	if err := s.Upsert("proj", Entry{
+		SessionID:    sid,
+		Name:         "proj/abc",
+		Cwd:          "/tmp/proj",
+		CreatedAt:    time.Now(),
+		LastActiveAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	return s, sid
+}
+
+func baselineOf(t *testing.T, s *Store, sid string) *string {
+	t.Helper()
+	e, ok, err := s.Get("proj", sid)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	return e.AutoTitleAtRename
+}
+
+func TestSetDisplayNameWithBaseline_persistsAndSurvivesUpsert(t *testing.T) {
+	s, sid := baselineStore(t)
+	title := "claude-title"
+	if err := s.SetDisplayNameWithBaseline("proj", sid, "manual", &title); err != nil {
+		t.Fatal(err)
+	}
+	if b := baselineOf(t, s, sid); b == nil || *b != "claude-title" {
+		t.Fatalf("baseline = %v, want claude-title", b)
+	}
+	// A resume re-upserts the row without a DisplayName; both the name
+	// and its baseline must survive together.
+	if err := s.Upsert("proj", Entry{SessionID: sid, Name: "proj/abc", Cwd: "/tmp/proj", LastActiveAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	e, _, _ := s.Get("proj", sid)
+	if e.DisplayName != "manual" || e.AutoTitleAtRename == nil || *e.AutoTitleAtRename != "claude-title" {
+		t.Fatalf("after Upsert: display=%q baseline=%v", e.DisplayName, e.AutoTitleAtRename)
+	}
+}
+
+func TestSetDisplayName_resetsBaselineToUnknown(t *testing.T) {
+	s, sid := baselineStore(t)
+	title := "t"
+	_ = s.SetDisplayNameWithBaseline("proj", sid, "manual", &title)
+	if err := s.SetDisplayName("proj", sid, "manual-2"); err != nil {
+		t.Fatal(err)
+	}
+	if b := baselineOf(t, s, sid); b != nil {
+		t.Fatalf("baseline = %q, want nil after a baseline-less rename", *b)
+	}
+}
+
+func TestSetDisplayNameWithBaseline_clearingNameDropsBaseline(t *testing.T) {
+	s, sid := baselineStore(t)
+	title := "t"
+	_ = s.SetDisplayNameWithBaseline("proj", sid, "manual", &title)
+	if err := s.SetDisplayNameWithBaseline("proj", sid, "", &title); err != nil {
+		t.Fatal(err)
+	}
+	if b := baselineOf(t, s, sid); b != nil {
+		t.Fatalf("baseline = %q, want nil once the name is cleared", *b)
+	}
+}
+
+func TestSetAutoTitleBaseline_onlyFillsMissingBaseline(t *testing.T) {
+	s, sid := baselineStore(t)
+	// No DisplayName → nothing to baseline.
+	if err := s.SetAutoTitleBaseline("proj", sid, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if b := baselineOf(t, s, sid); b != nil {
+		t.Fatalf("baseline recorded without a DisplayName: %q", *b)
+	}
+	_ = s.SetDisplayName("proj", sid, "manual")
+	// Empty title is a valid baseline ("Claude had no title").
+	if err := s.SetAutoTitleBaseline("proj", sid, ""); err != nil {
+		t.Fatal(err)
+	}
+	if b := baselineOf(t, s, sid); b == nil || *b != "" {
+		t.Fatalf("baseline = %v, want captured empty string", b)
+	}
+	// Already captured → never overwritten.
+	_ = s.SetAutoTitleBaseline("proj", sid, "later")
+	if b := baselineOf(t, s, sid); b == nil || *b != "" {
+		t.Fatalf("captured baseline was overwritten: %v", b)
+	}
+}
+
+func TestClearDisplayNameIfUnchanged(t *testing.T) {
+	s, sid := baselineStore(t)
+	title := "t"
+	_ = s.SetDisplayNameWithBaseline("proj", sid, "manual", &title)
+	// A manual rename raced in: the stale clear must not discard it.
+	if cleared, err := s.ClearDisplayNameIfUnchanged("proj", sid, "older-name"); err != nil || cleared {
+		t.Fatalf("stale clear: cleared=%v err=%v, want false/nil", cleared, err)
+	}
+	if e, _, _ := s.Get("proj", sid); e.DisplayName != "manual" {
+		t.Fatalf("DisplayName = %q, want manual (expected value did not match)", e.DisplayName)
+	}
+	if cleared, err := s.ClearDisplayNameIfUnchanged("proj", sid, "manual"); err != nil || !cleared {
+		t.Fatalf("matching clear: cleared=%v err=%v, want true/nil", cleared, err)
+	}
+	e, _, _ := s.Get("proj", sid)
+	if e.DisplayName != "" || e.AutoTitleAtRename != nil {
+		t.Fatalf("after clear: display=%q baseline=%v", e.DisplayName, e.AutoTitleAtRename)
+	}
+}

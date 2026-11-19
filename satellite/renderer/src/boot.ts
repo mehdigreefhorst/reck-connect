@@ -100,6 +100,7 @@ import {
   countSavedIdentityTabsInReachableHosts,
   reconcile,
 } from "./layout/reconcile";
+import { createPaneTitleRefresher } from "./layout/title-sync";
 import { SelectSequence, fetchSequenced } from "./select-project";
 import {
   applyProjectOrder,
@@ -1651,6 +1652,9 @@ export async function boot(splash?: StartupSplashController) {
       // Optimistic local repaint, then persist to the daemon. A daemon
       // rejection (e.g. shell panes have no session_id to key off of)
       // rolls the title back so the UI doesn't lie.
+      // Any background title refresh in flight now may predate this
+      // rename; discard it rather than flash the old title back.
+      paneTitleRefresher.noteLocalRename();
       layout.setTree(renameTab(tree, tabId, newTitle));
       // Hybrid mode (rev 3.1, phase 10): route rename to the host the
       // pane actually lives on. The singleton `client` is the primary
@@ -1664,6 +1668,8 @@ export async function boot(splash?: StartupSplashController) {
           console.error("renamePane failed", e);
           const current = layout.getTree();
           if (current) layout.setTree(renameTab(current, tabId, prevTitle));
+        } finally {
+          paneTitleRefresher.noteLocalRename();
         }
       })();
     },
@@ -1894,6 +1900,23 @@ export async function boot(splash?: StartupSplashController) {
     onDictationToggle: () => {
       dictationHandle?.toggle();
     },
+  });
+  // Background tab-title sync (issue #174). `selectProject` reconciles
+  // titles once on entry; this keeps them current afterwards.
+  const paneTitleRefresher = createPaneTitleRefresher({
+    getProjectId: () => currentProjectId,
+    getTree: () => layout.getTree(),
+    // persist:false — the live tree may be the select flow's reconciled
+    // projection, which has already dropped tabs it couldn't bind (e.g. a
+    // host that was down). Saving it on a mere title change would make
+    // that loss permanent. Titles are re-derived from the daemon on every
+    // select, so nothing is lost by not saving them here.
+    setTree: (tree) => layout.setTree(tree, { persist: false }),
+    fetchPanes: async (host, projectId) =>
+      (await apiForHost(host).getProject(projectId, { autoSpawn: false })).panes,
+    // A restore-retry is rebuilding the layout, or the user is typing a
+    // tab name inline (repainting the tab bar would destroy that input).
+    isBlocked: () => isRetrying() || document.querySelector(".tab-title-edit") !== null,
   });
   layout.setTheme(theme);
   // Terminals can't inherit a CSS font-size (canvas), so they resize through
@@ -3174,6 +3197,11 @@ export async function boot(splash?: StartupSplashController) {
       // whichever host the user targets. `codex_available` is absent on
       // older daemons → coerced to false (button stays hidden).
       setHostCodexAvailable(host, health.codex_available === true);
+      // Pick up pane renames made outside this window (a `/rename` inside
+      // a Claude session, issue #174). Runs for every host — each host's
+      // tabs are retitled from that host's daemon — and is fire-and-forget
+      // for the same reason as the project refresh below.
+      void paneTitleRefresher.refresh(host);
       if (host !== primaryHost) return;
       if (lastUptimeSec >= 0 && health.uptime_sec < lastUptimeSec) {
         window.location.reload();

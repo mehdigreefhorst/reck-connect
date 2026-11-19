@@ -1835,13 +1835,6 @@ func TestProjectDetail_skipsAutoNameWhenDisplayNameSet(t *testing.T) {
 		t.Fatalf("SetPaneDisplayName: %v", err)
 	}
 
-	// Reset the readCount so the next ProjectDetail call is the one
-	// we're asserting on. We didn't call ProjectDetail yet, so this
-	// is already 0 — but be explicit about the intent.
-	if n := mgr.autoNames.ReadCountForTest(); n != 0 {
-		t.Fatalf("precondition: expected readCount=0 before first ProjectDetail, got %d", n)
-	}
-
 	detail, _ := mgr.ProjectDetail("p1")
 	for _, pn := range detail.Panes {
 		if pn.ID != pane.ID {
@@ -1854,11 +1847,142 @@ func TestProjectDetail_skipsAutoNameWhenDisplayNameSet(t *testing.T) {
 			t.Errorf("AutoName should be empty when DisplayName is set, got %q", pn.AutoName)
 		}
 	}
-	// The DisplayName-wins guard in ProjectDetail must short-circuit
-	// BEFORE the AutoNameCache Lookup — i.e. no JSONL read should have
-	// happened.
-	if n := mgr.autoNames.ReadCountForTest(); n != 0 {
-		t.Errorf("readCount = %d, want 0 (DisplayName set ⇒ no JSONL read)", n)
+	// The transcript is consulted (to notice a later /rename, issue #174)
+	// but the mtime gate must keep an unchanged file to a single read
+	// across polls.
+	_, _ = mgr.ProjectDetail("p1")
+	_, _ = mgr.ProjectDetail("p1")
+	if n := mgr.autoNames.ReadCountForTest(); n > 1 {
+		t.Errorf("readCount = %d, want <= 1 (unchanged transcript must not be re-read)", n)
+	}
+}
+
+// paneLabels returns (DisplayName, AutoName) for paneID from ProjectDetail.
+func paneLabels(t *testing.T, mgr *Manager, paneID string) (string, string) {
+	t.Helper()
+	detail, ok := mgr.ProjectDetail("p1")
+	if !ok {
+		t.Fatal("project not found")
+	}
+	for _, pn := range detail.Panes {
+		if pn.ID == paneID {
+			return pn.DisplayName, pn.AutoName
+		}
+	}
+	t.Fatalf("pane %s missing from ProjectDetail", paneID)
+	return "", ""
+}
+
+func customTitleLine(sid, title string) string {
+	return `{"type":"custom-title","customTitle":"` + title + `","sessionId":"` + sid + `"}` + "\n"
+}
+
+// Issue #174: a /rename performed AFTER a manual tab rename must win. The
+// transcript's custom-title records carry no timestamp, so the daemon
+// detects "later" by change: it remembers Claude's title at manual-rename
+// time and yields when that title moves.
+func TestProjectDetail_renameAfterManualNameWins(t *testing.T) {
+	mgr, claudeDir, projCwd, store := autoNameTestManager(t)
+	pane, err := mgr.CreatePane("p1", proto.PaneKindClaude, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = mgr.DeletePane("p1", pane.ID)
+		time.Sleep(50 * time.Millisecond)
+	}()
+	sid := pane.SessionID
+	writeClaudeTranscript(t, claudeDir, projCwd, sid, customTitleLine(sid, "first-title"))
+	if err := mgr.SetPaneDisplayName("p1", pane.ID, "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if d, a := paneLabels(t, mgr, pane.ID); d != "manual" || a != "" {
+		t.Fatalf("before /rename: display=%q auto=%q, want manual/empty", d, a)
+	}
+	// Claude re-appends its current title periodically — same title must
+	// NOT count as a rename.
+	writeClaudeTranscript(t, claudeDir, projCwd, sid,
+		customTitleLine(sid, "first-title")+customTitleLine(sid, "first-title"))
+	if d, _ := paneLabels(t, mgr, pane.ID); d != "manual" {
+		t.Fatalf("re-appended identical title cleared the manual name: display=%q", d)
+	}
+	// Now a real /rename.
+	writeClaudeTranscript(t, claudeDir, projCwd, sid,
+		customTitleLine(sid, "first-title")+customTitleLine(sid, "renamed-in-claude"))
+	if d, a := paneLabels(t, mgr, pane.ID); d != "" || a != "renamed-in-claude" {
+		t.Fatalf("after /rename: display=%q auto=%q, want empty/renamed-in-claude", d, a)
+	}
+	if e, ok, _ := store.Get("p1", sid); !ok || e.DisplayName != "" {
+		t.Errorf("stored DisplayName = %q, want cleared", e.DisplayName)
+	}
+	// And a manual rename after that wins again.
+	if err := mgr.SetPaneDisplayName("p1", pane.ID, "manual-2"); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := paneLabels(t, mgr, pane.ID); d != "manual-2" {
+		t.Errorf("manual rename after /rename: display=%q, want manual-2", d)
+	}
+}
+
+// Rows renamed before issue #174 have no recorded baseline. They must keep
+// their manual name (no way to know which rename came last) and only yield
+// to a /rename observed from now on.
+func TestProjectDetail_legacyManualNameKeptUntilNextRename(t *testing.T) {
+	mgr, claudeDir, projCwd, store := autoNameTestManager(t)
+	pane, err := mgr.CreatePane("p1", proto.PaneKindClaude, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = mgr.DeletePane("p1", pane.ID)
+		time.Sleep(50 * time.Millisecond)
+	}()
+	sid := pane.SessionID
+	writeClaudeTranscript(t, claudeDir, projCwd, sid, customTitleLine(sid, "old-claude-title"))
+	// Legacy path: name stored without a baseline.
+	if err := store.SetDisplayName("p1", sid, "legacy-manual"); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := paneLabels(t, mgr, pane.ID); d != "legacy-manual" {
+		t.Fatalf("legacy row: display=%q, want legacy-manual", d)
+	}
+	writeClaudeTranscript(t, claudeDir, projCwd, sid,
+		customTitleLine(sid, "old-claude-title")+customTitleLine(sid, "new-claude-title"))
+	if d, a := paneLabels(t, mgr, pane.ID); d != "" || a != "new-claude-title" {
+		t.Fatalf("after /rename on legacy row: display=%q auto=%q", d, a)
+	}
+}
+
+// A missing transcript (fresh spawn, transient stat failure) is "unknown",
+// not "title is empty": it must neither clear a manual name nor poison the
+// baseline so that the title reappearing looks like a rename.
+func TestProjectDetail_missingTranscriptDoesNotClearManualName(t *testing.T) {
+	mgr, claudeDir, projCwd, _ := autoNameTestManager(t)
+	pane, err := mgr.CreatePane("p1", proto.PaneKindClaude, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = mgr.DeletePane("p1", pane.ID)
+		time.Sleep(50 * time.Millisecond)
+	}()
+	sid := pane.SessionID
+	// No transcript on disk yet.
+	if err := mgr.SetPaneDisplayName("p1", pane.ID, "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := paneLabels(t, mgr, pane.ID); d != "manual" {
+		t.Fatalf("display=%q, want manual", d)
+	}
+	// Transcript appears carrying a title that predates our knowledge.
+	writeClaudeTranscript(t, claudeDir, projCwd, sid, customTitleLine(sid, "pre-existing"))
+	if d, _ := paneLabels(t, mgr, pane.ID); d != "manual" {
+		t.Fatalf("first sighting of a title cleared the manual name: display=%q", d)
+	}
+	writeClaudeTranscript(t, claudeDir, projCwd, sid,
+		customTitleLine(sid, "pre-existing")+customTitleLine(sid, "later"))
+	if d, a := paneLabels(t, mgr, pane.ID); d != "" || a != "later" {
+		t.Fatalf("after later /rename: display=%q auto=%q", d, a)
 	}
 }
 
@@ -2057,5 +2181,41 @@ func TestIsHiddenProjectID(t *testing.T) {
 		if got := IsHiddenProjectID(c.id); got != c.want {
 			t.Errorf("IsHiddenProjectID(%q) = %v, want %v", c.id, got, c.want)
 		}
+	}
+}
+
+// A session that ran somewhere other than the project root (a git worktree,
+// issue #56) keeps its transcript under that cwd. The tab label must be
+// read from there, not from the project root, or a /rename never shows.
+func TestProjectDetail_autoNameReadFromSessionCwd(t *testing.T) {
+	mgr, claudeDir, projCwd, store := autoNameTestManager(t)
+	pane, err := mgr.CreatePane("p1", proto.PaneKindClaude, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = mgr.DeletePane("p1", pane.ID)
+		time.Sleep(50 * time.Millisecond)
+	}()
+	sid := pane.SessionID
+	worktree := filepath.Join(projCwd, ".claude", "worktrees", "feature")
+	e, ok, err := store.Get("p1", sid)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	e.Cwd = worktree
+	if err := store.Upsert("p1", e); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeTranscript(t, claudeDir, worktree, sid, customTitleLine(sid, "in-worktree"))
+	if d, a := paneLabels(t, mgr, pane.ID); d != "" || a != "in-worktree" {
+		t.Fatalf("display=%q auto=%q, want empty/in-worktree", d, a)
+	}
+	// The rename baseline is taken from the same file.
+	if err := mgr.SetPaneDisplayName("p1", pane.ID, "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if e, _, _ := store.Get("p1", sid); e.AutoTitleAtRename == nil || *e.AutoTitleAtRename != "in-worktree" {
+		t.Fatalf("baseline = %v, want in-worktree", e.AutoTitleAtRename)
 	}
 }

@@ -255,12 +255,23 @@ func (c *AutoNameCache) resolveDir() string {
 // persistence) short-circuit to "" — the manager should already filter
 // those out, but defense in depth.
 func (c *AutoNameCache) Lookup(paneID, projectID, cwd, sessionID string) string {
+	title, _ := c.LookupOK(paneID, projectID, cwd, sessionID)
+	return title
+}
+
+// LookupOK is Lookup that also reports whether the transcript was actually
+// readable. ok=false means "unknown" (no transcript on disk yet, bad
+// arguments, unresolvable home) and must not be mistaken for "the session
+// has no title" — callers comparing titles over time (issue #174) rely on
+// the distinction. ok=true with an empty title is an authoritative "no
+// custom title".
+func (c *AutoNameCache) LookupOK(paneID, projectID, cwd, sessionID string) (string, bool) {
 	if paneID == "" || cwd == "" || sessionID == "" {
-		return ""
+		return "", false
 	}
 	dir := c.resolveDir()
 	if dir == "" {
-		return ""
+		return "", false
 	}
 	path := filepath.Join(dir, sessions.EncodeCwd(cwd), sessionID+".jsonl")
 
@@ -280,12 +291,12 @@ func (c *AutoNameCache) Lookup(paneID, projectID, cwd, sessionID string) string 
 		// if we've never read) rather than racing to produce a value.
 		e.mtime = 0
 		e.size = 0
-		return ""
+		return "", false
 	}
 	mtime := st.ModTime().UnixNano()
 	size := st.Size()
 	if e.hasRead && e.mtime == mtime && e.size == size {
-		return e.title
+		return e.title, true
 	}
 	title := readLatestCustomTitle(dir, projectID, cwd, sessionID)
 	c.readCount++
@@ -293,7 +304,7 @@ func (c *AutoNameCache) Lookup(paneID, projectID, cwd, sessionID string) string 
 	e.size = size
 	e.title = title
 	e.hasRead = true
-	return title
+	return title, true
 }
 
 // Forget drops the cached entry for paneID. Called by the manager on
