@@ -1540,6 +1540,19 @@ describe("PaneLayout ended tabs", () => {
     expect(resume).toHaveBeenCalledWith("t1");
   });
 
+  it("disables Detach while the active tab is ended", () => {
+    const cb = makeCallbacks(root, makeController());
+    const detach = vi.fn();
+    cb.onDetachPane = detach;
+    const layout = new PaneLayout(cb);
+    layout.setTree(endedLeaf());
+    const btn = root.querySelector<HTMLButtonElement>('[data-act="detach"]')!;
+    expect(btn.disabled).toBe(true);
+    // Even a synthetic click must not hand the stale pane id to a popout.
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(detach).not.toHaveBeenCalled();
+  });
+
   it("swaps the placeholder for a terminal once the tab is resumed", () => {
     const layout = new PaneLayout(makeCallbacks(root, makeController()));
     const ended = endedLeaf();

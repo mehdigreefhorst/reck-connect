@@ -530,6 +530,14 @@ func (s *Server) handleCreatePane(w nethttp.ResponseWriter, r *nethttp.Request) 
 			nethttp.Error(w, err.Error(), nethttp.StatusConflict)
 			return
 		}
+		// ErrSessionAlreadyLive: the Claude session is already running in
+		// a live pane — a conflict, not a bad request. The client should
+		// bind to that pane rather than start a second process on the
+		// same transcript.
+		if errors.Is(err, pty.ErrSessionAlreadyLive) {
+			nethttp.Error(w, err.Error(), nethttp.StatusConflict)
+			return
+		}
 		// ErrResumeWorktreeGone (#56): the session's git worktree was
 		// removed, so `--resume` can't run in the directory its transcript
 		// lives under. Resuming in the project root would fork a fresh

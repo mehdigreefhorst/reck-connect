@@ -1153,9 +1153,14 @@ export class PaneLayout {
     const activeTab = leaf.tabs.find((x) => x.id === leaf.activeTabId) ?? leaf.tabs[0] ?? null;
     const activeIsDetached = !!activeTab && this.isDetached(activeTab.paneId);
     let detachButtonHtml = "";
+    // An ended tab (issue #176) has no pane to show in a popout; its
+    // paneId is stale and must not reach a window or a WebSocket.
+    const activeIsEnded = !!activeTab?.ended;
     if (this.cb.onDetachPane && activeTab) {
-      const disabledAttr = activeIsDetached ? " disabled" : "";
-      const title = activeIsDetached
+      const disabledAttr = activeIsDetached || activeIsEnded ? " disabled" : "";
+      const title = activeIsEnded
+        ? "Session ended — resume it before detaching"
+        : activeIsDetached
         ? "Pane is already detached"
         : "Detach pane to its own window (⌘⇧O)";
       detachButtonHtml = `<button class="icon-btn" data-act="detach" title="${title}"${disabledAttr}>${iconDetach}</button>`;
@@ -1173,7 +1178,7 @@ export class PaneLayout {
       btn.addEventListener("click", () => {
         const act = btn.getAttribute("data-act");
         if (act === "detach") {
-          if (activeTab && !activeIsDetached) {
+          if (activeTab && !activeIsDetached && !activeIsEnded) {
             this.cb.onDetachPane?.(activeTab.paneId, leaf.id);
           }
           return;

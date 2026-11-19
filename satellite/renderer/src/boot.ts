@@ -1866,6 +1866,8 @@ export async function boot(splash?: StartupSplashController) {
       if (!tree) return;
       const tab = allTabs(tree).find((t) => t.paneId === paneId);
       if (!tab) return;
+      // Ended tabs (issue #176) carry a stale pane id — nothing to pop out.
+      if (tab.ended) return;
       void (async () => {
         const rect = layout.getActiveLeafRect();
         const bounds = rect
@@ -2200,6 +2202,24 @@ export async function boot(splash?: StartupSplashController) {
    * transcript was cleaned up) the daemon's reason is toasted and the
    * placeholder stays, so the user can close it.
    */
+  /** Pane id of the live Claude pane running `sessionId` on `host`, if any. */
+  async function findLivePaneForSession(
+    host: HostRef,
+    projectId: string,
+    sessionId: string,
+  ): Promise<string | null> {
+    try {
+      const detail = await apiForHost(host).getProject(projectId, { autoSpawn: false });
+      const live = detail.panes.find((p) => p.kind === "claude" && p.session_id === sessionId);
+      return live?.id ?? null;
+    } catch (e) {
+      // Can't tell — fall through to the resume, where the daemon's own
+      // already-live check is the backstop.
+      console.warn("live-pane lookup before resume failed", e);
+      return null;
+    }
+  }
+
   async function resumeEndedTabAt(tabId: string) {
     const projectId = currentProjectId;
     if (!projectId || resumingEndedTabs.has(tabId)) return;
@@ -2208,19 +2228,36 @@ export async function boot(splash?: StartupSplashController) {
     const { host, sessionId } = found.tab;
     resumingEndedTabs.add(tabId);
     try {
-      const globalPreamble = await resolveEffectiveReckConnectPrompt();
-      const paneId = await createPaneOrToast(host, projectId, "claude", {
-        resumeSessionId: sessionId,
-        globalPreamble,
-      });
+      // `ended` is only re-evaluated when a project is selected, so the
+      // session may have come back since by another route ("Resume
+      // session", an accepted restore, another window). Bind to that pane
+      // instead of starting a second process on the same transcript; the
+      // daemon refuses the duplicate too (409).
+      const paneId =
+        (await findLivePaneForSession(host, projectId, sessionId)) ??
+        (await createPaneOrToast(host, projectId, "claude", {
+          resumeSessionId: sessionId,
+          globalPreamble: await resolveEffectiveReckConnectPrompt(),
+        }));
       if (!paneId) return;
       // Project switched while the pane was spawning: the pane is live on
       // the daemon and the next select of that project rebinds the saved
       // tab to it by session id.
       if (currentProjectId !== projectId) return;
       const tree = layout.getTree();
-      if (!tree || !findTab(tree, tabId)) return;
-      layout.setTree(resumeEndedTab(tree, tabId, paneId));
+      const current = tree ? findTab(tree, tabId) : null;
+      if (!tree || !current) return;
+      // The session's pane already has a tab here (it was resumed through
+      // "Resume session" in this window): the placeholder is redundant,
+      // and two tabs on one pane would fight over the same terminal.
+      const alreadyShown = allTabs(tree).some(
+        (t) => t.id !== tabId && !t.ended && t.host === host && t.paneId === paneId,
+      );
+      layout.setTree(
+        alreadyShown
+          ? closeTab(tree, current.leaf.id, tabId)
+          : resumeEndedTab(tree, tabId, paneId),
+      );
     } finally {
       resumingEndedTabs.delete(tabId);
     }
@@ -2365,6 +2402,8 @@ export async function boot(splash?: StartupSplashController) {
       // already focuses the popout in that case via the
       // already-detached short-circuit.
       if (layout.isDetached(tab.paneId)) return;
+      // Ended tabs (issue #176) carry a stale pane id — nothing to pop out.
+      if (tab.ended) return;
       void (async () => {
         const rect = layout.getActiveLeafRect();
         const bounds = rect
