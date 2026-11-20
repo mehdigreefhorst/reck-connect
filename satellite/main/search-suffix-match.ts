@@ -36,3 +36,24 @@ export function matchesPathSuffix(
     path.basename(fullPath) === cleanedSuffix
   );
 }
+
+/** Characters ripgrep's glob syntax gives meaning to. A basename holding
+ *  any of them can't be passed as a literal glob. */
+const GLOB_META_RE = /[*?[\]{}\\!,]/;
+
+/**
+ * The suffix's basename, when it is safe to hand ripgrep as a
+ * `--glob <name>` whitelist; null otherwise.
+ *
+ * A slash-free glob matches the file name at any depth, so ripgrep itself
+ * drops every non-candidate and only candidates cross the pipe (or the ssh
+ * connection) — `matchesPathSuffix` still does the exact, segment-aligned
+ * check on what comes back. Names with glob metacharacters return null and
+ * the caller lists everything, as before.
+ */
+export function basenameGlob(cleanedSuffix: string): string | null {
+  const base = cleanedSuffix.split("/").pop() ?? "";
+  if (base.length === 0 || base === "." || base === "..") return null;
+  if (GLOB_META_RE.test(base)) return null;
+  return base;
+}

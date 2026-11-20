@@ -23,7 +23,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { StreamingWorkerLike } from "./suffix-search-orchestrator";
-import { cleanSuffix, matchesPathSuffix } from "./search-suffix-match";
+import { basenameGlob, cleanSuffix, matchesPathSuffix } from "./search-suffix-match";
 import { SUFFIX_SEARCH_BLOCKLIST } from "./search-walk";
 
 /** Minimal child shape the worker depends on — injectable for tests. */
@@ -136,6 +136,7 @@ export function createRgLocalWorker(
       ]),
     ];
     const binary = opts.rgPath ?? "rg";
+    const nameGlob = basenameGlob(cleaned);
 
     // a pass that found nothing relaunches ONCE with the
     // ignore override: gitignored non-dot files (next-env.d.ts in the
@@ -147,6 +148,8 @@ export function createRgLocalWorker(
         "--files",
         "--no-messages",
         ...(withIgnoreOverride ? ignoreOverrideArgs : []),
+        // rg filters by file name itself; see basenameGlob.
+        ...(nameGlob ? ["--glob", nameGlob] : []),
         ...msg.roots,
       ];
       try {
