@@ -366,6 +366,40 @@ describe("TranscriptView", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #182: a bare "Loading transcript…" banner over an empty overlay.
+  it("shows skeleton turns while loading and removes them once turns render", () => {
+    const v = createTranscriptView({ host, onClose });
+    v.setStatus({ kind: "loading", message: "Loading transcript…" });
+    expect(v.body.querySelector(".skeleton")).not.toBeNull();
+
+    v.render([{ role: "user", blocks: [{ kind: "text", text: "hello" }] }], 0);
+    expect(v.body.querySelector(".skeleton")).toBeNull();
+    v.dispose();
+  });
+
+  it("drops the skeleton on empty, error and live states", () => {
+    for (const status of [
+      { kind: "empty", message: "No turns yet" },
+      { kind: "error", message: "boom" },
+      { kind: "live" },
+    ] as const) {
+      const v = createTranscriptView({ host, onClose });
+      v.setStatus({ kind: "loading", message: "Loading transcript…" });
+      v.setStatus(status);
+      expect(v.body.querySelector(".skeleton"), status.kind).toBeNull();
+      v.dispose();
+    }
+  });
+
+  it("does not put a skeleton over turns that are already on screen", () => {
+    // A reconnect flips the status back to loading after content rendered.
+    const v = createTranscriptView({ host, onClose });
+    v.render([{ role: "user", blocks: [{ kind: "text", text: "hello" }] }], 0);
+    v.setStatus({ kind: "loading", message: "Loading transcript…" });
+    expect(v.body.querySelector(".skeleton")).toBeNull();
+    v.dispose();
+  });
+
   // Issue #180: clicking a web link in the History view did nothing.
   it("opens an http/https link on a plain click", () => {
     const onLinkActivate = vi.fn();

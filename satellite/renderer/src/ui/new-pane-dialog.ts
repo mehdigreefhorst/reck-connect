@@ -1,5 +1,6 @@
 import type { PaneKind, SessionInfo } from "@proto/proto";
 import type { HostRef } from "../host";
+import { createSkeleton } from "./skeleton";
 
 /**
  * What the user picked in the "New pane" dialog. `kind` is the pane kind to
@@ -244,49 +245,74 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   return new Date(iso).toLocaleDateString();
 }
 
+/** Rows drawn while the session list is still loading. */
+const SESSION_SKELETON_ROWS = 5;
+
+function sessionRowHtml(s: SessionInfo, index: number): string {
+  const shortId = (s.session_id || s.slot_id || "").slice(0, 8);
+  // Prefer the resolved label (manual tab name, else Claude's
+  // /rename title). Older daemons don't send it, and unnamed
+  // sessions have none — both fall back to the spawn-time seed.
+  const label = s.display_name?.trim();
+  // With a real label the short id is the only thing that tells
+  // two same-named sessions apart; the seed already ends in it.
+  const idHtml = label && shortId
+    ? `<span class="session-id">${escapeHtml(shortId)}</span>`
+    : "";
+  return `
+          <button class="session-row" data-idx="${index}" role="option">
+            <span class="session-name">${escapeHtml(label || s.name || shortId)}</span>
+            <span class="session-meta">${idHtml}<span class="session-time">${escapeHtml(relativeTime(s.last_active_at))}</span></span>
+          </button>`;
+}
+
+function sessionListHtml(sessions: SessionInfo[]): string {
+  if (sessions.length === 0) {
+    return `<div class="dialog-body" style="opacity:0.7;">No past sessions for this project yet.</div>`;
+  }
+  return `<div class="session-list" role="listbox">${sessions.map(sessionRowHtml).join("")}</div>`;
+}
+
+function sessionLoadErrorHtml(err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  return `<div class="dialog-body session-load-error" role="alert">Couldn't load sessions: ${escapeHtml(detail)}</div>`;
+}
+
 /**
  * Modal that lists the persisted sessions for a project and resolves
  * with the one the user picks. Empty list → renders a "nothing to
  * resume" state with just a Back button. Null resolve = cancelled.
+ *
+ * `sessions` may be a promise: the dialog then opens at once with a
+ * skeleton and fills in when the list arrives (issue #182), instead of
+ * the click looking dead until the fetch returns. A rejected promise
+ * shows the error in the dialog; cancelling while loading resolves null
+ * and the late result is ignored.
  */
 export function pickSession(
   parent: HTMLElement,
-  sessions: SessionInfo[],
+  sessions: SessionInfo[] | Promise<SessionInfo[]>,
 ): Promise<SessionInfo | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "new-pane-dialog";
-    const rowsHtml = sessions.length === 0
-      ? `<div class="dialog-body" style="opacity:0.7;">No past sessions for this project yet.</div>`
-      : `<div class="session-list" role="listbox">${sessions.map((s, i) => {
-          const shortId = (s.session_id || s.slot_id || "").slice(0, 8);
-          // Prefer the resolved label (manual tab name, else Claude's
-          // /rename title). Older daemons don't send it, and unnamed
-          // sessions have none — both fall back to the spawn-time seed.
-          const label = s.display_name?.trim();
-          // With a real label the short id is the only thing that tells
-          // two same-named sessions apart; the seed already ends in it.
-          const idHtml = label && shortId
-            ? `<span class="session-id">${escapeHtml(shortId)}</span>`
-            : "";
-          return `
-          <button class="session-row" data-idx="${i}" role="option">
-            <span class="session-name">${escapeHtml(label || s.name || shortId)}</span>
-            <span class="session-meta">${idHtml}<span class="session-time">${escapeHtml(relativeTime(s.last_active_at))}</span></span>
-          </button>`;
-        }).join("")}</div>`;
     overlay.innerHTML = `
-      <div class="options" role="dialog" aria-label="Resume session" style="max-width:520px;">
+      <div class="options session-picker" role="dialog" aria-label="Resume session">
         <div class="dialog-title">Resume a session</div>
-        ${rowsHtml}
+        <div class="session-picker-content"></div>
         <div class="dialog-buttons" style="margin-top:1rem;">
           <button class="primary" data-action="cancel">Back</button>
         </div>
       </div>
     `;
     parent.appendChild(overlay);
+    const content = overlay.querySelector<HTMLElement>(".session-picker-content")!;
+    const cancelBtn = overlay.querySelector<HTMLButtonElement>('button[data-action="cancel"]');
 
+    let closed = false;
     const close = (result: SessionInfo | null) => {
+      if (closed) return;
+      closed = true;
       overlay.remove();
       window.removeEventListener("keydown", onKey, true);
       resolve(result);
@@ -296,14 +322,42 @@ export function pickSession(
     };
     window.addEventListener("keydown", onKey, true);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
-    overlay.querySelectorAll<HTMLButtonElement>(".session-row").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const idx = Number(btn.getAttribute("data-idx"));
-        close(sessions[idx] ?? null);
+    cancelBtn?.addEventListener("click", () => close(null));
+
+    const showSessions = (list: SessionInfo[]) => {
+      content.innerHTML = sessionListHtml(list);
+      content.querySelectorAll<HTMLButtonElement>(".session-row").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const idx = Number(btn.getAttribute("data-idx"));
+          close(list[idx] ?? null);
+        });
       });
-    });
-    overlay.querySelector<HTMLButtonElement>('button[data-action="cancel"]')?.addEventListener("click", () => close(null));
-    (overlay.querySelector<HTMLElement>(".session-row") ?? overlay.querySelector<HTMLElement>("button.primary"))?.focus();
+      (content.querySelector<HTMLElement>(".session-row") ?? cancelBtn)?.focus();
+    };
+
+    if (Array.isArray(sessions)) {
+      showSessions(sessions);
+      return;
+    }
+    // Skeleton sits inside a `.session-list` so the dialog is already the
+    // height the real list will roughly take — no jump when it fills in.
+    const loading = document.createElement("div");
+    loading.className = "session-list";
+    loading.appendChild(
+      createSkeleton({ rows: SESSION_SKELETON_ROWS, label: "Loading sessions" }),
+    );
+    content.appendChild(loading);
+    cancelBtn?.focus();
+    sessions.then(
+      (list) => {
+        if (!closed) showSessions(list);
+      },
+      (err: unknown) => {
+        if (closed) return;
+        content.innerHTML = sessionLoadErrorHtml(err);
+        cancelBtn?.focus();
+      },
+    );
   });
 }
 

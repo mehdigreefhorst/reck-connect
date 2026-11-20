@@ -43,6 +43,84 @@ describe("pickSession", () => {
     };
   }
 
+  // Issue #182: the dialog used to appear only after the list had been
+  // fetched, so the click looked dead and then the dialog popped in.
+  describe("loading from a promise", () => {
+    function deferred<T>() {
+      let resolve!: (v: T) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+
+    it("opens immediately with a skeleton, then swaps in the rows", async () => {
+      const root = mount();
+      const d = deferred<SessionInfo[]>();
+      void pickSession(root, d.promise);
+      // Dialog is on screen before the data is.
+      expect(root.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(root.querySelector(".skeleton")).not.toBeNull();
+      expect(root.querySelectorAll(".session-row")).toHaveLength(0);
+
+      d.resolve([session("a"), session("b")]);
+      await flush();
+      expect(root.querySelector(".skeleton")).toBeNull();
+      expect(root.querySelectorAll(".session-row")).toHaveLength(2);
+      (root.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
+    });
+
+    it("resolves with the session picked after loading", async () => {
+      const root = mount();
+      const d = deferred<SessionInfo[]>();
+      const picked = pickSession(root, d.promise);
+      d.resolve([session("a"), session("b")]);
+      await flush();
+      (root.querySelectorAll(".session-row")[1] as HTMLButtonElement).click();
+      expect((await picked)?.session_id).toBe("b");
+    });
+
+    it("can be cancelled while still loading, and ignores the late result", async () => {
+      const root = mount();
+      const d = deferred<SessionInfo[]>();
+      const picked = pickSession(root, d.promise);
+      (root.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
+      expect(await picked).toBeNull();
+      d.resolve([session("a")]);
+      await flush();
+      expect(root.querySelector(".new-pane-dialog")).toBeNull();
+      expect(root.querySelectorAll(".session-row")).toHaveLength(0);
+    });
+
+    it("shows the empty state when the list loads empty", async () => {
+      const root = mount();
+      const d = deferred<SessionInfo[]>();
+      void pickSession(root, d.promise);
+      d.resolve([]);
+      await flush();
+      expect(root.querySelector(".skeleton")).toBeNull();
+      expect(root.textContent).toContain("No past sessions");
+      (root.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
+    });
+
+    it("shows an error instead of hanging on the skeleton when loading fails", async () => {
+      const root = mount();
+      const d = deferred<SessionInfo[]>();
+      const picked = pickSession(root, d.promise);
+      d.reject(new Error("station unreachable"));
+      await flush();
+      expect(root.querySelector(".skeleton")).toBeNull();
+      const err = root.querySelector('[role="alert"]');
+      expect(err?.textContent).toContain("Couldn't load sessions");
+      expect(err?.textContent).toContain("station unreachable");
+      (root.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
+      expect(await picked).toBeNull();
+    });
+  });
+
   // Issue #175: the picker showed only the spawn-time seed.
   it("shows the resolved display_name, with the short id as secondary text", () => {
     const root = mount();

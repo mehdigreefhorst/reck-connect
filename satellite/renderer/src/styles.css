@@ -1814,6 +1814,88 @@ html, body, #app {
   font-size: 0.8rem;
 }
 
+/* Fixed width, not content-sized: the dialog must be the same size while
+   its list is a skeleton as once the rows arrive (issue #182). Long names
+   ellipsize inside `.session-name`. */
+.new-pane-dialog .options.session-picker {
+  width: min(460px, 90vw);
+  max-width: 520px;
+  box-sizing: border-box;
+}
+.new-pane-dialog .session-picker .session-row .session-name {
+  min-width: 0;
+}
+.new-pane-dialog .session-load-error {
+  margin-top: 0.75rem;
+  color: var(--claude-orange);
+}
+
+/* Skeleton placeholder (ui/skeleton.ts, issue #182): shimmering bars that
+   hold the place of content that is still loading. Shared by every surface
+   that waits on data — the resume picker, the transcript overlay. */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+}
+.skeleton-bar {
+  display: block;
+  height: 0.8rem;
+  max-width: 100%;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--app-border) 0%,
+    var(--app-border-strong) 50%,
+    var(--app-border) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-bar {
+    animation: none;
+    background: var(--app-border);
+  }
+}
+/* "list": a name on the left, its metadata on the right — sized to match
+   a `.session-row` so the dialog doesn't jump when the rows arrive. */
+.skeleton--list {
+  gap: 0.25rem;
+}
+.skeleton--list .skeleton-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0.8rem;
+  /* Same box as a `.session-row` button, border included. */
+  min-height: 2.09rem;
+  box-sizing: border-box;
+}
+.skeleton--list .skeleton-bar--meta {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+/* "turns": a short role heading over a few lines of text, spaced like
+   `.transcript-turn`. */
+.skeleton--turns {
+  gap: 18px;
+}
+.skeleton--turns .skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.skeleton--turns .skeleton-bar--heading {
+  height: 0.6rem;
+  margin-bottom: 0.15rem;
+  opacity: 0.7;
+}
+
 /* Restore-on-reconnect prompt. Groups sessions by project. */
 .new-pane-dialog .restore-groups {
   display: flex;
