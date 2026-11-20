@@ -102,6 +102,7 @@ import {
   reconcile,
 } from "./layout/reconcile";
 import { createPaneTitleRefresher } from "./layout/title-sync";
+import { sessionTabTitle, tabForNewPane, type NewPaneChoice } from "./layout/new-pane-tab";
 import { SelectSequence, fetchSequenced } from "./select-project";
 import {
   applyProjectOrder,
@@ -1958,12 +1959,7 @@ export async function boot(splash?: StartupSplashController) {
    * push-ack has arrived. The dialog subscribes to ready-flag flips so
    * the gate can arm live while the picker is open.
    */
-  async function pickNewPane(): Promise<{
-    kind: PaneKind;
-    host: HostRef;
-    resumeSessionId?: string;
-    restoreSlotId?: string;
-  } | null> {
+  async function pickNewPane(): Promise<NewPaneChoice | null> {
     const choice = await askPaneKind(document.body, {
       // `settings` is narrowed non-null by the early-return guard at
       // the top of `boot()`, but the narrowing doesn't survive this
@@ -2036,10 +2032,22 @@ export async function boot(splash?: StartupSplashController) {
       if (!picked) return null;
       if (resumeKind === "codex") {
         if (!picked.slot_id) return null;
-        return { kind: "codex", host: choice.host, restoreSlotId: picked.slot_id };
+        return {
+          kind: "codex",
+          host: choice.host,
+          restoreSlotId: picked.slot_id,
+          title: sessionTabTitle(picked),
+        };
       }
       if (!picked.session_id) return null;
-      return { kind: "claude", host: choice.host, resumeSessionId: picked.session_id };
+      // The tab opens under the session's name (issue #183) rather than
+      // "Claude" until the next title refresh.
+      return {
+        kind: "claude",
+        host: choice.host,
+        resumeSessionId: picked.session_id,
+        title: sessionTabTitle(picked),
+      };
     } catch (e) {
       console.error("resume picker failed", e);
       return null;
@@ -2121,14 +2129,14 @@ export async function boot(splash?: StartupSplashController) {
     const tree = layout.getTree();
     if (!tree) {
       const newLeaf = leafWithTab(
-        tab(pane_id, choice.kind, choice.host, undefined, undefined, tooltip),
+        tabForNewPane(pane_id, choice, tooltip),
       );
       layout.setTree(newLeaf);
       layout.focusLeaf(newLeaf.id);
       return;
     }
     layout.setTree(
-      addTab(tree, leafId, tab(pane_id, choice.kind, choice.host, undefined, undefined, tooltip)),
+      addTab(tree, leafId, tabForNewPane(pane_id, choice, tooltip)),
     );
     layout.focusLeaf(leafId);
   }
@@ -2174,7 +2182,7 @@ export async function boot(splash?: StartupSplashController) {
       tree,
       leafId,
       dir,
-      tab(pane_id, choice.kind, choice.host, undefined, undefined, tooltip),
+      tabForNewPane(pane_id, choice, tooltip),
     );
     layout.setTree(r.tree);
     layout.focusLeaf(r.newLeafId);
@@ -2215,7 +2223,7 @@ export async function boot(splash?: StartupSplashController) {
     if (!pane_id) return;
     const tooltip = extras?.raw ? `claude ${extras.raw}` : undefined;
     const newLeaf = leafWithTab(
-      tab(pane_id, choice.kind, choice.host, undefined, undefined, tooltip),
+      tabForNewPane(pane_id, choice, tooltip),
     );
     layout.setTree(newLeaf);
     layout.focusLeaf(newLeaf.id);
