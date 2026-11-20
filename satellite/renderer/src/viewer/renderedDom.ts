@@ -11,6 +11,12 @@
 import { detectPathsInLine } from "./LinkDetector";
 import { attachLightbox, type LightboxHandle } from "./Lightbox";
 import { isWebUrl } from "@client-core/terminal/web-link";
+import {
+  detectWikiLinksInLine,
+  isWikiLinkAnchor,
+  WIKI_LINK_CLASS,
+  WIKI_LINK_TOOLTIP,
+} from "./wikiLink";
 
 const INTERNAL_LINK_CLASS = "reck-internal-link";
 const PATH_LINK_TOOLTIP = "⌘+click to open";
@@ -81,29 +87,80 @@ export function wrapFreeTextPaths(root: HTMLElement): void {
   for (const textNode of candidates) {
     const text = textNode.nodeValue ?? "";
     if (text.length === 0) continue;
-    const matches = detectPathsInLine(text);
-    if (matches.length === 0) continue;
-    const frag = root.ownerDocument.createDocumentFragment();
+    const links = freeTextLinks(text, !isInsideCode(textNode, root));
+    if (links.length === 0) continue;
+    const doc = root.ownerDocument;
+    const frag = doc.createDocumentFragment();
     let cursor = 0;
-    for (const m of matches) {
-      if (m.start > cursor) {
-        frag.appendChild(
-          root.ownerDocument.createTextNode(text.slice(cursor, m.start)),
-        );
+    for (const link of links) {
+      if (link.start > cursor) {
+        frag.appendChild(doc.createTextNode(text.slice(cursor, link.start)));
       }
-      const a = root.ownerDocument.createElement("a");
-      a.className = INTERNAL_LINK_CLASS;
-      a.setAttribute("href", m.text);
-      a.setAttribute("title", PATH_LINK_TOOLTIP);
-      a.textContent = m.text;
+      const a = doc.createElement("a");
+      a.className = link.className;
+      a.setAttribute("href", link.href);
+      a.setAttribute("title", link.title);
+      // Plain text keeps exactly what was written, `[[brackets]]` included.
+      a.textContent = text.slice(link.start, link.end);
       frag.appendChild(a);
-      cursor = m.end;
+      cursor = link.end;
     }
     if (cursor < text.length) {
-      frag.appendChild(root.ownerDocument.createTextNode(text.slice(cursor)));
+      frag.appendChild(doc.createTextNode(text.slice(cursor)));
     }
     textNode.parentNode?.replaceChild(frag, textNode);
   }
+}
+
+function isInsideCode(node: Node, root: HTMLElement): boolean {
+  let cur: Node | null = node.parentNode;
+  while (cur && cur !== root) {
+    if (cur.nodeType === 1 && (cur as Element).tagName === "CODE") return true;
+    cur = cur.parentNode;
+  }
+  return false;
+}
+
+interface FreeTextLink {
+  start: number;
+  end: number;
+  href: string;
+  className: string;
+  title: string;
+}
+
+/**
+ * Everything linkable in one run of plain text, in order and without
+ * overlaps: `[[wikilinks]]` (issue #186) and detected file paths. A
+ * wikilink wins over any path the detector finds inside its brackets —
+ * `[[folder/note]]` is one note link, not a path with stray brackets.
+ *
+ * `allowWikiLinks` is false inside a code span: there `[[…]]` is someone
+ * showing the syntax, and the markdown rule leaves it literal too. (Paths
+ * in code spans are still linked — naming a file in backticks is how
+ * people normally write one.)
+ */
+function freeTextLinks(text: string, allowWikiLinks: boolean): FreeTextLink[] {
+  const wikiMatches = allowWikiLinks ? detectWikiLinksInLine(text) : [];
+  const wiki: FreeTextLink[] = wikiMatches.map((m) => ({
+    start: m.start,
+    end: m.end,
+    href: m.href,
+    className: `${INTERNAL_LINK_CLASS} ${WIKI_LINK_CLASS}`,
+    title: WIKI_LINK_TOOLTIP,
+  }));
+  const overlapsWiki = (start: number, end: number): boolean =>
+    wiki.some((w) => start < w.end && end > w.start);
+  const paths: FreeTextLink[] = detectPathsInLine(text)
+    .filter((m) => !overlapsWiki(m.start, m.end))
+    .map((m) => ({
+      start: m.start,
+      end: m.end,
+      href: m.text,
+      className: INTERNAL_LINK_CLASS,
+      title: PATH_LINK_TOOLTIP,
+    }));
+  return [...wiki, ...paths].sort((x, y) => x.start - y.start);
 }
 
 interface Attachment {
@@ -157,9 +214,10 @@ export function createRenderedDom(
         ev.preventDefault();
         const href = anchor.getAttribute("href");
         if (!href || href.startsWith("#")) return;
-        // Web links open on a plain click (issue #180). File references
-        // and other schemes (mailto:, …) still need Cmd.
-        if (!ev.metaKey && !isWebUrl(href)) return;
+        // Web links (issue #180) and wikilinks (issue #186) open on a
+        // plain click. Other file references and other schemes
+        // (mailto:, …) still need Cmd.
+        if (!ev.metaKey && !isWebUrl(href) && !isWikiLinkAnchor(anchor)) return;
         if (isInternalLinkHref(href)) {
           opts.onLinkActivate?.(href, ev);
         } else {

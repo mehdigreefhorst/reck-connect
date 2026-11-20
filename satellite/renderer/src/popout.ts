@@ -18,6 +18,7 @@ import "@xterm/xterm/css/xterm.css";
 import { TerminalPane } from "@client-core/terminal/terminal-pane";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
 import { installUrlLinkProvider } from "./viewer/UrlLinkProvider";
+import { installWikiLinkProvider } from "./viewer/WikiLinkProvider";
 import { installImageMarkerLinkProvider } from "./viewer/ImageMarkerLinkProvider";
 import { showImageOverlay } from "./viewer/ImageOverlay";
 import { showToast } from "./viewer/Toast";
@@ -211,23 +212,29 @@ async function bootPopout(): Promise<void> {
   //
   // `info.host` lets main expand `~/` against the right home and route station
   // paths through the local sshfs mount.
+  // Open a file clicked in the popout's scrollback — a detected path, or a
+  // `[[wikilink]]`'s note name — in the file viewer.
+  const openPaneFile = (filePath: string): void => {
+    const target = resolveActivatePath(filePath, paneProjectCwd);
+    console.log("[click:popout-pane] activate -> openInViewer", {
+      paneId: info.paneId,
+      sourceHost: info.host,
+      projectCwd: paneProjectCwd,
+      originalText: filePath,
+      target,
+    });
+    void window.reckAPI.files.openInViewer(target, {
+      sourceHost: info.host,
+      originalText: filePath,
+      projectCwd: paneProjectCwd ?? undefined,
+    });
+  };
+  // `[[note]]` wikilinks work in a detached pane window too (issue #186).
+  // Before the path linkifier so a wikilink wins over a path inside it.
+  installWikiLinkProvider(term.getXterm(), { onActivate: openPaneFile });
   installPathLinkProvider(term.getXterm(), {
     resolveBatch: (paths) => window.reckAPI.files.resolve(paths),
-    onActivate: (filePath) => {
-      const target = resolveActivatePath(filePath, paneProjectCwd);
-      console.log("[click:popout-pane] activate -> openInViewer", {
-        paneId: info.paneId,
-        sourceHost: info.host,
-        projectCwd: paneProjectCwd,
-        originalText: filePath,
-        target,
-      });
-      void window.reckAPI.files.openInViewer(target, {
-        sourceHost: info.host,
-        originalText: filePath,
-        projectCwd: paneProjectCwd ?? undefined,
-      });
-    },
+    onActivate: openPaneFile,
   });
   // Clickable http/https URLs in the popout terminal too. Click →
   // window.open → main's setWindowOpenHandler → shell.openExternal.

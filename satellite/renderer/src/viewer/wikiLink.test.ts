@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { parseWikiLinkBody, wikiLinkHref } from "./wikiLink";
+import {
+  detectWikiLinksInLine,
+  parseWikiLinkBody,
+  WIKI_LINK_CLASS,
+  wikiLinkHref,
+} from "./wikiLink";
 import { createMarkdownRenderer } from "./MarkdownRenderer";
 
 describe("parseWikiLinkBody", () => {
@@ -118,5 +123,93 @@ describe("wikilinks in the markdown renderer", () => {
       "robot-venture-training-data.md",
       expect.anything(),
     );
+  });
+});
+
+// Issue #186: wikilinks outside rendered markdown — terminal scrollback and
+// plain prose — need a line scanner, not a markdown-it rule.
+describe("detectWikiLinksInLine", () => {
+  it("finds a bare wikilink with its span and href", () => {
+    const line = "see [[2026-11-19-stephan-offerte-bespreking]] for notes";
+    const [m] = detectWikiLinksInLine(line);
+    expect(m.text).toBe("[[2026-11-19-stephan-offerte-bespreking]]");
+    expect(line.slice(m.start, m.end)).toBe(m.text);
+    expect(m.href).toBe("2026-11-19-stephan-offerte-bespreking.md");
+    expect(m.label).toBe("2026-11-19-stephan-offerte-bespreking");
+  });
+
+  it("handles alias, heading and folder forms", () => {
+    expect(detectWikiLinksInLine("[[note|Shown text]]")[0]).toMatchObject({
+      href: "note.md",
+      label: "Shown text",
+    });
+    expect(detectWikiLinksInLine("[[folder/note#Phase 2]]")[0].href).toBe("folder/note.md");
+    expect(detectWikiLinksInLine("[[diagram.png]]")[0].href).toBe("diagram.png");
+  });
+
+  it("finds several links on one line, in order", () => {
+    const ms = detectWikiLinksInLine("[[a]] and [[b|B]] then [[c]]");
+    expect(ms.map((m) => m.href)).toEqual(["a.md", "b.md", "c.md"]);
+    expect(ms[0].end).toBeLessThanOrEqual(ms[1].start);
+  });
+
+  it("ignores image embeds, heading-only links and malformed brackets", () => {
+    expect(detectWikiLinksInLine("![[photo.png]]")).toEqual([]);
+    expect(detectWikiLinksInLine("[[#Heading]]")).toEqual([]);
+    expect(detectWikiLinksInLine("[[]]")).toEqual([]);
+    expect(detectWikiLinksInLine("[[unterminated")).toEqual([]);
+    expect(detectWikiLinksInLine("arr[[0]][1]")[0]?.href).toBe("0.md");
+  });
+
+  it("returns nothing for empty or non-string input", () => {
+    expect(detectWikiLinksInLine("")).toEqual([]);
+    expect(detectWikiLinksInLine(undefined as unknown as string)).toEqual([]);
+  });
+});
+
+describe("wikilinks in rendered markdown (issue #186)", () => {
+  it("marks the anchor so click handlers can tell it from a detected path", () => {
+    const r = createMarkdownRenderer({});
+    const el = document.createElement("div");
+    r.mount(el, r.render("see [[my-note|My note]]"));
+    const a = el.querySelector("a")!;
+    expect(a.classList.contains(WIKI_LINK_CLASS)).toBe(true);
+    expect(a.getAttribute("href")).toBe("my-note.md");
+    expect(a.textContent).toBe("My note");
+  });
+
+  it("opens on a plain click, without Cmd", () => {
+    const onLinkActivate = vi.fn();
+    const r = createMarkdownRenderer({ onLinkActivate });
+    const el = document.createElement("div");
+    r.mount(el, r.render("see [[my-note]]"));
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+    el.querySelector("a")!.dispatchEvent(ev);
+    expect(onLinkActivate).toHaveBeenCalledWith("my-note.md", expect.any(MouseEvent));
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("an ordinary relative link still needs Cmd", () => {
+    const onLinkActivate = vi.fn();
+    const r = createMarkdownRenderer({ onLinkActivate });
+    const el = document.createElement("div");
+    r.mount(el, r.render("[x](./x.md)"));
+    el.querySelector("a")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(onLinkActivate).not.toHaveBeenCalled();
+  });
+
+  it("leaves a wikilink inside inline code literal, but still links a path there", () => {
+    const r = createMarkdownRenderer({});
+    const el = document.createElement("div");
+    r.mount(el, r.render("syntax is `[[my-note]]`, file is `src/app/main.ts`"));
+    const anchors = [...el.querySelectorAll("code a")];
+    expect(anchors.map((x) => x.getAttribute("href"))).toEqual(["src/app/main.ts"]);
+  });
+
+  it("leaves wikilinks in fenced code blocks alone", () => {
+    const r = createMarkdownRenderer({});
+    const el = document.createElement("div");
+    r.mount(el, r.render("```\n[[my-note]]\n```"));
+    expect(el.querySelector("a")).toBeNull();
   });
 });
