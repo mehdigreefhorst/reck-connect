@@ -122,7 +122,11 @@ describe("createRgLocalWorker", () => {
     const args = fake.spawned[0].args;
     expect(args).not.toContain("--hidden");
     expect(args).not.toContain("--no-ignore");
-    expect(args).not.toContain("--glob");
+    expect(args.some((a) => a.startsWith("!"))).toBe(false);
+    // Only the file-name whitelist, which rg applies at any depth.
+    expect(args).toEqual(
+      expect.arrayContaining(["--glob", "hyperbolic.py"]),
+    );
     expect(args[0]).toBe("--files");
     expect(args[args.length - 1]).toBe("/r");
   });
