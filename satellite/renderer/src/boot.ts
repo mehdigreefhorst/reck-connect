@@ -2019,13 +2019,19 @@ export async function boot(splash?: StartupSplashController) {
     if (!currentProjectId) return null;
     const resumeKind: PaneKind = choice.kind === "resume-codex" ? "codex" : "claude";
     try {
-      const { sessions } = await apiForHost(choice.host).listSessions(currentProjectId);
-      // Pre-Scope-B daemons omit `kind` entirely; treat that as claude.
-      const resumable = sessions.filter((s) =>
-        resumeKind === "codex"
-          ? s.kind === "codex" && !!s.slot_id && !!s.thread_id
-          : (s.kind ?? "claude") === "claude" && !!s.session_id,
-      );
+      // Hand the picker the pending fetch, not its result: the dialog
+      // opens at once with a skeleton and fills in when the list arrives
+      // (issue #182). A failed fetch is shown inside the dialog.
+      const resumable = apiForHost(choice.host)
+        .listSessions(currentProjectId)
+        .then(({ sessions }) =>
+          // Pre-Scope-B daemons omit `kind` entirely; treat that as claude.
+          sessions.filter((s) =>
+            resumeKind === "codex"
+              ? s.kind === "codex" && !!s.slot_id && !!s.thread_id
+              : (s.kind ?? "claude") === "claude" && !!s.session_id,
+          ),
+        );
       const picked = await pickSession(document.body, resumable);
       if (!picked) return null;
       if (resumeKind === "codex") {
@@ -2035,7 +2041,7 @@ export async function boot(splash?: StartupSplashController) {
       if (!picked.session_id) return null;
       return { kind: "claude", host: choice.host, resumeSessionId: picked.session_id };
     } catch (e) {
-      console.error("listSessions failed", e);
+      console.error("resume picker failed", e);
       return null;
     }
   }

@@ -27,6 +27,7 @@ import type { SpeakSurfaceAdapter } from "../tts/SpeakSurfaceAdapter";
 import { ensurePaneControls } from "../ui/paneControls";
 import type { TranscriptTurn, TranscriptBlock } from "./parseTranscript";
 import { isWebUrl } from "@client-core/terminal/web-link";
+import { createSkeleton } from "../ui/skeleton";
 
 export interface TranscriptViewOptions {
   /** Positioned pane wrapper the overlay covers. */
@@ -97,6 +98,9 @@ interface TurnPaint {
   /** The collapsed tool group, when the turn has tool activity. */
   tools: HTMLElement | null;
 }
+
+/** Placeholder turns drawn while a transcript is loading. */
+const LOADING_SKELETON_TURNS = 4;
 
 /** How close to the bottom (px) still counts as "following the tail". */
 const FOLLOW_THRESHOLD_PX = 40;
@@ -500,6 +504,7 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     // Capture follow intent BEFORE mutating: were we reading the tail?
     const wasNearBottom =
       body.scrollTop + body.clientHeight >= body.scrollHeight - FOLLOW_THRESHOLD_PX;
+    if (turns.length > 0) setSkeleton(false);
     for (let i = firstChanged; i < turns.length; i++) {
       let el = turnEls[i];
       if (!el) {
@@ -521,7 +526,29 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     }
   }
 
+  // Placeholder turns shown while the transcript loads (issue #182), so
+  // the overlay isn't an empty panel under a one-line banner.
+  let skeleton: HTMLElement | null = null;
+  function setSkeleton(show: boolean): void {
+    if (!show) {
+      skeleton?.remove();
+      skeleton = null;
+      return;
+    }
+    if (skeleton) return;
+    skeleton = createSkeleton({
+      rows: LOADING_SKELETON_TURNS,
+      label: "Loading transcript",
+      variant: "turns",
+    });
+    body.appendChild(skeleton);
+  }
+
   function setStatus(s: TranscriptStatus): void {
+    if (disposed) return;
+    // Only when nothing is on screen yet: a reconnect flips back to
+    // "loading" over turns that are already rendered.
+    setSkeleton(s.kind === "loading" && turnEls.length === 0);
     if (s.kind === "live") {
       status.classList.add("transcript-status--hidden");
       status.classList.remove("transcript-status--error");
