@@ -28,6 +28,7 @@ import { ensurePaneControls } from "../ui/paneControls";
 import type { TranscriptTurn, TranscriptBlock } from "./parseTranscript";
 import { isWebUrl } from "@client-core/terminal/web-link";
 import { createSkeleton } from "../ui/skeleton";
+import { isWikiLinkAnchor } from "../viewer/wikiLink";
 
 export interface TranscriptViewOptions {
   /** Positioned pane wrapper the overlay covers. */
@@ -213,9 +214,10 @@ export function createTranscriptView(opts: TranscriptViewOptions): TranscriptVie
     ev.preventDefault();
     const href = anchor.getAttribute("href") ?? "";
     if (href === "" || href.startsWith("#")) return;
-    // Web links open on a plain click (issue #180). File references and
-    // other schemes (mailto:, …) still need ⌘.
-    if (!ev.metaKey && !isWebUrl(href)) return;
+    // Web links (issue #180) and wikilinks (issue #186) open on a plain
+    // click. Other file references and other schemes (mailto:, …) still
+    // need ⌘.
+    if (!ev.metaKey && !isWebUrl(href) && !isWikiLinkAnchor(anchor)) return;
     if (isExternalHref(href)) opts.onExternalActivate?.(href, ev);
     else opts.onLinkActivate?.(href, ev);
   }

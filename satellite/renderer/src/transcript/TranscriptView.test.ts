@@ -366,6 +366,24 @@ describe("TranscriptView", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #186: `[[note]]` typed in a prompt was plain text in History.
+  it("links a wikilink in user prose and opens it on a plain click", () => {
+    const onLinkActivate = vi.fn();
+    const onExternalActivate = vi.fn();
+    const v = createTranscriptView({ host, onClose, onLinkActivate, onExternalActivate });
+    v.render([{ role: "user", blocks: [{ kind: "text", text: "summarise [[2026-11-19-offerte]] please" }] }], 0);
+    const link = v.body.querySelector('a[href="2026-11-19-offerte.md"]') as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    // Plain prose keeps what the user typed, brackets included.
+    expect(link.textContent).toBe("[[2026-11-19-offerte]]");
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+    link.dispatchEvent(ev);
+    expect(onLinkActivate).toHaveBeenCalledWith("2026-11-19-offerte.md", expect.any(MouseEvent));
+    expect(onExternalActivate).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(true);
+    v.dispose();
+  });
+
   // Issue #182: a bare "Loading transcript…" banner over an empty overlay.
   it("shows skeleton turns while loading and removes them once turns render", () => {
     const v = createTranscriptView({ host, onClose });

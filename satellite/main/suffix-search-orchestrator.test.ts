@@ -413,6 +413,28 @@ describe("createSuffixSearchOrchestrator", () => {
       expect(fallback.inbox[0]).toMatchObject({ type: "start" });
     });
 
+    it("primary done with an authoritative 0 → fallback NOT spawned", () => {
+      const primary = makeFakeWorker();
+      const fallbackFactory = vi.fn(() => makeFakeWorker().worker);
+      const onDone = vi.fn();
+      const orch = createSuffixSearchOrchestrator({
+        workerFactory: () => makeFakeWorker().worker,
+      });
+      orch.startSearch({
+        roots: ["/tmp"],
+        suffix: "x.py",
+        workerFactory: () => primary.worker,
+        fallback: { factory: fallbackFactory, when: () => true },
+        onMatch: vi.fn(),
+        onProgress: vi.fn(),
+        onDone,
+        onCancelled: vi.fn(),
+      });
+      primary.send({ type: "done", totalFound: 0, authoritative: true });
+      expect(fallbackFactory).not.toHaveBeenCalled();
+      expect(onDone).toHaveBeenCalledWith(0);
+    });
+
     it("primary done with N>0 matches → fallback NOT spawned", () => {
       const primary = makeFakeWorker();
       const fallbackFactory = vi.fn(() => makeFakeWorker().worker);

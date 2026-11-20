@@ -38,6 +38,7 @@ import { openUsageOverlay } from "./ui/usage-view";
 import { PaneLayout } from "./ui/pane-layout";
 import { installPathLinkProvider } from "./viewer/PathLinkProvider";
 import { installUrlLinkProvider } from "./viewer/UrlLinkProvider";
+import { installWikiLinkProvider } from "./viewer/WikiLinkProvider";
 import { installImageMarkerLinkProvider } from "./viewer/ImageMarkerLinkProvider";
 import { showImageOverlay } from "./viewer/ImageOverlay";
 import { openPastedImage } from "./transcript/openPastedImage";
@@ -1325,83 +1326,93 @@ export async function boot(splash?: StartupSplashController) {
         console.warn("[scrollbar] disabled for pane:", e);
       }
 
-      installPathLinkProvider(pane.getXterm(), {
-        resolveBatch: (paths) => window.reckAPI.files.resolve(paths),
-        onActivate: (filePath) => {
-          // Route the click through the pane's host so main can expand
-          // `~/` against the right home (station vs Mac) and apply the
-          // station-cwd translation. Lookup is by paneId because the
-          // pane's host is tracked at the tab level (see paneHost()).
-          const directHost = paneHost(paneId);
-          // paneHost can return null transiently while the layout tree
-          // rebuilds (e.g. during selectProject) or before the daemon's
-          // first pane-state push lands. Defaulting to "local" silently
-          // misrouted station-pane clicks to the Mac filesystem (a
-          // "file doesn't exist" error against a /Users/... path). Fall
-          // back to primaryHost instead — for users running with station
-          // enabled that's "station", the right guess for the vast
-          // majority of clicks. A console.warn flags the fallback.
-          const host: HostRef = directHost ?? primaryHost;
-          if (directHost === null) {
-            console.warn(
-              `[linkifier] paneHost(${paneId}) returned null — falling back to primaryHost=${primaryHost}`,
-            );
-          }
-          // Resolve bare filenames AND `./X` / `../X` against the active
-          // project's cwd; absolute (`/abs`) and home-anchored (`~/x`)
-          // paths pass through unchanged.
-          //
-          // The cwd lookup keys off the UI-SELECTED project, but the
-          // clicked pane is only provably that project's when it sits in
-          // the current layout tree (directHost !== null). Outside it
-          // (selectProject race), a WRONG cwd poisons resolveActivatePath
-          // and main's rescue pipeline, so drop the cwd when the pane isn't
-          // provably the current project's.
-          //
-          // Absent is SAFER than wrong, but it is not free: main cannot
-          // anchor a relative path on its own — `rootRelativeCandidate`
-          // returns null without a cwd, so the text reaches
-          // `isStationPathSafe` still relative and is rejected. Clicks that
-          // take this branch therefore resolve absolute and `~/` forms only.
-          // (An earlier version of this comment claimed main derives the
-          // anchor from the resolved path; it doesn't, and believing it was
-          // what left detached pane windows unable to open relative paths
-          // at all.)
-          const projectCwd = directHost !== null ? activeProjectCwd() : null;
-          const target = resolveActivatePath(filePath, projectCwd);
-          console.log("[click:pane] activate -> openInViewer", {
-            paneId,
-            paneHost: directHost,
-            resolvedHost: host,
+      // Open a file the user clicked in this pane's scrollback — a detected
+      // path, or a `[[wikilink]]`'s note name — in the file viewer.
+      const openPaneFile = (filePath: string): void => {
+        // Route the click through the pane's host so main can expand
+        // `~/` against the right home (station vs Mac) and apply the
+        // station-cwd translation. Lookup is by paneId because the
+        // pane's host is tracked at the tab level (see paneHost()).
+        const directHost = paneHost(paneId);
+        // paneHost can return null transiently while the layout tree
+        // rebuilds (e.g. during selectProject) or before the daemon's
+        // first pane-state push lands. Defaulting to "local" silently
+        // misrouted station-pane clicks to the Mac filesystem (a
+        // "file doesn't exist" error against a /Users/... path). Fall
+        // back to primaryHost instead — for users running with station
+        // enabled that's "station", the right guess for the vast
+        // majority of clicks. A console.warn flags the fallback.
+        const host: HostRef = directHost ?? primaryHost;
+        if (directHost === null) {
+          console.warn(
+            `[linkifier] paneHost(${paneId}) returned null — falling back to primaryHost=${primaryHost}`,
+          );
+        }
+        // Resolve bare filenames AND `./X` / `../X` against the active
+        // project's cwd; absolute (`/abs`) and home-anchored (`~/x`)
+        // paths pass through unchanged.
+        //
+        // The cwd lookup keys off the UI-SELECTED project, but the
+        // clicked pane is only provably that project's when it sits in
+        // the current layout tree (directHost !== null). Outside it
+        // (selectProject race), a WRONG cwd poisons resolveActivatePath
+        // and main's rescue pipeline, so drop the cwd when the pane isn't
+        // provably the current project's.
+        //
+        // Absent is SAFER than wrong, but it is not free: main cannot
+        // anchor a relative path on its own — `rootRelativeCandidate`
+        // returns null without a cwd, so the text reaches
+        // `isStationPathSafe` still relative and is rejected. Clicks that
+        // take this branch therefore resolve absolute and `~/` forms only.
+        // (An earlier version of this comment claimed main derives the
+        // anchor from the resolved path; it doesn't, and believing it was
+        // what left detached pane windows unable to open relative paths
+        // at all.)
+        const projectCwd = directHost !== null ? activeProjectCwd() : null;
+        const target = resolveActivatePath(filePath, projectCwd);
+        console.log("[click:pane] activate -> openInViewer", {
+          paneId,
+          paneHost: directHost,
+          resolvedHost: host,
+          sourceHost: host,
+          projectCwd,
+          originalText: filePath,
+          rawPath: filePath,
+          target,
+        });
+        window.reckAPI.files
+          .openInViewer(target, {
             sourceHost: host,
-            projectCwd,
             originalText: filePath,
-            rawPath: filePath,
-            target,
-          });
-          window.reckAPI.files
-            .openInViewer(target, {
-              sourceHost: host,
-              originalText: filePath,
-              projectCwd: projectCwd ?? undefined,
-            })
-            .then((r) => {
-              if (!r || (r as { ok?: boolean }).ok !== true) {
-                console.warn("[click:pane] openInViewer rejected", {
-                  target,
-                  sourceHost: host,
-                  result: r,
-                });
-              }
-            })
-            .catch((err: unknown) => {
-              console.warn("[click:pane] openInViewer threw", {
+            projectCwd: projectCwd ?? undefined,
+          })
+          .then((r) => {
+            if (!r || (r as { ok?: boolean }).ok !== true) {
+              console.warn("[click:pane] openInViewer rejected", {
                 target,
                 sourceHost: host,
-                error: err,
+                result: r,
               });
+            }
+          })
+          .catch((err: unknown) => {
+            console.warn("[click:pane] openInViewer threw", {
+              target,
+              sourceHost: host,
+              error: err,
             });
-        },
+          });
+      };
+      // `[[note]]` wikilinks (issue #186). The href is the note's file
+      // name, relative; openPaneFile anchors it to the project and main's
+      // name search finds the note wherever it lives in the project.
+      // Registered BEFORE the path linkifier: xterm asks providers in
+      // registration order, so `[[folder/note.md]]` is one note link
+      // rather than a path link on the text between the brackets.
+      installWikiLinkProvider(pane.getXterm(), { onActivate: openPaneFile });
+      installPathLinkProvider(pane.getXterm(), {
+        resolveBatch: (paths) => window.reckAPI.files.resolve(paths),
+        onActivate: openPaneFile,
       });
       // Clickable http/https URLs alongside the path linkifier. A click
       // opens the OS default browser: window.open is intercepted by main's
